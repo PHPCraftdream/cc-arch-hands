@@ -1,0 +1,42 @@
+{
+  "name": "cc-arch-hands",
+  "version": "0.1.0",
+  "description": "Installer for Claude Code per-model commands, agents and skills",
+  "type": "module",
+  "bin": {
+    "cah": "./bin/cah.js",
+    "cc-arch-hands": "./bin/cah.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "templates/",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
+  ],
+  "scripts": {
+    "test": "node --test test/cli.test.js test/installer.test.js"
+  },
+  "engines": {
+    "node": ">=18.17.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PHPCraftdream/cc-arch-hands.git"
+  },
+  "homepage": "https://github.com/PHPCraftdream/cc-arch-hands#readme",
+  "bugs": {
+    "url": "https://github.com/PHPCraftdream/cc-arch-hands/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "claude",
+    "anthropic",
+    "installer",
+    "slash-commands",
+    "agents",
+    "skills"
+  ],
+  "author": "Marat K <phpcraftdream@gmail.com>",
+  "license": "(MIT OR Apache-2.0)"
+}
