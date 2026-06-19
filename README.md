@@ -5,10 +5,16 @@ workshop: per-model slash-commands, per-model delegated sub-agents, and
 skills. Zero runtime dependencies — only Node.js built-ins.
 
 ```bash
-npx cc-arch-hands install        # that's it — installs commands, agents & skills into ~/.claude/
+git clone https://github.com/PHPCraftdream/cc-arch-hands
+cd cc-arch-hands
+./install.sh                     # installs commands, agents & skills into ~/.claude/
 ```
 
-> Other ways to run: [npm global install](#quick-start), [from source](#from-source). Full command reference in [Use](#use).
+> Windows: run `install.bat`. Full command reference in [Use](#use).
+
+> **Not on npm.** This package is distributed from source only — clone the
+> repo and run the wrappers (or `node bin/cah.js`). There is no published
+> npm package to `npx` or `npm install -g` from a registry.
 
 ## What it installs
 
@@ -84,17 +90,85 @@ you don't care about pinning an exact version.
 35 commands, 35 agents — one line per row-cell in
 [`lib/manifest.js`](lib/manifest.js).
 
-### 3. Skills (4)
+### 3. Skills (8)
 
 Reusable capability packs Claude Code loads on demand. Each is invoked as
-`/skill-name` from a chat.
+`/skill-name` from a chat. Grouped by purpose:
+
+**Onboarding**
 
 | Skill | Purpose |
 |---|---|
 | `/repo-sight` | Diagnose an unfamiliar repository from its git history, structure and behavior *before* reading code, and return a ranked reading list with explicit caveats. |
-| `/babysit` | Start a `/loop` (default `15m`) that detects when a goal stalled — network error, API timeout, missed continuation — and resumes work automatically. Usage: `/babysit [interval]`. |
-| `/babygoal` | Set a `/goal` (built-in Stop hook), decompose it into tasks, begin execution, and immediately start `/babysit` to monitor it. Usage: `/babygoal [interval] <goal>`. |
+
+**Planning & execution**
+
+| Skill | Purpose |
+|---|---|
 | `/task` | Analyze a free-form request, decompose it into prioritized sub-tasks with dependencies, and register them in the session via TaskCreate. Plans only — does not execute. Usage: `/task <description>`. |
+| `/babygoal` | Decompose a goal into tasks, immediately start executing them, and invoke `/babysit` to monitor progress. At the end, prints a copy-paste `/goal` line so you can optionally set a Stop-hook guard. Usage: `/babygoal [interval] <goal>`. |
+| `/babysit` | Start a `/loop` (default `15m`) that detects when a goal stalled — network error, API timeout, missed continuation — and resumes work automatically. Usage: `/babysit [interval]`. |
+
+**Session memory**
+
+| Skill | Purpose |
+|---|---|
+| `/checkpoint` | Persist current session state (active `/goal`, TaskList with `blockedBy`, recent decisions, open questions, repo state) to a markdown file under `docs/checkpoints/`. Usage: `/checkpoint` (auto-timestamped) or `/checkpoint <name>` (named, re-runs overwrite). |
+| `/resume` | Reload a checkpoint, rebuild the TaskList via TaskCreate, restate the goal as a copy-paste line, surface open questions. Usage: `/resume` (most recent), `/resume <name>` (exact or prefix), `/resume --list` (browse without restoring). |
+| `/checkpoint-prune` | Delete checkpoints. Arg auto-detected: `<name>` (one file), `14d`/`48h` (older than), bare number (keep last N), no arg (all). Confirms before batch deletes; `--dry` reports only. Usage: `/checkpoint-prune`, `/checkpoint-prune 14d`, `/checkpoint-prune 10`, `/checkpoint-prune <name>`. |
+| `/triage` | TaskList hygiene — flag stale `in_progress`, orphan blockers, dead-end chains, trivial sibling clusters, completed clutter, duplicate subjects. Advisory by default; asks before mutating. Usage: `/triage` or `/triage --dry`. |
+
+#### Session memory in detail
+
+`/checkpoint` and `/resume` pair up to survive auto-compaction, machine
+switches, and long pauses. The flow:
+
+```bash
+# In a session, before a context compact or before stepping away:
+/checkpoint pre-refactor       # writes docs/checkpoints/pre-refactor.md
+                               # (or ~/.claude/checkpoints/ if not in a git repo)
+
+# Iteratively update the same named checkpoint as work progresses:
+/checkpoint pre-refactor       # overwrites the same file
+
+# Later — same session after compact, or a brand-new session:
+/resume --list                 # see what's available
+/resume pre-refactor           # restore TaskList + goal + decisions + open questions
+
+# Housekeeping when the directory fills up:
+/checkpoint-prune 14d            # drop anything older than two weeks
+/checkpoint-prune 5              # keep the 5 most recent, delete the rest
+/checkpoint-prune pre-refactor   # remove one specific checkpoint
+/checkpoint-prune                # delete ALL (asks to confirm)
+# (or just `rm docs/checkpoints/<name>.md` — it's a plain file)
+```
+
+What goes into a checkpoint:
+
+- **Active goal** — the current `/goal` Stop-hook condition, verbatim.
+- **TaskList snapshot** — every task with `id`, `status`, `subject`,
+  `blockedBy`, grouped by status.
+- **Decision log** — up to 5 recent material decisions (chose X over Y
+  because Z) extracted from conversation context.
+- **Open questions** — anything flagged as needing user input.
+- **Repo state** — `git status --short` and `git log --oneline -5`.
+
+Empty sections stay empty with a one-line reason — the skill never
+invents content to look complete. Checkpoints are not added to git
+automatically; that decision stays with you.
+
+What `/resume` does:
+
+1. Locates the checkpoint directory (repo-local first, `~/.claude/` fallback).
+2. With `--list`: prints a table (name, size, mtime, title) and stops.
+3. Otherwise resolves the target file by exact-match or prefix-match
+   (ambiguous prefix → asks, never silently picks).
+4. Re-creates pending/in_progress tasks via TaskCreate, re-wires
+   `blockedBy` by `subject` matching (IDs will differ from the snapshot).
+5. Prints the prior goal as a copy-paste `/goal <text>` block — `/goal`
+   is a user-side command, so you re-arm the Stop hook yourself.
+6. Warns if the checkpoint is older than 7 days, since repo state may
+   have drifted.
 
 ### Where it goes
 
@@ -102,7 +176,7 @@ Reusable capability packs Claude Code loads on demand. Each is invoked as
 |---|---|---|
 | Slash-commands | 35 | `<scope>/.claude/commands/<name>.md` |
 | Sub-agents | 35 | `<scope>/.claude/agents/a<name>.md` |
-| Skills | 4 | `<scope>/.claude/skills/<name>/` |
+| Skills | 8 | `<scope>/.claude/skills/<name>/` |
 
 `<scope>` is `~/` by default (global install). Use `--local` or `--cwd`
 to target a specific project directory instead.
@@ -113,29 +187,13 @@ and is owned by its own `claude-init` command.
 
 ## Quick start
 
-No install needed — run directly with `npx`:
-
-```bash
-npx cc-arch-hands install                # install globally into ~/.claude/
-npx cc-arch-hands uninstall              # remove everything we own
-npx cc-arch-hands list                   # show what's installed
-npx cc-arch-hands doctor                 # health check
-```
-
-Or install globally for repeated use:
-
-```bash
-npm install -g cc-arch-hands
-cah install                              # same as npx, but faster (no download)
-```
-
-### From source
+Clone the repo, then use the wrapper scripts (idempotent — safe to re-run):
 
 ```bash
 git clone https://github.com/PHPCraftdream/cc-arch-hands
 cd cc-arch-hands
 
-# Install globally into ~/.claude/ (idempotent — safe to re-run):
+# Install globally into ~/.claude/:
 ./install.sh                    # Linux/macOS/BSD
 install.bat                     # Windows
 
@@ -151,31 +209,36 @@ uninstall.bat
 All wrapper scripts forward flags, e.g. `./install.sh --only skills` or
 `install.bat --local`.
 
-## Use
+### Optional: a global `cah` command
 
-Via npx (no install):
+To call `cah` from anywhere instead of the wrappers, link the clone
+globally (this does not touch any registry — it symlinks your local
+checkout):
 
 ```bash
-npx cah install                          # global (default): ~/.claude/{commands,agents,skills}
-npx cah install --local                  # local: <cwd>/.claude/... (must already exist)
-npx cah install --cwd /path/to/project   # local at a specific path
-npx cah install --only skills            # subset: any combo of commands,agents,skills
-
-npx cah uninstall                        # symmetric remove (sentinel-gated)
-npx cah uninstall --only agents          # subset uninstall
-
-npx cah list                             # tabular: NAME | KIND | STATE
-npx cah list --json                      # NDJSON for scripting
-npx cah doctor                           # condensed health verdict
-npx cah version                          # version + counts
+npm install -g .                # from inside the cloned repo
+cah install                     # now available on PATH
 ```
 
-From source (same commands, prefix with `node bin/cah.js`):
+## Use
+
+Run via `node bin/cah.js` from the cloned repo (or `cah` if you linked it
+globally with `npm install -g .`):
 
 ```bash
-node bin/cah.js install
+node bin/cah.js install                          # global (default): ~/.claude/{commands,agents,skills}
+node bin/cah.js install --local                  # local: <cwd>/.claude/... (must already exist)
+node bin/cah.js install --cwd /path/to/project   # local at a specific path
+node bin/cah.js install --only skills            # subset: any combo of commands,agents,skills
 node bin/cah.js install --templates ./templates  # dev: load from disk instead of embedded
-node bin/cah.js list --json
+
+node bin/cah.js uninstall                        # symmetric remove (sentinel-gated)
+node bin/cah.js uninstall --only agents          # subset uninstall
+
+node bin/cah.js list                             # tabular: NAME | KIND | STATE
+node bin/cah.js list --json                      # NDJSON for scripting
+node bin/cah.js doctor                           # condensed health verdict
+node bin/cah.js version                          # version + counts
 ```
 
 ## Ownership and safety
@@ -193,6 +256,16 @@ A file under `.claude/{commands,agents,skills}/` is recognised as
 **ours** if it contains any of these. Files without a recognised marker
 are foreign — `cah` never overwrites or deletes them, only logs a
 warning.
+
+### Orphan sweep
+
+When a `{model, effort}` pair or a skill is dropped from `lib/manifest.js`,
+the previously installed file would otherwise sit forever in
+`~/.claude/`. To prevent that, `cah install` finishes each class with a
+**prune** step: any file (or skill directory) that carries our sentinel
+but is no longer in the manifest is deleted, and the count is reported
+on a `pruned N (orphan)` tail. Foreign files are never touched by the
+prune step.
 
 ### Migration from `crush claude-init`
 
@@ -220,16 +293,17 @@ cc-arch-hands/
 ├── bin/cah.js                   # CLI entry point (#!/usr/bin/env node)
 ├── lib/
 │   ├── cli.js                   # dispatch, arg parsing (node:util parseArgs)
-│   ├── manifest.js              # AllModelCommands (35 entries) + AllSkills
+│   ├── manifest.js              # AllModelCommands (35 entries) + AllSkills (8)
 │   ├── sentinel.js              # new + legacy markers, ownership classifier
 │   ├── scope.js                 # global vs local target dir resolution
 │   ├── templates.js             # bundled / disk template abstraction
+│   ├── fsutil.js                # readFileMaybe + orphan-prune helpers
 │   ├── commands.js              # render + install + remove (35 .md files)
 │   ├── agents.js                # render + install + remove (35 a*.md files)
 │   └── skills.js                # mirror templates/skills/<n>/ tree
 ├── templates/
-│   └── skills/repo-sight/
-│       └── SKILL.md             # bundled skill assets
+│   └── skills/                  # repo-sight, task, babygoal, babysit,
+│       └── <name>/SKILL.md      # checkpoint, resume, checkpoint-prune, triage
 ├── test/
 │   ├── installer.test.js        # installer tests (node:test + node:assert)
 │   └── cli.test.js              # CLI layer tests (scope, parseOnly, dispatch)

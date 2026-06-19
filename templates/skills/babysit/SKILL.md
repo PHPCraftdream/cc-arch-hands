@@ -1,3 +1,8 @@
+---
+name: babysit
+description: "Run a /loop on a configurable interval (default 15m) to detect when a goal has stalled — network errors, API timeouts, missed continuations — and resume work automatically. Use when you have an active task list or multi-step plan that must not silently stop."
+---
+
 # babysit
 
 Watch over long-running task execution and restart it if interrupted.

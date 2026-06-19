@@ -1,3 +1,8 @@
+---
+name: task
+description: "Analyze a free-form request, decompose it into prioritized sub-tasks with explicit dependencies (blockedBy), and register them in the session via TaskCreate. Plans only — does not execute. Use when you want a clean task list before starting work."
+---
+
 # task
 
 Decompose a free-form request into a prioritized, dependency-ordered task list and add it to the session.

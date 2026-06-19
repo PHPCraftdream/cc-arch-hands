@@ -134,6 +134,29 @@ describe('writeModelCommands', () => {
     assert.ok(data.includes(SentinelModelCommand), 'must be stamped with new sentinel');
     assert.ok(!data.includes(LegacyModelCommand), 'legacy sentinel must be gone');
   });
+
+  it('prunes orphans whose names are no longer in the manifest', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const cmdDir = join(dir, '.claude', 'commands');
+    mkdirSync(cmdDir, { recursive: true });
+
+    const orphanMine = join(cmdDir, 'oldname.md');
+    writeFileSync(orphanMine, `dropped\n${SentinelModelCommand}\n`);
+    const orphanLegacy = join(cmdDir, 'oldlegacy.md');
+    writeFileSync(orphanLegacy, `dropped legacy\n${LegacyModelCommand}\n`);
+    const orphanForeign = join(cmdDir, 'someone-else.md');
+    writeFileSync(orphanForeign, 'not yours');
+
+    const { written, skipped, pruned } = writeModelCommands(null, scope);
+    assert.equal(written, AllModelCommands.length);
+    assert.deepEqual(skipped, []);
+    assert.equal(pruned, 2, 'mine + legacy orphans removed, foreign preserved');
+
+    assert.throws(() => statSync(orphanMine), { code: 'ENOENT' });
+    assert.throws(() => statSync(orphanLegacy), { code: 'ENOENT' });
+    assert.equal(readFileSync(orphanForeign, 'utf8'), 'not yours');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -233,6 +256,29 @@ describe('writeModelAgents', () => {
     assert.equal(written, AllModelCommands.length - 1);
     assert.deepEqual(skipped, [foreignPath]);
     assert.equal(readFileSync(foreignPath, 'utf8'), foreignBody);
+  });
+
+  it('prunes orphan agents whose names are no longer in the manifest', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const agentsDir = join(dir, '.claude', 'agents');
+    mkdirSync(agentsDir, { recursive: true });
+
+    const orphanMine = join(agentsDir, 'aoldname.md');
+    writeFileSync(orphanMine, `dropped\n${SentinelModelAgent}\n`);
+    const orphanLegacy = join(agentsDir, 'aoldlegacy.md');
+    writeFileSync(orphanLegacy, `dropped legacy\n${LegacyModelAgent}\n`);
+    const orphanForeign = join(agentsDir, 'someone-else.md');
+    writeFileSync(orphanForeign, 'not yours');
+
+    const { written, skipped, pruned } = writeModelAgents(null, scope);
+    assert.equal(written, AllModelCommands.length);
+    assert.deepEqual(skipped, []);
+    assert.equal(pruned, 2, 'mine + legacy orphans removed, foreign preserved');
+
+    assert.throws(() => statSync(orphanMine), { code: 'ENOENT' });
+    assert.throws(() => statSync(orphanLegacy), { code: 'ENOENT' });
+    assert.equal(readFileSync(orphanForeign, 'utf8'), 'not yours');
   });
 });
 
@@ -340,6 +386,29 @@ describe('writeSkills', () => {
       AllSkills.length = 0;
       AllSkills.push(...origSkills);
     }
+  });
+
+  it('prunes orphan skill directories whose names are no longer in the manifest', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const tpl = embeddedTemplates();
+
+    const skillsDir = join(dir, '.claude', 'skills');
+    const orphanMineDir = join(skillsDir, 'oldskill');
+    mkdirSync(orphanMineDir, { recursive: true });
+    writeFileSync(join(orphanMineDir, SKILL_MANIFEST_LEAF), `# old skill\n${SentinelSkill}\n`);
+
+    const orphanForeignDir = join(skillsDir, 'foreignskill');
+    mkdirSync(orphanForeignDir, { recursive: true });
+    writeFileSync(join(orphanForeignDir, SKILL_MANIFEST_LEAF), 'not ours');
+
+    const { written, skipped, pruned } = writeSkills(tpl, scope);
+    assert.equal(written, AllSkills.length);
+    assert.deepEqual(skipped, []);
+    assert.equal(pruned, 1, 'mine orphan dir removed, foreign preserved');
+
+    assert.throws(() => statSync(orphanMineDir), { code: 'ENOENT' });
+    assert.equal(readFileSync(join(orphanForeignDir, SKILL_MANIFEST_LEAF), 'utf8'), 'not ours');
   });
 
   it('source SKILL.md already stamped is copied verbatim', () => {

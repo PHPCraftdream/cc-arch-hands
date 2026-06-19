@@ -12,7 +12,7 @@ No `npm install` needed — zero runtime dependencies, tests use `node:test` + `
 ## Development loop
 
 ```bash
-npm test                            # full suite (49 tests)
+npm test                            # full suite
 node --test test/cli.test.js        # single file
 node bin/cah.js install --templates ./templates --only skills --cwd /tmp/sandbox
 ```
