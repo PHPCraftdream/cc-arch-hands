@@ -23,7 +23,7 @@ node bin/cah.js install --templates ./templates --only skills --cwd /tmp/sandbox
 
 The codebase has two layers: a thin CLI (`lib/cli.js`) that does arg parsing and dispatch, and the installer modules (`lib/*.js`) that own all side effects.
 
-**Manifest-driven generation.** The 36 model entries live in `lib/manifest.js` as `AllModelCommands`. Both commands and agents are rendered parametrically at install time from this single registry. Adding a new model/effort pair = one object in the array.
+**Manifest-driven generation.** The 37 model entries live in `lib/manifest.js` as `AllModelCommands`. Both commands and agents are rendered parametrically at install time from this single registry. Adding a new model/effort pair = one object in the array.
 
 **Skills are static trees.** Each skill is a directory under `templates/skills/<name>/`. The `AllSkills` array in `lib/manifest.js` is the registry. Adding a skill = drop a directory + append the name.
 
@@ -39,7 +39,7 @@ The codebase has two layers: a thin CLI (`lib/cli.js`) that does arg parsing and
 |---|---|
 | `bin/cah.js` | Entry point (`#!/usr/bin/env node`) |
 | `lib/cli.js` | CLI dispatch, arg parsing (`node:util parseArgs`), presentation |
-| `lib/manifest.js` | `AllModelCommands` registry (36 entries) + `AllSkills` list |
+| `lib/manifest.js` | `AllModelCommands` registry (37 entries) + `AllSkills` list |
 | `lib/sentinel.js` | Sentinel constants, `classifyContent`, `isOurs` |
 | `lib/scope.js` | `Scope` class, `resolve*Dir()`, strict-mode guard |
 | `lib/templates.js` | Bundled / disk template abstraction, `skillTree` walker |
