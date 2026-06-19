@@ -15,7 +15,7 @@ npx cc-arch-hands install        # that's it — installs commands, agents & ski
 Three kinds of Claude Code artifacts, all generated from a single model
 registry so they stay in lockstep.
 
-### 1. Per-model slash-commands (37)
+### 1. Per-model slash-commands (35)
 
 A short slash-command for every `{model, effort}` pair, so you can switch
 the model **and** reasoning effort for a single turn just by how you start
@@ -33,7 +33,7 @@ effort suffix:
 Suffixes: `l` low · `m` medium · `h` high · `x` xhigh · `xx` max.
 Whatever you type after the command becomes the prompt for that turn.
 
-### 2. Per-model sub-agents (37)
+### 2. Per-model sub-agents (35)
 
 The same matrix as `a<name>` (`aoh`, `ao47x`, `afxx`, …) — but as
 **delegated sub-agents** instead of inline commands. Use them to hand a
@@ -49,40 +49,60 @@ Command name = **model letter** (+ version) + **effort suffix**. The agent
 name is just the command name with an `a` prefix. Effort suffixes:
 `l` low · `m` medium · `h` high · `x` xhigh · `xx` max.
 
+Rows are sorted by tier (strongest first). Bold rows are **top** shortcuts
+that always point at the freshest version of each family — use them when
+you don't care about pinning an exact version.
+
+**Slash-commands**
+
 | Model | model id | low | medium | high | xhigh | max |
 |---|---|---|---|---|---|---|
-| Opus 4.7 | `claude-opus-4-7` | `o47l` | `o47m` | `o47h` | `o47x` | `o47xx` |
-| Opus 4.6 | `claude-opus-4-6` | `o46l` | `o46m` | `o46h` | `o46x` | `o46xx` |
-| Sonnet 4.6 | `claude-sonnet-4-6` | `s46l` | `s46m` | `s46h` | — | `s46xx` |
-| Sonnet 4.5 | `claude-sonnet-4-5` | `s45l` | `s45m` | `s45h` | — | — |
-| Haiku 4.5 | `claude-haiku-4-5` | `h45l` | `h45m` | `h45h` | — | — |
-| **Opus** (top) | `claude-opus-4-8` | `ol` | `om` | `oh` | `ox` | `oxx` |
-| **Sonnet** (top) | `claude-sonnet-4-6` | `sl` | `sm` | `sh` | — | `sx` |
-| **Haiku** (top) | `claude-haiku-4-5` | `hl` | `hm` | `hh` | — | — |
-| **Fable** (top) | `claude-fable-5` | `fl` | `fm` | `fh` | `fx` | `fxx` |
+| **Fable** (top) | `claude-fable-5` | `/fl` | `/fm` | `/fh` | `/fx` | `/fxx` |
+| **Opus** (top) | `claude-opus-4-8` | `/ol` | `/om` | `/oh` | `/ox` | `/oxx` |
+| Opus 4.7 | `claude-opus-4-7` | `/o47l` | `/o47m` | `/o47h` | `/o47x` | `/o47xx` |
+| Opus 4.6 | `claude-opus-4-6` | `/o46l` | `/o46m` | `/o46h` | `/o46x` | `/o46xx` |
+| **Sonnet** (top) | `claude-sonnet-4-6` | `/sl` | `/sm` | `/sh` | — | — |
+| Sonnet 4.6 | `claude-sonnet-4-6` | `/s46l` | `/s46m` | `/s46h` | — | — |
+| Sonnet 4.5 | `claude-sonnet-4-5` | `/s45l` | `/s45m` | `/s45h` | — | — |
+| **Haiku** (top) | `claude-haiku-4-5` | `/hl` | `/hm` | `/hh` | — | — |
+| Haiku 4.5 | `claude-haiku-4-5` | `/h45l` | `/h45m` | `/h45h` | — | — |
 
-The **top** rows are moving shortcuts that always point at the freshest
-version of each family — use them when you don't care about pinning an
-exact version. (Note: Sonnet-top's max tier is `sx`, since that family
-exposes no separate xhigh tier.) Agents: `o47l` → `ao47l`, `oh` → `aoh`,
-`fxx` → `afxx`, and so on. 37 commands, 37 agents — one line per row-cell
-in [`lib/manifest.js`](lib/manifest.js).
+**Sub-agents** (same matrix, `a` prefix)
 
-### 3. Skills
+| Model | model id | low | medium | high | xhigh | max |
+|---|---|---|---|---|---|---|
+| **Fable** (top) | `claude-fable-5` | `afl` | `afm` | `afh` | `afx` | `afxx` |
+| **Opus** (top) | `claude-opus-4-8` | `aol` | `aom` | `aoh` | `aox` | `aoxx` |
+| Opus 4.7 | `claude-opus-4-7` | `ao47l` | `ao47m` | `ao47h` | `ao47x` | `ao47xx` |
+| Opus 4.6 | `claude-opus-4-6` | `ao46l` | `ao46m` | `ao46h` | `ao46x` | `ao46xx` |
+| **Sonnet** (top) | `claude-sonnet-4-6` | `asl` | `asm` | `ash` | — | — |
+| Sonnet 4.6 | `claude-sonnet-4-6` | `as46l` | `as46m` | `as46h` | — | — |
+| Sonnet 4.5 | `claude-sonnet-4-5` | `as45l` | `as45m` | `as45h` | — | — |
+| **Haiku** (top) | `claude-haiku-4-5` | `ahl` | `ahm` | `ahh` | — | — |
+| Haiku 4.5 | `claude-haiku-4-5` | `ah45l` | `ah45m` | `ah45h` | — | — |
 
-Reusable capability packs Claude Code loads on demand. Bundled so far:
+35 commands, 35 agents — one line per row-cell in
+[`lib/manifest.js`](lib/manifest.js).
 
-- **`repo-sight`** — diagnose an unfamiliar repository from its git
-  history, structure and behavior *before* reading code, and return a
-  ranked reading list with explicit caveats.
+### 3. Skills (4)
+
+Reusable capability packs Claude Code loads on demand. Each is invoked as
+`/skill-name` from a chat.
+
+| Skill | Purpose |
+|---|---|
+| `/repo-sight` | Diagnose an unfamiliar repository from its git history, structure and behavior *before* reading code, and return a ranked reading list with explicit caveats. |
+| `/babysit` | Start a `/loop` (default `15m`) that detects when a goal stalled — network error, API timeout, missed continuation — and resumes work automatically. Usage: `/babysit [interval]`. |
+| `/babygoal` | Set a `/goal` (built-in Stop hook), decompose it into tasks, begin execution, and immediately start `/babysit` to monitor it. Usage: `/babygoal [interval] <goal>`. |
+| `/task` | Analyze a free-form request, decompose it into prioritized sub-tasks with dependencies, and register them in the session via TaskCreate. Plans only — does not execute. Usage: `/task <description>`. |
 
 ### Where it goes
 
 | Artifact | Count | Destination |
 |---|---|---|
-| Slash-commands | 37 | `<scope>/.claude/commands/<name>.md` |
-| Sub-agents | 37 | `<scope>/.claude/agents/a<name>.md` |
-| Skills | 1 | `<scope>/.claude/skills/<name>/` |
+| Slash-commands | 35 | `<scope>/.claude/commands/<name>.md` |
+| Sub-agents | 35 | `<scope>/.claude/agents/a<name>.md` |
+| Skills | 4 | `<scope>/.claude/skills/<name>/` |
 
 `<scope>` is `~/` by default (global install). Use `--local` or `--cwd`
 to target a specific project directory instead.
@@ -200,12 +220,12 @@ cc-arch-hands/
 ├── bin/cah.js                   # CLI entry point (#!/usr/bin/env node)
 ├── lib/
 │   ├── cli.js                   # dispatch, arg parsing (node:util parseArgs)
-│   ├── manifest.js              # AllModelCommands (37 entries) + AllSkills
+│   ├── manifest.js              # AllModelCommands (35 entries) + AllSkills
 │   ├── sentinel.js              # new + legacy markers, ownership classifier
 │   ├── scope.js                 # global vs local target dir resolution
 │   ├── templates.js             # bundled / disk template abstraction
-│   ├── commands.js              # render + install + remove (37 .md files)
-│   ├── agents.js                # render + install + remove (37 a*.md files)
+│   ├── commands.js              # render + install + remove (35 .md files)
+│   ├── agents.js                # render + install + remove (35 a*.md files)
 │   └── skills.js                # mirror templates/skills/<n>/ tree
 ├── templates/
 │   └── skills/repo-sight/
@@ -222,8 +242,8 @@ cc-arch-hands/
 └── package.json
 ```
 
-The 37 per-model command/agent bodies are **rendered parametrically** at
-install time from `AllModelCommands`, not stored as 74 nearly-identical
+The 35 per-model command/agent bodies are **rendered parametrically** at
+install time from `AllModelCommands`, not stored as 70 nearly-identical
 files. Adding a new `{model, effort}` pair = one object in `lib/manifest.js`.
 
 Skills are static directory trees, mirrored verbatim, so authoring a
