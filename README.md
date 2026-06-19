@@ -5,16 +5,10 @@ workshop: per-model slash-commands, per-model delegated sub-agents, and
 skills. Zero runtime dependencies — only Node.js built-ins.
 
 ```bash
-git clone https://github.com/PHPCraftdream/cc-arch-hands
-cd cc-arch-hands
-./install.sh                     # installs commands, agents & skills into ~/.claude/
+npx cc-arch-hands install        # that's it — installs commands, agents & skills into ~/.claude/
 ```
 
-> Windows: run `install.bat`. Full command reference in [Use](#use).
-
-> **Not on npm.** This package is distributed from source only — clone the
-> repo and run the wrappers (or `node bin/cah.js`). There is no published
-> npm package to `npx` or `npm install -g` from a registry.
+> Other ways to run: [npm global install](#quick-start), [from source](#from-source). Full command reference in [Use](#use).
 
 ## What it installs
 
@@ -187,13 +181,29 @@ and is owned by its own `claude-init` command.
 
 ## Quick start
 
-Clone the repo, then use the wrapper scripts (idempotent — safe to re-run):
+No install needed — run directly with `npx`:
+
+```bash
+npx cc-arch-hands install                # install globally into ~/.claude/
+npx cc-arch-hands uninstall              # remove everything we own
+npx cc-arch-hands list                   # show what's installed
+npx cc-arch-hands doctor                 # health check
+```
+
+Or install globally for repeated use:
+
+```bash
+npm install -g cc-arch-hands
+cah install                              # same as npx, but faster (no download)
+```
+
+### From source
 
 ```bash
 git clone https://github.com/PHPCraftdream/cc-arch-hands
 cd cc-arch-hands
 
-# Install globally into ~/.claude/:
+# Install globally into ~/.claude/ (idempotent — safe to re-run):
 ./install.sh                    # Linux/macOS/BSD
 install.bat                     # Windows
 
@@ -209,36 +219,31 @@ uninstall.bat
 All wrapper scripts forward flags, e.g. `./install.sh --only skills` or
 `install.bat --local`.
 
-### Optional: a global `cah` command
-
-To call `cah` from anywhere instead of the wrappers, link the clone
-globally (this does not touch any registry — it symlinks your local
-checkout):
-
-```bash
-npm install -g .                # from inside the cloned repo
-cah install                     # now available on PATH
-```
-
 ## Use
 
-Run via `node bin/cah.js` from the cloned repo (or `cah` if you linked it
-globally with `npm install -g .`):
+Via npx (no install):
 
 ```bash
-node bin/cah.js install                          # global (default): ~/.claude/{commands,agents,skills}
-node bin/cah.js install --local                  # local: <cwd>/.claude/... (must already exist)
-node bin/cah.js install --cwd /path/to/project   # local at a specific path
-node bin/cah.js install --only skills            # subset: any combo of commands,agents,skills
+npx cah install                          # global (default): ~/.claude/{commands,agents,skills}
+npx cah install --local                  # local: <cwd>/.claude/... (must already exist)
+npx cah install --cwd /path/to/project   # local at a specific path
+npx cah install --only skills            # subset: any combo of commands,agents,skills
+
+npx cah uninstall                        # symmetric remove (sentinel-gated)
+npx cah uninstall --only agents          # subset uninstall
+
+npx cah list                             # tabular: NAME | KIND | STATE
+npx cah list --json                      # NDJSON for scripting
+npx cah doctor                           # condensed health verdict
+npx cah version                          # version + counts
+```
+
+From source (same commands, prefix with `node bin/cah.js`):
+
+```bash
+node bin/cah.js install
 node bin/cah.js install --templates ./templates  # dev: load from disk instead of embedded
-
-node bin/cah.js uninstall                        # symmetric remove (sentinel-gated)
-node bin/cah.js uninstall --only agents          # subset uninstall
-
-node bin/cah.js list                             # tabular: NAME | KIND | STATE
-node bin/cah.js list --json                      # NDJSON for scripting
-node bin/cah.js doctor                           # condensed health verdict
-node bin/cah.js version                          # version + counts
+node bin/cah.js list --json
 ```
 
 ## Ownership and safety

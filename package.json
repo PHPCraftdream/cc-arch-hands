@@ -1,13 +1,19 @@
 {
   "name": "cc-arch-hands",
-  "version": "0.1.4",
-  "private": true,
+  "version": "0.1.5",
   "description": "Installer for Claude Code per-model commands, agents and skills",
   "type": "module",
   "bin": {
     "cah": "./bin/cah.js",
     "cc-arch-hands": "./bin/cah.js"
   },
+  "files": [
+    "bin/",
+    "lib/",
+    "templates/",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
+  ],
   "scripts": {
     "test": "node --test test/cli.test.js test/installer.test.js"
   },
