@@ -10,9 +10,8 @@
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { readTranscriptStats, modelLimit } from '../lib/transcript-stats.js';
 
-const SONNET_HAIKU_LIMIT = 200_000;
-const OPUS_FABLE_LIMIT = 1_000_000;
 const THRESHOLD = 0.9;
 const MESSAGE =
   '{"continue":true,"systemMessage":"[hint] Context at 90%. Run /checkpoint to save state before auto-compact."}';
@@ -23,75 +22,6 @@ function readStdin() {
   } catch {
     return '';
   }
-}
-
-// Walk the transcript JSONL from the bottom and return the latest
-// usage.input_tokens value found, plus the latest model string seen.
-function scanTranscript(transcriptPath) {
-  let usedTokens = null;
-  let model = null;
-
-  const raw = readFileSync(transcriptPath, 'utf8');
-  const lines = raw.split(/\r?\n/);
-
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (!line) continue;
-
-    let obj;
-    try {
-      obj = JSON.parse(line);
-    } catch {
-      continue;
-    }
-
-    if (usedTokens === null) {
-      const tokens = findInputTokens(obj);
-      if (tokens !== null) usedTokens = tokens;
-    }
-    if (model === null) {
-      const m = findModel(obj);
-      if (m) model = m;
-    }
-    if (usedTokens !== null && model !== null) break;
-  }
-
-  return { usedTokens, model };
-}
-
-// Recursively look for a `usage.input_tokens` number anywhere in the object.
-function findInputTokens(node, depth = 0) {
-  if (node === null || typeof node !== 'object' || depth > 8) return null;
-  if (
-    node.usage &&
-    typeof node.usage === 'object' &&
-    typeof node.usage.input_tokens === 'number'
-  ) {
-    return node.usage.input_tokens;
-  }
-  for (const key of Object.keys(node)) {
-    const found = findInputTokens(node[key], depth + 1);
-    if (found !== null) return found;
-  }
-  return null;
-}
-
-// Recursively look for a `model` string anywhere in the object.
-function findModel(node, depth = 0) {
-  if (node === null || typeof node !== 'object' || depth > 8) return null;
-  if (typeof node.model === 'string' && node.model) return node.model;
-  for (const key of Object.keys(node)) {
-    const found = findModel(node[key], depth + 1);
-    if (found !== null) return found;
-  }
-  return null;
-}
-
-function limitForModel(model) {
-  const m = (model || '').toLowerCase();
-  if (m.includes('opus') || m.includes('fable')) return OPUS_FABLE_LIMIT;
-  if (m.includes('sonnet') || m.includes('haiku')) return SONNET_HAIKU_LIMIT;
-  return SONNET_HAIKU_LIMIT;
 }
 
 function main() {
@@ -120,15 +50,17 @@ function main() {
   if (existsSync(marker)) return;
 
   let usedTokens = null;
-  let model = null;
+  let modelId = null;
   try {
-    ({ usedTokens, model } = scanTranscript(transcriptPath));
+    const stats = readTranscriptStats(transcriptPath);
+    if (!stats) return;
+    ({ usedTokens, modelId } = stats);
   } catch {
     return; // transcript missing / unreadable
   }
   if (usedTokens === null) return;
 
-  const limit = limitForModel(model);
+  const limit = modelLimit(modelId);
   const ratio = usedTokens / limit;
   if (ratio < THRESHOLD) return;
 

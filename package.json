@@ -7,7 +7,8 @@
     "cah": "./bin/cah.js",
     "cc-arch-hands": "./bin/cah.js",
     "cah-checkpoint-hint": "./bin/cah-checkpoint-hint.js",
-    "cah-status": "./bin/cah-status.js"
+    "cah-status": "./bin/cah-status.js",
+    "cah-stamp": "./bin/cah-stamp.js"
   },
   "files": [
     "bin/",
@@ -17,7 +18,7 @@
     "LICENSE-APACHE"
   ],
   "scripts": {
-    "test": "node --test test/cli.test.js test/installer.test.js test/checkpoint-hint.test.js test/clock.test.js"
+    "test": "node --test test/cli.test.js test/installer.test.js test/checkpoint-hint.test.js test/clock.test.js test/stamp.test.js test/transcript-stats.test.js"
   },
   "engines": {
     "node": ">=18.17.0"

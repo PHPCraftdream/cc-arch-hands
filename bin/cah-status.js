@@ -8,58 +8,31 @@
 // Never crashes, never blanks, always exits 0.
 
 import { readFileSync } from 'node:fs';
-
-function clock() {
-  const d = new Date();
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  return `${hh}:${mm}`;
-}
-
-function trimModelName(displayName) {
-  if (!displayName || typeof displayName !== 'string') return null;
-  const trimmed = displayName.trim();
-  if (trimmed.startsWith('Claude ')) return trimmed.slice(7);
-  return trimmed;
-}
-
-function formatTokens(total, windowSize) {
-  const xk = Math.round(total / 1000);
-  let yk;
-  if (windowSize >= 1_000_000) {
-    yk = `${Math.round(windowSize / 1_000_000)}M`;
-  } else {
-    yk = `${Math.round(windowSize / 1000)}k`;
-  }
-  return `${xk}k/${yk}`;
-}
+import { currentHhMm, formatStatusLine } from '../lib/transcript-stats.js';
 
 function buildLine(data) {
-  const time = clock();
+  const time = currentHhMm();
 
-  let model = null;
+  let displayName = null;
   try {
-    model = trimModelName(data && data.model && data.model.display_name);
+    displayName = data && data.model && data.model.display_name || null;
   } catch {
     // ignore
   }
 
-  let usage = null;
+  let usedTokens = null;
+  let limit = null;
   try {
     const cw = data && data.context_window;
     if (cw && typeof cw === 'object') {
-      const pct = Math.round(cw.used_percentage);
-      const tokens = formatTokens(cw.total_input_tokens, cw.context_window_size);
-      usage = `${pct}% (${tokens})`;
+      usedTokens = cw.total_input_tokens ?? null;
+      limit = cw.context_window_size ?? null;
     }
   } catch {
     // ignore
   }
 
-  const parts = [time];
-  if (model) parts.push(model);
-  if (usage) parts.push(usage);
-  return parts.join(' · ');
+  return formatStatusLine({ time, displayName, usedTokens, limit });
 }
 
 function main() {
@@ -88,7 +61,7 @@ try {
 } catch {
   // last-resort fallback
   try {
-    process.stdout.write(clock() + '\n');
+    process.stdout.write(currentHhMm() + '\n');
   } catch {
     /* ignore */
   }

@@ -115,7 +115,26 @@ Reusable capability packs Claude Code loads on demand. Each is invoked as
 
 | Skill | Purpose |
 |---|---|
-| `/clock` | Per-scope Claude Code statusLine showing `HH:MM · model · X% (Nk/Mk)` at the bottom of the terminal. Refreshes every second. Does not consume LLM context. Usage: `/clock` (global), `/clock --here` (project-local), `/clock --off`, `/clock --status`. |
+| `/clock` | Per-scope Claude Code statusLine showing `HH:MM · model · X% (Nk/Mk)` at the bottom of the terminal, plus a Stop hook that emits the same line as a `systemMessage` after each assistant turn for a timestamped chat audit trail. Refreshes every second. Does not consume LLM context. Usage: `/clock` (global), `/clock --here` (project-local), `/clock --off`, `/clock --status`. |
+
+#### Workspace HUD in detail
+
+`/clock` installs two complementary signals into the same `settings.json`:
+
+- **statusLine** (`cah-status` process): a persistent one-line bar at the bottom
+  of the terminal that refreshes every second and shows `HH:MM · model · X% (Nk/Mk)`.
+  It runs as a separate process and never enters LLM context.
+- **chat turn-stamp** (`cah-stamp` Stop hook): after every assistant turn, the hook
+  reads the session transcript JSONL to find the latest `usage.input_tokens` and
+  `model`, then emits the same `HH:MM · model · X%` line as a `systemMessage` that
+  lands in the chat scrollback. This gives you a permanent audit trail — scrolling
+  back through a long session you can see exactly when each exchange happened and
+  what the context state was at that moment. The `systemMessage` is user-facing only
+  and does not add any tokens to the LLM context.
+
+Both pieces are installed together by `/clock`, removed together by `/clock --off`,
+and reported together by `/clock --status`. Foreign entries in either surface are
+never touched.
 
 #### Session memory in detail
 
@@ -321,6 +340,7 @@ cc-arch-hands/
 ├── bin/cah.js                   # CLI entry point (#!/usr/bin/env node)
 ├── bin/cah-checkpoint-hint.js   # Stop-hook bin: emits the 90% [hint] (#!/usr/bin/env node)
 ├── bin/cah-status.js            # statusLine bin: emits HH:MM · model · X% (#!/usr/bin/env node)
+├── bin/cah-stamp.js             # Stop-hook bin: emits HH:MM · model · X% as systemMessage (#!/usr/bin/env node)
 ├── lib/
 │   ├── cli.js                   # dispatch, arg parsing (node:util parseArgs)
 │   ├── manifest.js              # AllModelCommands (35 entries) + AllSkills (10)
@@ -328,6 +348,7 @@ cc-arch-hands/
 │   ├── scope.js                 # global vs local target dir resolution
 │   ├── templates.js             # bundled / disk template abstraction
 │   ├── fsutil.js                # readFileMaybe + orphan-prune helpers
+│   ├── transcript-stats.js      # shared: readTranscriptStats, modelLimit, formatStatusLine, currentHhMm
 │   ├── commands.js              # render + install + remove (35 .md files)
 │   ├── agents.js                # render + install + remove (35 .md files)
 │   └── skills.js                # mirror templates/skills/<n>/ tree
@@ -337,7 +358,9 @@ cc-arch-hands/
 │                                # checkpoint-watch, clock
 ├── test/
 │   ├── installer.test.js        # installer tests (node:test + node:assert)
-│   └── cli.test.js              # CLI layer tests (scope, parseOnly, dispatch)
+│   ├── cli.test.js              # CLI layer tests (scope, parseOnly, dispatch)
+│   ├── stamp.test.js            # cah-stamp bin tests
+│   └── transcript-stats.test.js # transcript-stats helper unit tests
 ├── .github/workflows/ci.yml    # CI: npm test on 3 OS × 3 Node versions
 ├── install.sh / install.bat     # quick install wrappers
 ├── reinstall.sh / reinstall.bat # uninstall + install
