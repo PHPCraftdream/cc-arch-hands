@@ -4,3 +4,12 @@ node_modules/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# per-developer local Claude Code config (opt-in via /clock --here, /checkpoint-watch, etc.)
+.claude/
+
+# session checkpoints written by /checkpoint
+docs/checkpoints/
+
+# local review / scratch notes
+REVIEW-*.md

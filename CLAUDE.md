@@ -6,6 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `cah` (cc-arch-hands) — a Node.js CLI that installs/removes/inspects Claude Code per-model slash-commands, sub-agents, and skills under `~/.claude/` (global) or `<cwd>/.claude/` (local). Zero runtime dependencies — only Node.js built-ins (`node:fs`, `node:path`, `node:os`, `node:util`, `node:test`).
 
+The npm package also ships **four bins** on PATH: `cah` (the main CLI, also aliased as `cc-arch-hands`), `cah-checkpoint-hint` (Stop hook used by `/checkpoint-watch`), `cah-status` (statusLine command used by `/clock`), and `cah-stamp` (Stop hook used by `/clock` for the chat audit trail).
+
 ## Build & test
 
 ```bash
@@ -33,20 +35,27 @@ The codebase has two layers: a thin CLI (`lib/cli.js`) that does arg parsing and
 
 **Templates.** `lib/templates.js` resolves skill trees from either the bundled `templates/` directory (relative to package root via `import.meta.url`) or from an arbitrary disk path via `--templates <dir>`.
 
+**Companion bins.** Three skills ship a companion bin used as the Stop hook or statusLine command in user `settings.json`: `/checkpoint-watch` → `cah-checkpoint-hint`, `/clock` → `cah-status` (statusLine) + `cah-stamp` (Stop hook). All three bins share `lib/transcript-stats.js` for transcript JSONL walking, cache-aware token sum (`input_tokens + cache_creation_input_tokens + cache_read_input_tokens`), model→limit mapping, and the `HH:MM · model · X% (Nk/Mk)` formatter. **Don't recompute these values inline in any new bin — extend `transcript-stats.js`.**
+
 ## Key files
 
 | File | Role |
 |---|---|
-| `bin/cah.js` | Entry point (`#!/usr/bin/env node`) |
+| `bin/cah.js` | Main CLI entry point (`#!/usr/bin/env node`) |
+| `bin/cah-checkpoint-hint.js` | Stop hook bin: one-shot 90% hint via systemMessage |
+| `bin/cah-status.js` | statusLine bin: renders rich JSON envelope to one line |
+| `bin/cah-stamp.js` | Stop hook bin: per-turn audit-trail systemMessage |
 | `lib/cli.js` | CLI dispatch, arg parsing (`node:util parseArgs`), presentation |
 | `lib/manifest.js` | `AllModelCommands` registry (35 entries) + `AllSkills` list |
 | `lib/sentinel.js` | Sentinel constants, `classifyContent`, `isOurs` |
 | `lib/scope.js` | `Scope` class, `resolve*Dir()`, strict-mode guard |
 | `lib/templates.js` | Bundled / disk template abstraction, `skillTree` walker |
+| `lib/fsutil.js` | `readFileMaybe` + `pruneOrphans` + `pruneOrphanDirs` helpers |
+| `lib/transcript-stats.js` | Shared transcript walker + status-line formatter for all hook bins |
 | `lib/commands.js` | `writeModelCommands` / `removeModelCommands` |
 | `lib/agents.js` | `writeModelAgents` / `removeModelAgents`, git-safety & test-scope clauses |
 | `lib/skills.js` | `writeSkills` / `removeSkills` (wipe-and-reinstall on upgrade) |
-| `test/installer.test.js` | Full test suite (`node:test` + `node:assert/strict`) |
+| `test/*.test.js` | Full test suite (`node:test` + `node:assert/strict`) — installer, cli, checkpoint-hint, clock, stamp, transcript-stats |
 
 ## Conventions
 

@@ -12,8 +12,28 @@ npx cc-arch-hands install        # that's it — installs commands, agents & ski
 
 ## What it installs
 
-Three kinds of Claude Code artifacts, all generated from a single model
-registry so they stay in lockstep.
+Three kinds of Claude Code artifacts under `~/.claude/` (commands, agents,
+skills), all generated from a single model registry so they stay in
+lockstep — plus four small companion bins on your PATH (via `npm install
+-g`) that some skills use as hooks or statusLine commands.
+
+The artifacts:
+- **per-model slash-commands** (35) under `~/.claude/commands/`,
+- **per-model sub-agents** (35) under `~/.claude/agents/`,
+- **skills** (10) under `~/.claude/skills/`.
+
+The companion bins:
+- **`cah`** (and its alias `cc-arch-hands`) — the installer CLI itself.
+- **`cah-checkpoint-hint`** — Stop hook bin invoked by `/checkpoint-watch`. Emits one `[hint] Context at 90%…` per session when context fills past 90%.
+- **`cah-status`** — statusLine command invoked by `/clock`. Renders `HH:MM · model · X% (Nk/Mk)` at the bottom of the terminal once per second.
+- **`cah-stamp`** — Stop hook bin invoked by `/clock`. Emits the same `HH:MM · model · X%` line as a `systemMessage` after each assistant turn, giving the chat a timestamped audit trail.
+
+All three hook bins share `lib/transcript-stats.js` for transcript
+parsing — including the **cache-aware** token sum (`input_tokens +
+cache_creation_input_tokens + cache_read_input_tokens`) that matches
+Claude Code's own `used_percentage` formula. Without this, raw
+`input_tokens` after the first turn is ~1 token (everything else is
+served from the prompt cache) and a naive percentage would always read 0%.
 
 ### 1. Per-model slash-commands (35)
 
