@@ -2,17 +2,24 @@
 // cah-status — Claude Code statusLine bin.
 //
 // Reads a JSON envelope from stdin (Claude Code statusLine protocol),
-// then emits a single line:  HH:MM · <display_name> · X% (Nk/Mk)
+// then emits a single line:  <display_name> · X% (Nk/Mk)
 // Falls back gracefully: if context_window is null → omit the usage part;
-// if model is missing → omit it too; on any error → just HH:MM.
-// Never crashes, never blanks, always exits 0.
+// if model is missing → output a single dash; on any error → "—".
+//
+// Time intentionally NOT included: a per-second tick is incompatible
+// with Node cold-start on Windows (1–3s), which causes the harness to
+// cancel in-flight scripts and the status bar to disappear. The chat
+// audit-trail Stop hook (cah-stamp) carries the timestamp instead.
+//
+// Never crashes, never produces empty stdout (the harness would blank
+// the bar), always exits 0.
 
 import { readFileSync } from 'node:fs';
-import { currentHhMm, formatStatusLine } from '../lib/transcript-stats.js';
+import { formatStatusLine } from '../lib/transcript-stats.js';
+
+const FALLBACK = '—';
 
 function buildLine(data) {
-  const time = currentHhMm();
-
   let displayName = null;
   try {
     displayName = data && data.model && data.model.display_name || null;
@@ -32,7 +39,9 @@ function buildLine(data) {
     // ignore
   }
 
-  return formatStatusLine({ time, displayName, usedTokens, limit });
+  // Reuse the shared formatter with time omitted (it's tolerant of null time).
+  const line = formatStatusLine({ time: null, displayName, usedTokens, limit });
+  return line || FALLBACK;
 }
 
 function main() {
@@ -48,7 +57,7 @@ function main() {
     try {
       data = JSON.parse(raw);
     } catch {
-      // malformed — fall back to clock only
+      // malformed — fall through with no data
     }
   }
 
@@ -59,9 +68,8 @@ function main() {
 try {
   main();
 } catch {
-  // last-resort fallback
   try {
-    process.stdout.write(currentHhMm() + '\n');
+    process.stdout.write(FALLBACK + '\n');
   } catch {
     /* ignore */
   }

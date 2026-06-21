@@ -1,21 +1,26 @@
 ---
 name: clock
-description: "Install a Claude Code statusLine that shows current time, model, and context-window usage at the bottom of the terminal (HH:MM · model · X% (Nk/Mk)), AND a Stop hook that emits the same line as a systemMessage after each assistant turn for a timestamped chat audit trail. Refreshes every second. Does not consume LLM context. Default global (~/.claude/settings.json); pass `--here` for project-local."
+description: "Install a Claude Code statusLine that shows model + context-window usage at the bottom of the terminal (`<model> · X% (Nk/Mk)`), AND a Stop hook that emits an `HH:MM · model · X%` line as a systemMessage after each assistant turn for a timestamped chat audit trail. The statusLine refreshes on turn boundaries — no refreshInterval, to dodge Node cold-start races (the bin needs 1–3s on Windows, faster ticks just cancel each other and the bar blanks). Does not consume LLM context. Default global (~/.claude/settings.json); pass `--here` for project-local."
 ---
 
 # clock
 
 Install (or remove, or inspect) two Claude Code settings entries:
 
-1. A **`statusLine`** entry at the bottom of the terminal showing the current
-   time, active model, and context-window usage. Refreshes every second via a
-   separate process — never adds a token to the LLM context.
+1. A **`statusLine`** entry at the bottom of the terminal showing the active
+   model and context-window usage (`<model> · X% (Nk/Mk)`). Refreshes on each
+   assistant turn boundary — no `refreshInterval` is set. On Windows the
+   Node cold-start cost (1–3s) is longer than any sub-second tick, so a tighter
+   refresh just causes the harness to cancel in-flight scripts and the bar
+   intermittently disappears. The clock face was dropped from this line for
+   the same reason — the chat audit-trail Stop hook (`cah-stamp`) carries
+   the timestamp instead.
 
 2. A **Stop hook** (`cah-stamp`) that runs after each assistant turn and emits
-   the same `HH:MM · model · X%` line as a `systemMessage` into the chat
-   scrollback. This gives you a timestamped audit trail: going back through
-   the conversation you can see when each exchange happened and what the
-   context state was at that moment.
+   an `HH:MM · model · X%` line as a `systemMessage` into the chat scrollback.
+   This gives you a timestamped audit trail: going back through the conversation
+   you can see when each exchange happened and what the context state was at
+   that moment.
 
 ## When to use
 
@@ -51,11 +56,12 @@ Install (or remove, or inspect) two Claude Code settings entries:
   "type": "command",
   "command": "cah-status",
   "padding": 0,
-  "refreshInterval": 1,
   "cah-sentinel": "cah-status:v1",
   "cah-name": "clock"
 }
 ```
+
+Note: **do NOT add `refreshInterval`**. A sub-second tick races with Node cold-start on Windows and causes the bar to disappear. Event-driven refresh (the default) is fine — the bar updates on each turn boundary, which is what you read it on anyway.
 
 **Stop hook entry** (ownership sentinel: `cah-sentinel: "cah-hook:v1"`, `cah-name: "clock"`),
 appended to `hooks.Stop` as a new matcher object:

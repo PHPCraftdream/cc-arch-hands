@@ -15,8 +15,6 @@ function run(stdinData) {
   return { stdout: res.stdout.trimEnd(), status: res.status };
 }
 
-const TIME_RE = /^\d{2}:\d{2}/;
-
 function makePayload(overrides = {}) {
   return {
     hook_event_name: 'Status',
@@ -34,14 +32,14 @@ function makePayload(overrides = {}) {
 }
 
 describe('cah-status bin', () => {
-  it('full payload (Opus 4.8, 67%, 670k/1M) → correct format', () => {
+  it('full payload → "<model> · X% (Nk/Mk)" with no clock', () => {
     const { stdout, status } = run(makePayload());
     assert.equal(status, 0);
-    assert.match(stdout, TIME_RE);
-    assert.match(stdout, /· Opus 4\.8 · 67% \(670k\/1M\)$/);
+    assert.equal(stdout, 'Opus 4.8 · 67% (670k/1M)');
+    assert.ok(!/^\d{2}:\d{2}/.test(stdout), 'must NOT start with HH:MM — clock was dropped to dodge Windows cold-start race');
   });
 
-  it('Sonnet 200K (Sonnet 4.6, 92%, 184k/200k) → correct format', () => {
+  it('Sonnet 200K → correct format without clock', () => {
     const { stdout, status } = run(
       makePayload({
         model: { id: 'claude-sonnet-4-6', display_name: 'Sonnet 4.6' },
@@ -55,37 +53,31 @@ describe('cah-status bin', () => {
       }),
     );
     assert.equal(status, 0);
-    assert.match(stdout, TIME_RE);
-    assert.match(stdout, /· Sonnet 4\.6 · 92% \(184k\/200k\)$/);
+    assert.equal(stdout, 'Sonnet 4.6 · 92% (184k/200k)');
   });
 
-  it('context_window: null → only HH:MM · model', () => {
+  it('context_window: null → only model name', () => {
     const { stdout, status } = run(makePayload({ context_window: null }));
     assert.equal(status, 0);
-    assert.match(stdout, TIME_RE);
-    assert.match(stdout, /· Opus 4\.8$/);
-    assert.ok(!stdout.includes('%'), 'should not include percentage');
+    assert.equal(stdout, 'Opus 4.8');
   });
 
-  it('missing model entirely → only HH:MM', () => {
+  it('missing model entirely → fallback dash', () => {
     const { stdout, status } = run({ hook_event_name: 'Status', context_window: null });
     assert.equal(status, 0);
-    assert.match(stdout, TIME_RE);
-    assert.ok(!stdout.includes('·'), 'should not include separator');
+    assert.equal(stdout, '—', 'never produce empty stdout — harness would blank the statusbar');
   });
 
-  it('empty stdin → only HH:MM', () => {
+  it('empty stdin → fallback dash', () => {
     const { stdout, status } = run('');
     assert.equal(status, 0);
-    assert.match(stdout, TIME_RE);
-    assert.ok(!stdout.includes('·'), 'should not include separator');
+    assert.equal(stdout, '—');
   });
 
-  it('malformed JSON stdin → only HH:MM', () => {
+  it('malformed JSON stdin → fallback dash', () => {
     const { stdout, status } = run('{not valid json');
     assert.equal(status, 0);
-    assert.match(stdout, TIME_RE);
-    assert.ok(!stdout.includes('·'), 'should not include separator');
+    assert.equal(stdout, '—');
   });
 
   it('display_name "Claude Opus 4.6" → trimmed to "Opus 4.6"', () => {
@@ -93,7 +85,7 @@ describe('cah-status bin', () => {
       makePayload({ model: { id: 'claude-opus-4-6', display_name: 'Claude Opus 4.6' } }),
     );
     assert.equal(status, 0);
-    assert.match(stdout, /· Opus 4\.6 ·/);
+    assert.match(stdout, /^Opus 4\.6 ·/);
     assert.ok(!stdout.includes('Claude Opus'), 'should not contain "Claude Opus"');
   });
 
