@@ -100,8 +100,8 @@ Reusable capability packs Claude Code loads on demand. Each is invoked as
 | Skill | Purpose |
 |---|---|
 | `/task` | Analyze a free-form request, decompose it into prioritized sub-tasks with dependencies, and register them in the session via TaskCreate. Plans only — does not execute. Usage: `/task <description>`. |
-| `/babygoal` | Decompose a goal into tasks, immediately start executing them, and invoke `/babysit` to monitor progress. At the end, prints a copy-paste `/goal` line so you can optionally set a Stop-hook guard. Usage: `/babygoal [interval] <goal>`. |
-| `/babysit` | Start a `/loop` (default `15m`) that detects when a goal stalled — network error, API timeout, missed continuation — and resumes work automatically. Usage: `/babysit [interval]`. |
+| `/babygoal` | Investigate the problem domain first (skipped if already covered by the session — uses `/repo-sight` or focused reads when needed), choose an execution strategy, decompose the work into tasks via TaskCreate with the strategy and key findings recorded in each `description`, mark the first ready task `in_progress`, and hand off to `/babysit`. TaskList-driven — does NOT use `/goal`. Usage: `/babygoal [interval] <description>`. |
+| `/babysit` | Start a `/loop` (default `15m`) that monitors the TaskList: resumes stalled `in_progress` tasks, picks the next ready `pending` when nothing is in flight, and stops itself when the list has no open tasks. Usage: `/babysit [interval]`. |
 
 **Session memory**
 
@@ -139,6 +139,12 @@ switches, and long pauses. The flow:
 
 What goes into a checkpoint:
 
+- **Session summary** — a 5–15 sentence narrative recap in the agent's
+  own words: what's being worked on, what's done, what's in flight,
+  what hypotheses are alive, what files/URLs were inspected, what
+  timers are running. **This is the part that survives auto-compact** —
+  the structured fields below stay accurate by themselves, but
+  qualitative context only survives if it's written down here.
 - **Active goal** — the current `/goal` Stop-hook condition, verbatim.
 - **TaskList snapshot** — every task with `id`, `status`, `subject`,
   `blockedBy`, grouped by status.

@@ -20,6 +20,7 @@ A name is a first-class identifier — `/resume pre-refactor` will find it. Re-r
 
 1. **Resolve the target path.** Use `<repo-root>/docs/checkpoints/` if a `.git` directory is found in the current working directory or any parent; otherwise fall back to `~/.claude/checkpoints/`. Filename: `<name>.md` if a name was provided, else `YYYY-MM-DD-HHMM.md`.
 2. **Collect state.** Gather these, each only if present (omit silently otherwise):
+   - **Session summary.** A 5–15 sentence narrative recap of the session in the agent's own words: what the user is working on, what's been done so far, what's currently in flight, what working hypotheses are alive, which files/URLs were inspected, what /loop or /babysit timers are active. This is the section that survives auto-compact — write it so a stranger (or a future you with no memory of this chat) can pick up the thread. Honesty over polish: if something is uncertain, say "unclear" rather than smoothing it over.
    - **Active goal.** If a `/goal` Stop hook is in force in the session, copy its condition text verbatim.
    - **TaskList snapshot.** Call TaskList and record every task: `id`, `status`, `subject`, `blockedBy`. Group by status: in_progress first, then pending, then completed (most recent 10), then any deleted shown only as a count.
    - **Decision log.** Up to 5 recent material decisions visible in conversation context — *what was chosen* and *what was rejected*. Skip if none are clearly identifiable rather than inventing them.
@@ -29,6 +30,9 @@ A name is a first-class identifier — `/resume pre-refactor` will find it. Re-r
 
    ```markdown
    # Checkpoint — <YYYY-MM-DD HH:MM> [<label>]
+
+   ## Session summary
+   <5–15 sentence narrative — see step 2 for what to cover>
 
    ## Active goal
    <goal text or "none">

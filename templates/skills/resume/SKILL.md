@@ -25,13 +25,14 @@ The other half of `/checkpoint`. Reads a saved snapshot of session state and res
    - Otherwise prefix match against filenames. **If multiple files match**, list them and ask the user to disambiguate — do not silently pick.
    - If nothing matches: say so and stop. Do not invent state.
 4. **Read and parse.** Read the markdown sections produced by `/checkpoint`. Be lenient — sections may have moved or been hand-edited.
-5. **Restore TaskList.** For each task in the snapshot:
+5. **Print the Session summary first.** Output the contents of the `Session summary` section verbatim as the leading block of the response. This is what re-establishes context after auto-compact or a new session — surface it before doing anything else.
+6. **Restore TaskList.** For each task in the snapshot:
    - Call TaskCreate with the original `subject` and `description` (description may be inferred from `subject` if missing).
    - After all tasks are created, walk the new IDs and call TaskUpdate to set `blockedBy` per the snapshot. Note: IDs WILL differ from the snapshot; re-derive them by `subject` match.
    - Skip tasks whose status was `completed` or `deleted` in the snapshot — they don't need to come back.
-6. **Restate the goal.** If the snapshot had an active goal, print it back and instruct the user how to re-arm the Stop hook: a fenced `/goal <text>` block they can copy-paste.
-7. **Surface open questions.** Print them as a bullet list. These are likely the first things the user needs to answer before work continues.
-8. **Print decisions.** As a short "context recap" so the agent (and the user) re-anchor on what was chosen and why.
+7. **Restate the goal.** If the snapshot had an active goal, print it back and instruct the user how to re-arm the Stop hook: a fenced `/goal <text>` block they can copy-paste.
+8. **Surface open questions.** Print them as a bullet list. These are likely the first things the user needs to answer before work continues.
+9. **Print decisions.** As a short "context recap" so the agent (and the user) re-anchor on what was chosen and why.
 
 ## Important
 
