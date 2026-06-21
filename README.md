@@ -82,7 +82,7 @@ inside Claude Code, so identical names do not collide.
 35 commands, 35 agents — one line per row-cell in
 [`lib/manifest.js`](lib/manifest.js).
 
-### 3. Skills (8)
+### 3. Skills (10)
 
 Reusable capability packs Claude Code loads on demand. Each is invoked as
 `/skill-name` from a chat. Grouped by purpose:
@@ -109,6 +109,13 @@ Reusable capability packs Claude Code loads on demand. Each is invoked as
 | `/resume` | Reload a checkpoint, rebuild the TaskList via TaskCreate, restate the goal as a copy-paste line, surface open questions. Usage: `/resume` (most recent), `/resume <name>` (exact or prefix), `/resume --list` (browse without restoring). |
 | `/checkpoint-prune` | Delete checkpoints. Arg auto-detected: `<name>` (one file), `14d`/`48h` (older than), bare number (keep last N), no arg (all). Confirms before batch deletes; `--dry` reports only. Usage: `/checkpoint-prune`, `/checkpoint-prune 14d`, `/checkpoint-prune 10`, `/checkpoint-prune <name>`. |
 | `/triage` | TaskList hygiene — flag stale `in_progress`, orphan blockers, dead-end chains, trivial sibling clusters, completed clutter, duplicate subjects. Advisory by default; asks before mutating. Usage: `/triage` or `/triage --dry`. |
+| `/checkpoint-watch` | Per-project Stop hook that shows a one-time `[hint]` when context hits 90%, suggesting `/checkpoint`. `/checkpoint-watch --off` to remove, `--status` to inspect. |
+
+**Workspace HUD**
+
+| Skill | Purpose |
+|---|---|
+| `/clock` | Per-scope Claude Code statusLine showing `HH:MM · model · X% (Nk/Mk)` at the bottom of the terminal. Refreshes every second. Does not consume LLM context. Usage: `/clock` (global), `/clock --here` (project-local), `/clock --off`, `/clock --status`. |
 
 #### Session memory in detail
 
@@ -155,6 +162,18 @@ Empty sections stay empty with a one-line reason — the skill never
 invents content to look complete. Checkpoints are not added to git
 automatically; that decision stays with you.
 
+`cah` also installs `/checkpoint-watch` globally, but invoking it in a project
+writes a Stop hook into *that project's* `.claude/settings.json` (never the
+global one). On each turn the hook reads the session transcript, takes the
+latest assistant message's `usage.input_tokens`, and compares it to the model's
+context limit (1M for Opus/Fable, 200K for Sonnet/Haiku). When usage first
+crosses 90% it emits a single `systemMessage` — a plain-ASCII `[hint]` line
+suggesting `/checkpoint` — and records a per-session marker so it never fires
+twice. The 90% threshold is a soft suggestion, not a forced action: the agent
+keeps working and you decide when to actually checkpoint. Foreign hooks in
+`settings.json` are never touched; `/checkpoint-watch --off` removes only our
+sentinel-tagged entry.
+
 What `/resume` does:
 
 1. Locates the checkpoint directory (repo-local first, `~/.claude/` fallback).
@@ -174,7 +193,7 @@ What `/resume` does:
 |---|---|---|
 | Slash-commands | 35 | `<scope>/.claude/commands/<name>.md` |
 | Sub-agents | 35 | `<scope>/.claude/agents/<name>.md` |
-| Skills | 8 | `<scope>/.claude/skills/<name>/` |
+| Skills | 10 | `<scope>/.claude/skills/<name>/` |
 
 `<scope>` is `~/` by default (global install). Use `--local` or `--cwd`
 to target a specific project directory instead.
@@ -300,9 +319,11 @@ installs nor removes `/crush`. That's still owned by the crush fork's
 ```
 cc-arch-hands/
 ├── bin/cah.js                   # CLI entry point (#!/usr/bin/env node)
+├── bin/cah-checkpoint-hint.js   # Stop-hook bin: emits the 90% [hint] (#!/usr/bin/env node)
+├── bin/cah-status.js            # statusLine bin: emits HH:MM · model · X% (#!/usr/bin/env node)
 ├── lib/
 │   ├── cli.js                   # dispatch, arg parsing (node:util parseArgs)
-│   ├── manifest.js              # AllModelCommands (35 entries) + AllSkills (8)
+│   ├── manifest.js              # AllModelCommands (35 entries) + AllSkills (10)
 │   ├── sentinel.js              # new + legacy markers, ownership classifier
 │   ├── scope.js                 # global vs local target dir resolution
 │   ├── templates.js             # bundled / disk template abstraction
@@ -312,7 +333,8 @@ cc-arch-hands/
 │   └── skills.js                # mirror templates/skills/<n>/ tree
 ├── templates/
 │   └── skills/                  # repo-sight, task, babygoal, babysit,
-│       └── <name>/SKILL.md      # checkpoint, resume, checkpoint-prune, triage
+│       └── <name>/SKILL.md      # checkpoint, resume, checkpoint-prune, triage,
+│                                # checkpoint-watch, clock
 ├── test/
 │   ├── installer.test.js        # installer tests (node:test + node:assert)
 │   └── cli.test.js              # CLI layer tests (scope, parseOnly, dispatch)
