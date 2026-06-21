@@ -38,7 +38,15 @@
     "installer",
     "slash-commands",
     "agents",
-    "skills"
+    "skills",
+    "hooks",
+    "statusline",
+    "checkpoint",
+    "task-list",
+    "babysit",
+    "cli",
+    "developer-tools",
+    "nodejs"
   ],
   "author": "Marat K <phpcraftdream@gmail.com>",
   "license": "(MIT OR Apache-2.0)"
