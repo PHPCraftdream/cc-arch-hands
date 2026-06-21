@@ -1,5 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 import { run, resolveScope, parseOnly } from '../lib/cli.js';
 import { Scope } from '../lib/scope.js';
@@ -106,5 +109,11 @@ describe('run', () => {
 
   it('version returns 0', () => {
     assert.equal(run(['version']), 0);
+  });
+
+  it('reinstall against a fresh --cwd is uninstall (no-op) then install', () => {
+    // End-to-end sanity: dispatch is wired and the command exits cleanly.
+    const dir = mkdtempSync(join(tmpdir(), 'cah-reinstall-'));
+    assert.equal(run(['reinstall', '--cwd', dir, '--only', 'commands']), 0);
   });
 });

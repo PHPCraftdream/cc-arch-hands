@@ -35,18 +35,25 @@ Whatever you type after the command becomes the prompt for that turn.
 
 ### 2. Per-model sub-agents (35)
 
-The same matrix as `a<name>` (`aoh`, `ao47x`, `afxx`, …) — but as
-**delegated sub-agents** instead of inline commands. Use them to hand a
-self-contained task to a fresh context window on a chosen model/effort; it
-runs autonomously and returns only the result. Each agent body carries two
-hardcoded safety clauses: a **git-safety** rule (no mutating git commands
-in a shared worktree) and a **test-scope** rule (run only scoped tests, not
-the whole suite).
+The same matrix as the commands — but as **delegated sub-agents** instead
+of inline commands. Use them to hand a self-contained task to a fresh
+context window on a chosen model/effort; the agent runs autonomously and
+returns only the result. Each agent body carries two hardcoded safety
+clauses: a **git-safety** rule (no mutating git commands in a shared
+worktree) and a **test-scope** rule (run only scoped tests, not the whole
+suite).
+
+**v0.2.0 dropped the `a` prefix on agent names.** Old `aoh`, `ao47x`,
+`afxx` are now plain `oh`, `o47x`, `fxx` — the same string as the command
+and the model selector. Slash commands and the `Agent` tool use separate
+lookup tables, so there is no namespace collision. Upgrade is automatic:
+`cah install` 0.2.0 deletes the old `a*.md` files (sentinel-gated) and
+writes the new ones; `cah uninstall` cleans both layouts.
 
 ### Naming matrix
 
-Command name = **model letter** (+ version) + **effort suffix**. The agent
-name is just the command name with an `a` prefix. Effort suffixes:
+Command name = **model letter** (+ version) + **effort suffix**. The
+agent name is the same string (no prefix). Effort suffixes:
 `l` low · `m` medium · `h` high · `x` xhigh · `xx` max.
 
 Rows are sorted by tier (strongest first). Bold rows are **top** shortcuts
@@ -67,19 +74,10 @@ you don't care about pinning an exact version.
 | **Haiku** (top) | `claude-haiku-4-5` | `/hl` | `/hm` | `/hh` | — | — |
 | Haiku 4.5 | `claude-haiku-4-5` | `/h45l` | `/h45m` | `/h45h` | — | — |
 
-**Sub-agents** (same matrix, `a` prefix)
-
-| Model | model id | low | medium | high | xhigh | max |
-|---|---|---|---|---|---|---|
-| **Fable** (top) | `claude-fable-5` | `afl` | `afm` | `afh` | `afx` | `afxx` |
-| **Opus** (top) | `claude-opus-4-8` | `aol` | `aom` | `aoh` | `aox` | `aoxx` |
-| Opus 4.7 | `claude-opus-4-7` | `ao47l` | `ao47m` | `ao47h` | `ao47x` | `ao47xx` |
-| Opus 4.6 | `claude-opus-4-6` | `ao46l` | `ao46m` | `ao46h` | `ao46x` | `ao46xx` |
-| **Sonnet** (top) | `claude-sonnet-4-6` | `asl` | `asm` | `ash` | — | — |
-| Sonnet 4.6 | `claude-sonnet-4-6` | `as46l` | `as46m` | `as46h` | — | — |
-| Sonnet 4.5 | `claude-sonnet-4-5` | `as45l` | `as45m` | `as45h` | — | — |
-| **Haiku** (top) | `claude-haiku-4-5` | `ahl` | `ahm` | `ahh` | — | — |
-| Haiku 4.5 | `claude-haiku-4-5` | `ah45l` | `ah45m` | `ah45h` | — | — |
+**Sub-agents** share the same names as the commands above. `/oh` is the
+slash-command body; `oh` (no prefix) is the agent invoked by the `Agent`
+tool with `subagent_type: "oh"`. The two live in separate lookup tables
+inside Claude Code, so identical names do not collide.
 
 35 commands, 35 agents — one line per row-cell in
 [`lib/manifest.js`](lib/manifest.js).
@@ -175,7 +173,7 @@ What `/resume` does:
 | Artifact | Count | Destination |
 |---|---|---|
 | Slash-commands | 35 | `<scope>/.claude/commands/<name>.md` |
-| Sub-agents | 35 | `<scope>/.claude/agents/a<name>.md` |
+| Sub-agents | 35 | `<scope>/.claude/agents/<name>.md` |
 | Skills | 8 | `<scope>/.claude/skills/<name>/` |
 
 `<scope>` is `~/` by default (global install). Use `--local` or `--cwd`
@@ -310,7 +308,7 @@ cc-arch-hands/
 │   ├── templates.js             # bundled / disk template abstraction
 │   ├── fsutil.js                # readFileMaybe + orphan-prune helpers
 │   ├── commands.js              # render + install + remove (35 .md files)
-│   ├── agents.js                # render + install + remove (35 a*.md files)
+│   ├── agents.js                # render + install + remove (35 .md files)
 │   └── skills.js                # mirror templates/skills/<n>/ tree
 ├── templates/
 │   └── skills/                  # repo-sight, task, babygoal, babysit,

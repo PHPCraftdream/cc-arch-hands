@@ -206,7 +206,7 @@ describe('removeModelCommands', () => {
 // ---------------------------------------------------------------------------
 
 describe('writeModelAgents', () => {
-  it('empty dir installs all', () => {
+  it('empty dir installs all without an a-prefix', () => {
     const dir = tmpDir();
     const scope = new Scope({ cwd: dir });
     const { written, skipped } = writeModelAgents(null, scope);
@@ -216,30 +216,14 @@ describe('writeModelAgents', () => {
 
     const agentsDir = join(dir, '.claude', 'agents');
     for (const mc of AllModelCommands) {
-      const data = readFileSync(join(agentsDir, `a${mc.name}.md`), 'utf8');
-      assert.ok(data.includes(`name: a${mc.name}`));
+      const data = readFileSync(join(agentsDir, `${mc.name}.md`), 'utf8');
+      assert.ok(data.includes(`name: ${mc.name}`));
+      assert.ok(!data.includes(`name: a${mc.name}`), `agent ${mc.name} must not carry legacy a-prefix in frontmatter`);
       assert.ok(data.includes(`model: ${mc.model}`));
       assert.ok(data.includes('Git safety'));
       assert.ok(data.includes('Test scope'));
       assert.ok(data.endsWith(`${SentinelModelAgent}\n`), `agent ${mc.name} must end with sentinel`);
     }
-  });
-
-  it('legacy is migrated', () => {
-    const dir = tmpDir();
-    const scope = new Scope({ cwd: dir });
-    const agentsDir = join(dir, '.claude', 'agents');
-    mkdirSync(agentsDir, { recursive: true });
-
-    const legacyPath = join(agentsDir, 'ao47h.md');
-    writeFileSync(legacyPath, `old\n${LegacyModelAgent}\n`);
-
-    const { skipped } = writeModelAgents(null, scope);
-    assert.deepEqual(skipped, []);
-
-    const data = readFileSync(legacyPath, 'utf8');
-    assert.ok(data.includes(SentinelModelAgent));
-    assert.ok(!data.includes(LegacyModelAgent));
   });
 
   it('foreign is preserved and skipped', () => {
@@ -248,7 +232,7 @@ describe('writeModelAgents', () => {
     const agentsDir = join(dir, '.claude', 'agents');
     mkdirSync(agentsDir, { recursive: true });
 
-    const foreignPath = join(agentsDir, 'ao47h.md');
+    const foreignPath = join(agentsDir, 'o47h.md');
     const foreignBody = "someone else's agent";
     writeFileSync(foreignPath, foreignBody);
 
@@ -264,9 +248,9 @@ describe('writeModelAgents', () => {
     const agentsDir = join(dir, '.claude', 'agents');
     mkdirSync(agentsDir, { recursive: true });
 
-    const orphanMine = join(agentsDir, 'aoldname.md');
+    const orphanMine = join(agentsDir, 'oldname.md');
     writeFileSync(orphanMine, `dropped\n${SentinelModelAgent}\n`);
-    const orphanLegacy = join(agentsDir, 'aoldlegacy.md');
+    const orphanLegacy = join(agentsDir, 'oldlegacy.md');
     writeFileSync(orphanLegacy, `dropped legacy\n${LegacyModelAgent}\n`);
     const orphanForeign = join(agentsDir, 'someone-else.md');
     writeFileSync(orphanForeign, 'not yours');
@@ -279,6 +263,34 @@ describe('writeModelAgents', () => {
     assert.throws(() => statSync(orphanMine), { code: 'ENOENT' });
     assert.throws(() => statSync(orphanLegacy), { code: 'ENOENT' });
     assert.equal(readFileSync(orphanForeign, 'utf8'), 'not yours');
+  });
+
+  it('migrates legacy a-prefixed agents from pre-0.2.0 installs', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const agentsDir = join(dir, '.claude', 'agents');
+    mkdirSync(agentsDir, { recursive: true });
+
+    // Pre-0.2.0 layout: agent file lives at agents/ao47h.md, stamped with our sentinel.
+    const legacyPath = join(agentsDir, 'ao47h.md');
+    writeFileSync(legacyPath, `old aoh body\n${SentinelModelAgent}\n`);
+    // Also an a-prefixed file with the truly-legacy crush sentinel.
+    const crushLegacyPath = join(agentsDir, 'ao47m.md');
+    writeFileSync(crushLegacyPath, `old crush body\n${LegacyModelAgent}\n`);
+
+    const { written, skipped, pruned } = writeModelAgents(null, scope);
+    assert.equal(written, AllModelCommands.length);
+    assert.deepEqual(skipped, []);
+    assert.equal(pruned, 2, 'both a-prefixed files swept');
+
+    assert.throws(() => statSync(legacyPath), { code: 'ENOENT' });
+    assert.throws(() => statSync(crushLegacyPath), { code: 'ENOENT' });
+
+    // New files at the unprefixed paths.
+    const newO47h = readFileSync(join(agentsDir, 'o47h.md'), 'utf8');
+    assert.ok(newO47h.includes('name: o47h'));
+    const newO47m = readFileSync(join(agentsDir, 'o47m.md'), 'utf8');
+    assert.ok(newO47m.includes('name: o47m'));
   });
 });
 
@@ -300,17 +312,17 @@ describe('removeModelAgents', () => {
     assert.equal(readdirSync(agentsDir).length, 0);
   });
 
-  it('mixed mine legacy foreign missing', () => {
+  it('mixed mine legacy foreign missing at new (unprefixed) paths', () => {
     const dir = tmpDir();
     const scope = new Scope({ cwd: dir });
     const agentsDir = join(dir, '.claude', 'agents');
     mkdirSync(agentsDir, { recursive: true });
 
-    const minePath = join(agentsDir, 'ao47h.md');
+    const minePath = join(agentsDir, 'o47h.md');
     writeFileSync(minePath, `x\n${SentinelModelAgent}\n`);
-    const legacyPath = join(agentsDir, 'ao47m.md');
+    const legacyPath = join(agentsDir, 'o47m.md');
     writeFileSync(legacyPath, `y\n${LegacyModelAgent}\n`);
-    const foreignPath = join(agentsDir, 'ao47l.md');
+    const foreignPath = join(agentsDir, 'o47l.md');
     const foreignBody = 'not yours';
     writeFileSync(foreignPath, foreignBody);
 
@@ -318,6 +330,30 @@ describe('removeModelAgents', () => {
     assert.equal(removed, 2);
     assert.deepEqual(skipped, [foreignPath]);
     assert.equal(readFileSync(foreignPath, 'utf8'), foreignBody);
+  });
+
+  it('removes a-prefixed legacy files from pre-0.2.0 installs', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const agentsDir = join(dir, '.claude', 'agents');
+    mkdirSync(agentsDir, { recursive: true });
+
+    // Pre-0.2.0 file at agents/aoh.md with our sentinel.
+    const legacyMine = join(agentsDir, 'aoh.md');
+    writeFileSync(legacyMine, `legacy\n${SentinelModelAgent}\n`);
+    // Pre-0.2.0 file at agents/ao47m.md with the crush-era sentinel.
+    const legacyCrush = join(agentsDir, 'ao47m.md');
+    writeFileSync(legacyCrush, `crush legacy\n${LegacyModelAgent}\n`);
+    // Foreign a-prefixed file — must not be touched.
+    const foreignA = join(agentsDir, 'ao47l.md');
+    writeFileSync(foreignA, 'someone else');
+
+    const { removed, skipped } = removeModelAgents(scope);
+    assert.equal(removed, 2);
+    assert.deepEqual(skipped, [foreignA]);
+    assert.throws(() => statSync(legacyMine), { code: 'ENOENT' });
+    assert.throws(() => statSync(legacyCrush), { code: 'ENOENT' });
+    assert.equal(readFileSync(foreignA, 'utf8'), 'someone else');
   });
 });
 
