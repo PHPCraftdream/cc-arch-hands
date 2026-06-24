@@ -29,13 +29,15 @@ The codebase has two layers: a thin CLI (`lib/cli.js`) that does arg parsing and
 
 **Skills are static trees.** Each skill is a directory under `templates/skills/<name>/`. The `AllSkills` array in `lib/manifest.js` is the registry. Adding a skill = drop a directory + append the name.
 
-**Sentinel-based ownership.** Every file `cah` writes carries an HTML-comment sentinel (`<!-- cah-model-command:v1 -->`, etc.). Install/uninstall/list use `string.includes()` on file content to classify files as mine/legacy/foreign/missing. Foreign files are never touched. Legacy sentinels (`<!-- crush-model-command:v1 -->`, `<!-- crush-model-agent:v1 -->`) from the crush fork are recognized and migrated on install.
+**Sentinel-based ownership.** Every file `cah` writes carries a sentinel — an HTML comment for markdown (`<!-- cah-model-command:v1 -->`, etc.) or a line comment for the copied bin files (`// cah-bin:v1`). Install/uninstall/list use `string.includes()` on file content to classify files as mine/legacy/foreign/missing. Foreign files are never touched. Legacy sentinels (`<!-- crush-model-command:v1 -->`, `<!-- crush-model-agent:v1 -->`) from the crush fork are recognized and migrated on install.
 
 **Scope resolution.** `lib/scope.js` resolves target directories. Default is `--global` (`~/.claude/`). `--local` (strict mode) refuses to create `.claude/` if it doesn't already exist. `--cwd PATH` implies local scope at that path.
 
 **Templates.** `lib/templates.js` resolves skill trees from either the bundled `templates/` directory (relative to package root via `import.meta.url`) or from an arbitrary disk path via `--templates <dir>`.
 
 **Companion bins.** Three skills ship a companion bin used as the Stop hook or statusLine command in user `settings.json`: `/checkpoint-watch` → `cah-checkpoint-hint`, `/clock` → `cah-status` (statusLine) + `cah-stamp` (Stop hook). All three bins share `lib/transcript-stats.js` for transcript JSONL walking, cache-aware token sum (`input_tokens + cache_creation_input_tokens + cache_read_input_tokens`), model→limit mapping, and the `HH:MM · model · X% (Nk/Mk)` formatter. **Don't recompute these values inline in any new bin — extend `transcript-stats.js`.**
+
+**The `bins` install class (since 0.4.0).** `cah install` copies the three companion bins **and** their lone dependency `lib/transcript-stats.js` into `~/.claude/cah-bin/`, mirroring the package's `bin/` + `lib/` layout so the bins' relative import resolves unchanged. `settings.json` then references them by absolute path (`node "<HOME>/.claude/cah-bin/bin/cah-status.js"`) instead of a bare PATH name. This decouples `/clock` and `/checkpoint-watch` from where the npm package lives — moving, relinking, or uninstalling the package no longer breaks the statusLine/hooks. Each copied file carries the `// cah-bin:v1` sentinel (rides the line after the shebang); install does a wipe-and-prune of orphans, foreign files are never touched. The bins are **always written to the global `~/.claude/cah-bin/`** regardless of scope flags (`Scope.resolveBinDir()` ignores `--local`/`--cwd`) — there is one stable copy, and even project-local `settings.json` points at it. The npm package still declares the bins in `package.json` `bin` for backward compat, but the skills no longer rely on PATH resolution. **The `/clock` and `/checkpoint-watch` SKILL.md migrate a pre-0.4.0 bare-name `command` to the absolute path on re-run.**
 
 ## Key files
 
@@ -55,7 +57,8 @@ The codebase has two layers: a thin CLI (`lib/cli.js`) that does arg parsing and
 | `lib/commands.js` | `writeModelCommands` / `removeModelCommands` |
 | `lib/agents.js` | `writeModelAgents` / `removeModelAgents`, git-safety & test-scope clauses |
 | `lib/skills.js` | `writeSkills` / `removeSkills` (wipe-and-reinstall on upgrade) |
-| `test/*.test.js` | Full test suite (`node:test` + `node:assert/strict`) — installer, cli, checkpoint-hint, clock, stamp, transcript-stats |
+| `lib/binstall.js` | `writeBins` / `removeBins` + `BinFiles` registry — copies companion bins into `~/.claude/cah-bin/` with `// cah-bin:v1` sentinel |
+| `test/*.test.js` | Full test suite (`node:test` + `node:assert/strict`) — installer, cli, binstall, checkpoint-hint, clock, stamp, transcript-stats |
 
 ## Conventions
 

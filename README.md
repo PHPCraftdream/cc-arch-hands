@@ -14,13 +14,22 @@ npx cc-arch-hands install        # that's it — installs commands, agents & ski
 
 Three kinds of Claude Code artifacts under `~/.claude/` (commands, agents,
 skills), all generated from a single model registry so they stay in
-lockstep — plus four small companion bins on your PATH (via `npm install
--g`) that some skills use as hooks or statusLine commands.
+lockstep — plus the three companion bins that some skills use as hooks or
+statusLine commands, copied into `~/.claude/cah-bin/` at install time.
 
 The artifacts:
 - **per-model slash-commands** (35) under `~/.claude/commands/`,
 - **per-model sub-agents** (35) under `~/.claude/agents/`,
-- **skills** (10) under `~/.claude/skills/`.
+- **skills** (10) under `~/.claude/skills/`,
+- **companion bins** under `~/.claude/cah-bin/` (since 0.4.0).
+
+> **Since 0.4.0:** `cah install` copies the companion bins into
+> `~/.claude/cah-bin/` and `settings.json` references them by absolute path
+> (`node "<HOME>/.claude/cah-bin/bin/cah-status.js"`) rather than a bare PATH
+> name. This means `/clock` and `/checkpoint-watch` keep working even if the
+> `cc-arch-hands` npm package is moved, relinked, or uninstalled. Re-running
+> `/clock` (or `/checkpoint-watch`) migrates a pre-0.4.0 bare-name command to
+> the new absolute path automatically.
 
 The companion bins:
 - **`cah`** (and its alias `cc-arch-hands`) — the installer CLI itself.
@@ -286,10 +295,11 @@ All wrapper scripts forward flags, e.g. `./install.sh --only skills` or
 Via npx (no install):
 
 ```bash
-npx cah install                          # global (default): ~/.claude/{commands,agents,skills}
-npx cah install --local                  # local: <cwd>/.claude/... (must already exist)
-npx cah install --cwd /path/to/project   # local at a specific path
-npx cah install --only skills            # subset: any combo of commands,agents,skills
+npx cah install                          # global (default): ~/.claude/{commands,agents,skills,cah-bin}
+npx cah install --local                  # local: <cwd>/.claude/... (must already exist); bins still go global
+npx cah install --cwd /path/to/project   # local at a specific path; bins still go global
+npx cah install --only skills            # subset: any combo of commands,agents,skills,bins
+npx cah install --only bins              # just (re)copy the companion bins into ~/.claude/cah-bin/
 
 npx cah uninstall                        # symmetric remove (sentinel-gated)
 npx cah uninstall --only agents          # subset uninstall
@@ -371,7 +381,8 @@ cc-arch-hands/
 │   ├── transcript-stats.js      # shared: readTranscriptStats, modelLimit, formatStatusLine, currentHhMm
 │   ├── commands.js              # render + install + remove (35 .md files)
 │   ├── agents.js                # render + install + remove (35 .md files)
-│   └── skills.js                # mirror templates/skills/<n>/ tree
+│   ├── skills.js                # mirror templates/skills/<n>/ tree
+│   └── binstall.js              # copy companion bins into ~/.claude/cah-bin/ (// cah-bin:v1)
 ├── templates/
 │   └── skills/                  # repo-sight, task, babygoal, babysit,
 │       └── <name>/SKILL.md      # checkpoint, resume, checkpoint-prune, triage,
@@ -379,6 +390,7 @@ cc-arch-hands/
 ├── test/
 │   ├── installer.test.js        # installer tests (node:test + node:assert)
 │   ├── cli.test.js              # CLI layer tests (scope, parseOnly, dispatch)
+│   ├── binstall.test.js         # bin-copy / prune / sentinel / resolveBinDir tests
 │   ├── stamp.test.js            # cah-stamp bin tests
 │   └── transcript-stats.test.js # transcript-stats helper unit tests
 ├── .github/workflows/ci.yml    # CI: npm test on 3 OS × 3 Node versions

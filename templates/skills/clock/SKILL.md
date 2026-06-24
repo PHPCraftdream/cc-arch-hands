@@ -47,6 +47,32 @@ Install (or remove, or inspect) two Claude Code settings entries:
 - `--here`: operate on `<cwd>/.claude/settings.json` (project-local).
 - `--off` and `--status`: check **both** scopes (global and local) and report each.
 
+### Resolving the bin path
+
+The two commands point at JavaScript files that `cah install` copies into the
+**global** bin directory `<HOME>/.claude/cah-bin/`, where `<HOME>` is the
+current user's home directory. These absolute paths are used **even for
+`--here` (project-local) installs** — the bins always live in the one global
+location, so `/clock` keeps working no matter where the `cc-arch-hands` package
+is moved, relinked, or whether it is even still installed on `PATH`.
+
+Build the two command strings like this (forward slashes on every OS; wrap in
+double quotes so a home directory containing spaces still works):
+
+```
+node "<HOME>/.claude/cah-bin/bin/cah-status.js"
+node "<HOME>/.claude/cah-bin/bin/cah-stamp.js"
+```
+
+Expand `<HOME>` to the real absolute path at write time (e.g.
+`C:/Users/Alice` or `/home/alice`) — do **not** leave a literal `<HOME>` or a
+`$HOME`/`%USERPROFILE%` token in the file. Use forward slashes even on Windows;
+Node accepts them and they need no JSON escaping.
+
+**Prerequisite:** these files exist only after `cah install` (or
+`cah install --only bins`) has run. If `<HOME>/.claude/cah-bin/bin/` is missing,
+tell the user to run `cah install` first, then continue.
+
 ### What gets installed
 
 **statusLine entry** (ownership sentinel: `cah-sentinel: "cah-status:v1"`, `cah-name: "clock"`):
@@ -54,7 +80,7 @@ Install (or remove, or inspect) two Claude Code settings entries:
 ```json
 {
   "type": "command",
-  "command": "cah-status",
+  "command": "node \"<HOME>/.claude/cah-bin/bin/cah-status.js\"",
   "padding": 0,
   "cah-sentinel": "cah-status:v1",
   "cah-name": "clock"
@@ -72,7 +98,7 @@ appended to `hooks.Stop` as a new matcher object:
   "hooks": [
     {
       "type": "command",
-      "command": "cah-stamp",
+      "command": "node \"<HOME>/.claude/cah-bin/bin/cah-stamp.js\"",
       "cah-sentinel": "cah-hook:v1",
       "cah-name": "clock"
     }
@@ -89,13 +115,26 @@ appended to `hooks.Stop` as a new matcher object:
    report the problem and STOP. Never overwrite a file you could not parse.
 4. **statusLine check**: Inspect `data.statusLine`:
    - If it exists AND has `cah-sentinel === "cah-status:v1"` AND
-     `cah-name === "clock"` → report "statusLine: already enabled" and continue.
+     `cah-name === "clock"`:
+     - If its `command` already equals the freshly computed
+       `node "<HOME>/.claude/cah-bin/bin/cah-status.js"` → report
+       "statusLine: already enabled" and continue.
+     - Otherwise it is an **older** entry (e.g. the bare `cah-status` from a
+       pre-0.4.0 install, or a path under a different home): rewrite its
+       `command` to the computed absolute path, keep the sentinel fields, and
+       report "statusLine: migrated".
    - If it exists WITHOUT our sentinel → treat as foreign, refuse to overwrite,
      ask the user whether to replace it.
    - If there is no `statusLine` key yet: add our entry (shown above).
 5. **Stop hook check**: Scan `hooks.Stop[*].hooks[*]` for an entry with
    `cah-sentinel === "cah-hook:v1"` AND `cah-name === "clock"`:
-   - If found → report "chat-stamp: already enabled" and continue.
+   - If found:
+     - If its `command` already equals the computed
+       `node "<HOME>/.claude/cah-bin/bin/cah-stamp.js"` → report
+       "chat-stamp: already enabled" and continue.
+     - Otherwise rewrite that entry's `command` to the computed absolute path
+       (migration from the bare `cah-stamp` or an old path), keep the sentinel
+       fields, and report "chat-stamp: migrated".
    - If not found → append a new matcher entry to `hooks.Stop` (create
      `hooks` and `hooks.Stop` as arrays if they don't exist yet). IMPORTANT:
      if other entries already exist in `hooks.Stop` (e.g. from
