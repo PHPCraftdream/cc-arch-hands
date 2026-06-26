@@ -391,4 +391,17 @@ describe('reinstall --templates', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('direct uninstall stays strict and still rejects --templates', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-uninst-tpl-'));
+    try {
+      let rc;
+      captureStdout(() => {
+        rc = run(['uninstall', '--cwd', dir, '--templates', '/bad', '--only', 'commands']);
+      });
+      assert.equal(rc, 2, 'uninstall must not silently accept the install-only --templates flag');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

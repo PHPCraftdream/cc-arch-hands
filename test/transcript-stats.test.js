@@ -170,29 +170,33 @@ describe('readTranscriptStats', () => {
     assert.equal(result.modelId, null);
   });
 
-  it('ignores usage nested in a user tool-result entry (review L16)', () => {
+  it('ignores usage AND model nested in a user tool-result entry (review L16/P2a)', () => {
     const dir = isolatedDir();
     const tp = join(dir, 'transcript.jsonl');
     writeFileSync(
       tp,
       [
-        // real session usage on the assistant turn
+        // real session usage + model on the assistant turn
         JSON.stringify({
           type: 'assistant',
-          message: { model: 'claude-opus-4-8', usage: { input_tokens: 120_000 } },
+          message: { model: 'claude-sonnet-4-6', usage: { input_tokens: 120_000 } },
         }),
-        // a later user entry whose tool result echoes an upstream usage object
+        // a later user entry whose tool result echoes an upstream API response
+        // carrying BOTH a different model and a large usage object
         JSON.stringify({
           type: 'user',
           message: { role: 'user', content: 'x' },
-          toolUseResult: { usage: { input_tokens: 5, cache_read_input_tokens: 999_000 } },
+          toolUseResult: {
+            model: 'claude-opus-4-8',
+            usage: { input_tokens: 5, cache_read_input_tokens: 999_000 },
+          },
         }),
       ].join('\n') + '\n',
     );
     const result = readTranscriptStats(tp);
     assert.ok(result !== null);
     assert.equal(result.usedTokens, 120_000, 'must skip the user tool-result usage');
-    assert.equal(result.modelId, 'claude-opus-4-8');
+    assert.equal(result.modelId, 'claude-sonnet-4-6', 'must not pair with the user-entry model');
   });
 
   it('reads usage from the tail of a large transcript (review M7)', () => {
