@@ -169,6 +169,51 @@ describe('readTranscriptStats', () => {
     assert.equal(result.usedTokens, 30_000);
     assert.equal(result.modelId, null);
   });
+
+  it('ignores usage nested in a user tool-result entry (review L16)', () => {
+    const dir = isolatedDir();
+    const tp = join(dir, 'transcript.jsonl');
+    writeFileSync(
+      tp,
+      [
+        // real session usage on the assistant turn
+        JSON.stringify({
+          type: 'assistant',
+          message: { model: 'claude-opus-4-8', usage: { input_tokens: 120_000 } },
+        }),
+        // a later user entry whose tool result echoes an upstream usage object
+        JSON.stringify({
+          type: 'user',
+          message: { role: 'user', content: 'x' },
+          toolUseResult: { usage: { input_tokens: 5, cache_read_input_tokens: 999_000 } },
+        }),
+      ].join('\n') + '\n',
+    );
+    const result = readTranscriptStats(tp);
+    assert.ok(result !== null);
+    assert.equal(result.usedTokens, 120_000, 'must skip the user tool-result usage');
+    assert.equal(result.modelId, 'claude-opus-4-8');
+  });
+
+  it('reads usage from the tail of a large transcript (review M7)', () => {
+    const dir = isolatedDir();
+    const tp = join(dir, 'transcript.jsonl');
+    // Pad with many bulky non-usage user lines, then the real assistant turn
+    // last, so a correct tail read still finds it.
+    const filler = [];
+    for (let i = 0; i < 5000; i++) {
+      filler.push(JSON.stringify({ type: 'user', message: { role: 'user', content: 'x'.repeat(200) } }));
+    }
+    filler.push(JSON.stringify({
+      type: 'assistant',
+      message: { model: 'claude-sonnet-4-6', usage: { input_tokens: 42_000 } },
+    }));
+    writeFileSync(tp, filler.join('\n') + '\n');
+    const result = readTranscriptStats(tp);
+    assert.ok(result !== null);
+    assert.equal(result.usedTokens, 42_000);
+    assert.equal(result.modelId, 'claude-sonnet-4-6');
+  });
 });
 
 // ---------------------------------------------------------------------------

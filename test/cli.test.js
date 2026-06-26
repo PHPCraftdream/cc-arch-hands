@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 import { run, resolveScope, parseOnly, resolveDeps } from '../lib/cli.js';
 import { Scope } from '../lib/scope.js';
@@ -337,5 +338,57 @@ describe('run install/uninstall --only <skill-name>', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cah-bogus-'));
     assert.equal(run(['install', '--only', 'not-a-real-skill', '--cwd', dir]), 1);
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// doctor exit codes (review H3) + reinstall --templates (review H4/M8)
+// ---------------------------------------------------------------------------
+
+describe('doctor exit codes', () => {
+  it('returns 1 when expected files are missing', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
+    const proj = mkdtempSync(join(tmpdir(), 'cah-proj-'));
+    try {
+      withHome(home, () => {
+        let rc;
+        captureStdout(() => { rc = run(['doctor', '--cwd', proj]); });
+        assert.equal(rc, 1);
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(proj, { recursive: true, force: true });
+    }
+  });
+
+  it('returns 0 when a full global install is healthy', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
+    try {
+      withHome(home, () => {
+        captureStdout(() => run(['install']));
+        let rc;
+        captureStdout(() => { rc = run(['doctor']); });
+        assert.equal(rc, 0);
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('reinstall --templates', () => {
+  it('does not abort in the uninstall phase (review H4/M8)', () => {
+    const templates = fileURLToPath(new URL('../templates', import.meta.url));
+    const dir = mkdtempSync(join(tmpdir(), 'cah-rein-tpl-'));
+    try {
+      let rc;
+      captureStdout(() => {
+        rc = run(['reinstall', '--cwd', dir, '--templates', templates, '--only', 'skills']);
+      });
+      assert.equal(rc, 0);
+      assert.ok(existsSync(join(dir, '.claude', 'skills', 'clock', 'SKILL.md')));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
