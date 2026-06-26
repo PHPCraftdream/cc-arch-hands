@@ -4,7 +4,7 @@ import { mkdtempSync, existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { run, resolveScope, parseOnly } from '../lib/cli.js';
+import { run, resolveScope, parseOnly, resolveDeps } from '../lib/cli.js';
 import { Scope } from '../lib/scope.js';
 import { SentinelBin } from '../lib/sentinel.js';
 
@@ -90,29 +90,84 @@ describe('resolveScope', () => {
 // ---------------------------------------------------------------------------
 
 describe('parseOnly', () => {
-  it('empty returns all classes in order', () => {
-    assert.deepEqual(parseOnly(''), ['commands', 'agents', 'skills', 'bins']);
-    assert.deepEqual(parseOnly(undefined), ['commands', 'agents', 'skills', 'bins']);
+  it('empty returns all classes in order, no individual skills', () => {
+    assert.deepEqual(parseOnly(''), { classes: ['commands', 'agents', 'skills', 'bins'], skills: [] });
+    assert.deepEqual(parseOnly(undefined), { classes: ['commands', 'agents', 'skills', 'bins'], skills: [] });
   });
 
   it('single class', () => {
-    assert.deepEqual(parseOnly('skills'), ['skills']);
+    assert.deepEqual(parseOnly('skills'), { classes: ['skills'], skills: [] });
   });
 
-  it('comma-separated preserves canonical order', () => {
-    assert.deepEqual(parseOnly('skills,commands'), ['commands', 'skills']);
+  it('comma-separated classes preserve canonical order', () => {
+    assert.deepEqual(parseOnly('skills,commands'), { classes: ['commands', 'skills'], skills: [] });
   });
 
   it('deduplicates', () => {
-    assert.deepEqual(parseOnly('agents,agents'), ['agents']);
+    assert.deepEqual(parseOnly('agents,agents'), { classes: ['agents'], skills: [] });
   });
 
-  it('unknown class throws', () => {
-    assert.throws(() => parseOnly('foo'), /unknown class/);
+  it('individual skill name', () => {
+    assert.deepEqual(parseOnly('clock'), { classes: [], skills: ['clock'] });
+  });
+
+  it('multiple skill names sorted', () => {
+    assert.deepEqual(parseOnly('clock,babysit'), { classes: [], skills: ['babysit', 'clock'] });
+  });
+
+  it('mix of class and skill names', () => {
+    assert.deepEqual(
+      parseOnly('commands,clock,bins'),
+      { classes: ['commands', 'bins'], skills: ['clock'] },
+    );
+  });
+
+  it('unknown name throws and lists valid options', () => {
+    assert.throws(() => parseOnly('foo'), /unknown name "foo"/);
+    assert.throws(() => parseOnly('clock,foo'), /unknown name "foo"/);
   });
 
   it('all-blank resolves to no classes and throws', () => {
     assert.throws(() => parseOnly(' , , '), /no classes/);
+  });
+});
+
+describe('resolveDeps', () => {
+  it('passes through when no skill triggers a dep', () => {
+    const r = resolveDeps({ classes: ['commands'], skills: [] });
+    assert.deepEqual(r.classes, ['commands']);
+    assert.deepEqual(r.skills, []);
+    assert.deepEqual(r.notices, []);
+  });
+
+  it('auto-adds bins when clock is selected by name', () => {
+    const r = resolveDeps({ classes: [], skills: ['clock'] });
+    assert.ok(r.classes.includes('bins'));
+    assert.equal(r.notices.length, 1);
+    assert.match(r.notices[0], /auto-added 'bins'.*clock/);
+  });
+
+  it('auto-adds bins when checkpoint-watch is selected by name', () => {
+    const r = resolveDeps({ classes: [], skills: ['checkpoint-watch'] });
+    assert.ok(r.classes.includes('bins'));
+    assert.match(r.notices[0], /checkpoint-watch/);
+  });
+
+  it('does not add bins when already present', () => {
+    const r = resolveDeps({ classes: ['bins'], skills: ['clock'] });
+    assert.deepEqual(r.notices, []);
+  });
+
+  it('triggers from whole "skills" class too — clock/checkpoint-watch are inside', () => {
+    const r = resolveDeps({ classes: ['skills'], skills: [] });
+    assert.ok(r.classes.includes('bins'));
+    assert.match(r.notices[0], /clock/);
+    assert.match(r.notices[0], /checkpoint-watch/);
+  });
+
+  it('classes returned in canonical order', () => {
+    const r = resolveDeps({ classes: ['bins', 'commands'], skills: ['clock'] });
+    assert.deepEqual(r.classes, ['commands', 'bins']);
   });
 });
 
@@ -205,5 +260,82 @@ describe('run install/uninstall --only bins', () => {
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// targeted install/uninstall/reinstall by skill name
+// ---------------------------------------------------------------------------
+
+describe('run install/uninstall --only <skill-name>', () => {
+  it('installs ONLY the named skill, leaving other skill folders untouched', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-subset-'));
+    const skillsDir = join(dir, '.claude', 'skills');
+    // First seed two skills with a full install.
+    assert.equal(run(['install', '--only', 'skills', '--cwd', dir]), 0);
+    assert.ok(existsSync(join(skillsDir, 'clock')));
+    assert.ok(existsSync(join(skillsDir, 'babysit')));
+
+    // Now uninstall only one — the other must survive.
+    assert.equal(run(['uninstall', '--only', 'babysit', '--cwd', dir]), 0);
+    assert.ok(existsSync(join(skillsDir, 'clock')), 'clock must survive targeted uninstall of babysit');
+    assert.ok(!existsSync(join(skillsDir, 'babysit')), 'babysit must be gone');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('install --only clock writes the clock skill AND auto-pulls bins (with notice)', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
+    try {
+      withHome(home, () => {
+        const out = captureStdout(() => assert.equal(run(['install', '--only', 'clock']), 0));
+        assert.match(out, /notice: auto-added 'bins' \(required by: clock\)/);
+        assert.ok(existsSync(join(home, '.claude', 'skills', 'clock', 'SKILL.md')));
+        assert.ok(existsSync(join(home, '.claude', 'cah-bin', 'bin', 'cah-status.js')),
+          'bins must be auto-installed');
+        // Other skills must NOT appear when only clock is requested.
+        assert.ok(!existsSync(join(home, '.claude', 'skills', 'babysit')));
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('uninstall does NOT auto-pull deps — removes ONLY what is named', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
+    try {
+      withHome(home, () => {
+        // Seed both clock and bins.
+        run(['install', '--only', 'clock']);
+        assert.ok(existsSync(join(home, '.claude', 'cah-bin', 'bin', 'cah-status.js')));
+        // Now remove only clock — bins must stay.
+        const out = captureStdout(() => assert.equal(run(['uninstall', '--only', 'clock']), 0));
+        assert.ok(!out.includes('auto-added'), 'uninstall must NOT auto-pull deps');
+        assert.ok(!existsSync(join(home, '.claude', 'skills', 'clock')));
+        assert.ok(existsSync(join(home, '.claude', 'cah-bin', 'bin', 'cah-status.js')),
+          'bins must survive targeted uninstall of clock');
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('reinstall --only clock honours the subset (uninstall + install)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-subset-rein-'));
+    // Seed everything first.
+    run(['install', '--cwd', dir]);
+    const before = readFileSync(join(dir, '.claude', 'skills', 'clock', 'SKILL.md'), 'utf8');
+    // reinstall just clock; other skills must be unaffected.
+    assert.equal(run(['reinstall', '--cwd', dir, '--only', 'clock']), 0);
+    assert.ok(existsSync(join(dir, '.claude', 'skills', 'babysit')),
+      'other skills survive reinstall of single skill');
+    const after = readFileSync(join(dir, '.claude', 'skills', 'clock', 'SKILL.md'), 'utf8');
+    assert.equal(after, before, 'clock content matches embedded template (round-trip)');
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('unknown name in --only is rejected with exit 1', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-bogus-'));
+    assert.equal(run(['install', '--only', 'not-a-real-skill', '--cwd', dir]), 1);
+    rmSync(dir, { recursive: true, force: true });
   });
 });

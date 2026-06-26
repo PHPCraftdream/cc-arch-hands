@@ -58,7 +58,8 @@ The codebase has two layers: a thin CLI (`lib/cli.js`) that does arg parsing and
 | `lib/agents.js` | `writeModelAgents` / `removeModelAgents`, git-safety & test-scope clauses |
 | `lib/skills.js` | `writeSkills` / `removeSkills` (wipe-and-reinstall on upgrade) |
 | `lib/binstall.js` | `writeBins` / `removeBins` + `BinFiles` registry — copies companion bins into `~/.claude/cah-bin/` with `// cah-bin:v1` sentinel |
-| `test/*.test.js` | Full test suite (`node:test` + `node:assert/strict`) — installer, cli, binstall, checkpoint-hint, clock, stamp, transcript-stats |
+| `lib/probe.js` | `enableProbe` / `disableProbe` / `readProbeLog` / `probeStatus` — atomic settings.json swap to wire `cah-status-probe` as the statusLine bin, with a sidecar backup file |
+| `test/*.test.js` | Full test suite (`node:test` + `node:assert/strict`) — installer, cli, binstall, checkpoint-hint, clock, stamp, transcript-stats, probe |
 
 ## Conventions
 
@@ -66,3 +67,6 @@ The codebase has two layers: a thin CLI (`lib/cli.js`) that does arg parsing and
 - Tests use `node:test` (describe/it) + `node:assert/strict`. No external test dependencies.
 - Tests that mutate `AllSkills` must save/restore the array in a try/finally block — it's a module-level mutable export.
 - Agent bodies include two hardcoded clauses (git-safety, test-scope) — these are contract text, not templates. Edit with care.
+- **README install examples must cover every installable artefact.** The `Use` section must contain a one-line `npx cah install --only <name>` example for **every** skill in `AllSkills` AND for `bins`. Classes `commands` and `agents` are exempt — they have no point-install story. When adding a new skill to `AllSkills`, add its example line in `README.md` in the same PR; CI does not enforce this, the project does.
+- **Skill ⇄ dependency map is centralised in `lib/manifest.js` `SkillDeps`.** When a new skill needs companion bins or any other class, register it there — `lib/cli.js resolveDeps()` reads from that map and prints the `notice: auto-added 'bins' (required by: …)` line on install. Uninstall is explicit-only and never consults `SkillDeps`.
+- **`parseOnly` returns `{classes, skills}`, not a flat array.** When wiring a new subcommand that takes `--only`, use `resolveDeps(parseOnly(vals.only))` and pass `skillsSubset` into `writeSkills` / `removeSkills` so subset installs/uninstalls leave foreign skills untouched.

@@ -34,8 +34,9 @@ The artifacts:
 The companion bins:
 - **`cah`** (and its alias `cc-arch-hands`) — the installer CLI itself.
 - **`cah-checkpoint-hint`** — Stop hook bin invoked by `/checkpoint-watch`. Emits one `[hint] Context at 90%…` per session when context fills past 90%.
-- **`cah-status`** — statusLine command invoked by `/clock`. Renders `HH:MM · model · X% (Nk/Mk)` at the bottom of the terminal once per second.
-- **`cah-stamp`** — Stop hook bin invoked by `/clock`. Emits the same `HH:MM · model · X%` line as a `systemMessage` after each assistant turn, giving the chat a timestamped audit trail.
+- **`cah-status`** — statusLine command invoked by `/clock`. Renders `<model> · X.XX% (Nk/Mk)` with a usage bar and, for Pro/Max accounts, the 5-hour and weekly quota use with reset info (`5h N% →48м · wk N% →сб 27.06 16:19`). Refreshes on each turn boundary.
+- **`cah-stamp`** — Stop hook bin invoked by `/clock` on both `Stop` AND `PostToolUse`. Emits an `HH:MM · model · X.XX% · 5h N% · wk N%` line as a `systemMessage` (no bars, compact text). Throttled to one emission per 10s so the dual-hook install does not spam the scrollback.
+- **`cah-status-probe`** — diagnostic statusLine bin armed by `cah probe statusline start`. Captures the raw stdin envelope to a JSONL log so you can inspect exactly which fields Claude Code delivers on your account (added in 0.4.1).
 
 All three hook bins share `lib/transcript-stats.js` for transcript
 parsing — including the **cache-aware** token sum (`input_tokens +
@@ -298,11 +299,39 @@ Via npx (no install):
 npx cah install                          # global (default): ~/.claude/{commands,agents,skills,cah-bin}
 npx cah install --local                  # local: <cwd>/.claude/... (must already exist); bins still go global
 npx cah install --cwd /path/to/project   # local at a specific path; bins still go global
-npx cah install --only skills            # subset: any combo of commands,agents,skills,bins
-npx cah install --only bins              # just (re)copy the companion bins into ~/.claude/cah-bin/
 
-npx cah uninstall                        # symmetric remove (sentinel-gated)
-npx cah uninstall --only agents          # subset uninstall
+# --only takes install classes, individual skill names, or any mix.
+npx cah install --only skills                       # all 10 skills
+npx cah install --only bins                         # companion bins (cah-status, cah-stamp,
+                                                    #   cah-checkpoint-hint, cah-status-probe,
+                                                    #   + their shared lib/transcript-stats.js)
+
+# One example per skill (every installable artefact has its own line).
+# clock and checkpoint-watch auto-pull `bins` with a notice.
+npx cah install --only repo-sight
+npx cah install --only babysit
+npx cah install --only babygoal
+npx cah install --only task
+npx cah install --only checkpoint
+npx cah install --only checkpoint-prune
+npx cah install --only resume
+npx cah install --only triage
+npx cah install --only checkpoint-watch             # auto-pulls bins
+npx cah install --only clock                        # auto-pulls bins
+
+# Comma-separated combos work as expected.
+npx cah install --only clock,checkpoint-watch       # two skills (auto-pulls bins once)
+npx cah install --only babysit,babygoal,task        # task-list trio
+npx cah install --only commands,clock               # mix class + skill name
+
+# reinstall and uninstall accept the same --only selector.
+# reinstall does uninstall + install with the same args, so subset is honoured.
+# uninstall is explicit-only — it never auto-pulls deps (so you can drop
+# clock without losing the bins that checkpoint-watch needs).
+npx cah reinstall --only clock                      # uninstall + install of just the clock skill
+npx cah uninstall                                   # symmetric remove (sentinel-gated)
+npx cah uninstall --only agents                     # remove only agents
+npx cah uninstall --only clock                      # remove only the clock skill, keep bins
 
 npx cah list                             # tabular: NAME | KIND | STATE
 npx cah list --json                      # NDJSON for scripting
@@ -379,30 +408,35 @@ installs nor removes `/crush`. That's still owned by the crush fork's
 cc-arch-hands/
 ├── bin/cah.js                   # CLI entry point (#!/usr/bin/env node)
 ├── bin/cah-checkpoint-hint.js   # Stop-hook bin: emits the 90% [hint] (#!/usr/bin/env node)
-├── bin/cah-status.js            # statusLine bin: emits HH:MM · model · X% (#!/usr/bin/env node)
-├── bin/cah-stamp.js             # Stop-hook bin: emits HH:MM · model · X% as systemMessage (#!/usr/bin/env node)
+├── bin/cah-status.js            # statusLine bin: model · ctx% + 5h/wk on Pro/Max (#!/usr/bin/env node)
+├── bin/cah-stamp.js             # Stop+PostToolUse bin: chat audit-trail line (#!/usr/bin/env node)
+├── bin/cah-status-probe.js      # diagnostic statusLine bin used by `cah probe statusline`
 ├── lib/
-│   ├── cli.js                   # dispatch, arg parsing (node:util parseArgs)
-│   ├── manifest.js              # AllModelCommands (35 entries) + AllSkills (10)
+│   ├── cli.js                   # dispatch, arg parsing (node:util parseArgs), --only resolver
+│   ├── manifest.js              # AllModelCommands (35 entries), AllSkills (10), SkillDeps
 │   ├── sentinel.js              # new + legacy markers, ownership classifier
 │   ├── scope.js                 # global vs local target dir resolution
 │   ├── templates.js             # bundled / disk template abstraction
 │   ├── fsutil.js                # readFileMaybe + orphan-prune helpers
-│   ├── transcript-stats.js      # shared: readTranscriptStats, modelLimit, formatStatusLine, currentHhMm
+│   ├── transcript-stats.js      # shared: stats, formatStatusLine, makeBar, reset formatters
 │   ├── commands.js              # render + install + remove (35 .md files)
 │   ├── agents.js                # render + install + remove (35 .md files)
-│   ├── skills.js                # mirror templates/skills/<n>/ tree
-│   └── binstall.js              # copy companion bins into ~/.claude/cah-bin/ (// cah-bin:v1)
+│   ├── skills.js                # mirror templates/skills/<n>/ tree, optional subset
+│   ├── binstall.js              # copy companion bins into ~/.claude/cah-bin/ (// cah-bin:v1)
+│   └── probe.js                 # enable/disable cah-status-probe via settings.json edits
 ├── templates/
 │   └── skills/                  # repo-sight, task, babygoal, babysit,
 │       └── <name>/SKILL.md      # checkpoint, resume, checkpoint-prune, triage,
 │                                # checkpoint-watch, clock
 ├── test/
 │   ├── installer.test.js        # installer tests (node:test + node:assert)
-│   ├── cli.test.js              # CLI layer tests (scope, parseOnly, dispatch)
+│   ├── cli.test.js              # CLI layer tests (scope, parseOnly, resolveDeps, --only subset)
 │   ├── binstall.test.js         # bin-copy / prune / sentinel / resolveBinDir tests
-│   ├── stamp.test.js            # cah-stamp bin tests
-│   └── transcript-stats.test.js # transcript-stats helper unit tests
+│   ├── clock.test.js            # cah-status bin tests
+│   ├── stamp.test.js            # cah-stamp bin tests (incl. throttle, rate_limits cache)
+│   ├── transcript-stats.test.js # transcript-stats helper unit tests (incl. makeBar)
+│   ├── checkpoint-hint.test.js  # cah-checkpoint-hint bin tests
+│   └── probe.test.js            # lib/probe.js enable/disable/readLog tests
 ├── .github/workflows/ci.yml    # CI: npm test on 3 OS × 3 Node versions
 ├── install.sh / install.bat     # quick install wrappers
 ├── reinstall.sh / reinstall.bat # uninstall + install
