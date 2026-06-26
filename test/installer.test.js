@@ -563,8 +563,10 @@ describe('skill data-loss protection', () => {
     const userFile = join(dir, '.claude', 'skills', name, 'keep.md');
     writeFileSync(userFile, 'keep me');
 
-    const { preserved } = removeSkills(scope);
+    const { removed, preserved } = removeSkills(scope);
     assert.ok(preserved.includes(name));
+    // the skill with user data is reported under preserved, not removed
+    assert.equal(removed, AllSkills.length - 1);
     assert.equal(readFileSync(userFile, 'utf8'), 'keep me');
     assert.throws(
       () => statSync(join(dir, '.claude', 'skills', name, SKILL_MANIFEST_LEAF)),
