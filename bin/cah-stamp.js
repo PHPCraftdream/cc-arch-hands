@@ -16,7 +16,7 @@ import {
   readTranscriptStats,
   modelLimit,
   formatStatusLine,
-  currentHhMm,
+  currentHhMmSs,
   readRateLimitsCache,
 } from '../lib/transcript-stats.js';
 
@@ -30,12 +30,12 @@ const RATE_LIMITS_CACHE =
 // Throttle state for the chat audit-trail. stamp can fire both on Stop AND
 // PostToolUse hooks, which would otherwise spam the scrollback with many
 // near-identical lines per turn. We persist the last emit time and skip if it
-// is less than CAH_STAMP_MIN_INTERVAL_MS old (default 10s).
+// is less than CAH_STAMP_MIN_INTERVAL_MS old (default 60s).
 const STAMP_THROTTLE_PATH =
   process.env.CAH_STAMP_THROTTLE_PATH ||
   join(homedir(), '.claude', 'cah-bin', 'cache', 'last-stamp.json');
 const STAMP_MIN_INTERVAL_MS =
-  parseInt(process.env.CAH_STAMP_MIN_INTERVAL_MS || '', 10) || 10_000;
+  parseInt(process.env.CAH_STAMP_MIN_INTERVAL_MS || '', 10) || 60_000;
 
 function readLastStampedAt(path) {
   try {
@@ -90,7 +90,9 @@ function main() {
   const last = readLastStampedAt(STAMP_THROTTLE_PATH);
   if (last !== null && nowMs - last < STAMP_MIN_INTERVAL_MS) return;
 
-  const time = currentHhMm();
+  // HH:MM:SS so cadence bugs (e.g. throttle not honoured, dual-hook spam)
+  // are diagnosable from the chat scrollback alone.
+  const time = currentHhMmSs();
 
   let usedTokens = null;
   let modelId = null;

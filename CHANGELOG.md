@@ -5,6 +5,24 @@ All notable changes to `cc-arch-hands` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3]
+
+### Changed
+
+- **Chat-stamp throttle default raised from 10s to 60s.** PostToolUse + Stop
+  hooks no longer produce a stamp on every tool call — at most one per
+  minute. Override with `CAH_STAMP_MIN_INTERVAL_MS` (set to `10000` for
+  the previous behaviour, or `300000` for a five-minute cadence).
+- **Chat-stamp timestamp is now `HH:MM:SS`** (was `HH:MM`). The extra
+  precision makes throttle/cadence bugs diagnosable from the chat
+  scrollback alone — the original report of this fix was impossible to
+  triage without per-second resolution.
+
+### Added
+
+- New `currentHhMmSs()` helper alongside `currentHhMm()` in
+  `lib/transcript-stats.js`.
+
 ## [0.4.2]
 
 ### Added
@@ -46,7 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as JSONL, and restores the original on `stop` while printing the parsed
   envelope. Cross-platform, no manual `settings.json` edits.
 - **Throttle for chat-stamp**: `cah-stamp` skips if it already emitted within
-  `CAH_STAMP_MIN_INTERVAL_MS` (default 10s). Lets the stamp safely run on
+  `CAH_STAMP_MIN_INTERVAL_MS` (default 60s, was 10s in 0.4.1). Lets the stamp safely run on
   both `Stop` and `PostToolUse` hooks without spamming the scrollback.
 
 ### Changed

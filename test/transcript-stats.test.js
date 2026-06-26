@@ -10,6 +10,7 @@ import {
   modelLimit,
   formatStatusLine,
   currentHhMm,
+  currentHhMmSs,
   formatFiveHourReset,
   formatWeeklyReset,
   readRateLimitsCache,
@@ -311,6 +312,14 @@ describe('currentHhMm', () => {
   it('handles end of day', () => {
     const date = new Date(2024, 0, 1, 23, 59, 0); // 23:59
     assert.equal(currentHhMm(date), '23:59');
+  });
+});
+
+describe('currentHhMmSs', () => {
+  it('returns HH:MM:SS, zero-padded', () => {
+    assert.equal(currentHhMmSs(new Date(2024, 0, 1, 9, 5, 3)), '09:05:03');
+    assert.equal(currentHhMmSs(new Date(2024, 0, 1, 0, 0, 0)), '00:00:00');
+    assert.equal(currentHhMmSs(new Date(2024, 0, 1, 23, 59, 59)), '23:59:59');
   });
 });
 

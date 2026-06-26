@@ -35,7 +35,7 @@ The companion bins:
 - **`cah`** (and its alias `cc-arch-hands`) — the installer CLI itself.
 - **`cah-checkpoint-hint`** — Stop hook bin invoked by `/checkpoint-watch`. Emits one `[hint] Context at 90%…` per session when context fills past 90%.
 - **`cah-status`** — statusLine command invoked by `/clock`. Renders `<model> · X.XX% (Nk/Mk)` with a usage bar and, for Pro/Max accounts, the 5-hour and weekly quota use with reset info (`5h N% →48м · wk N% →сб 27.06 16:19`). Refreshes on each turn boundary.
-- **`cah-stamp`** — Stop hook bin invoked by `/clock` on both `Stop` AND `PostToolUse`. Emits an `HH:MM · model · X.XX% · 5h N% · wk N%` line as a `systemMessage` (no bars, compact text). Throttled to one emission per 10s so the dual-hook install does not spam the scrollback.
+- **`cah-stamp`** — Stop hook bin invoked by `/clock` on both `Stop` AND `PostToolUse`. Emits an `HH:MM · model · X.XX% · 5h N% · wk N%` line as a `systemMessage` (no bars, compact text). Throttled to one emission per minute (configurable via `CAH_STAMP_MIN_INTERVAL_MS`) so the dual-hook install does not spam the scrollback.
 - **`cah-status-probe`** — diagnostic statusLine bin armed by `cah probe statusline start`. Captures the raw stdin envelope to a JSONL log so you can inspect exactly which fields Claude Code delivers on your account (added in 0.4.1).
 
 All three hook bins share `lib/transcript-stats.js` for transcript
