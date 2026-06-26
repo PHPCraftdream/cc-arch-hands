@@ -5,6 +5,23 @@ All notable changes to `cc-arch-hands` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4]
+
+### Added
+
+- **statusLine now refreshes on a 60-second timer** (`refreshInterval: 60000`)
+  in addition to turn boundaries. Keeps the bar visibly live during long, quiet
+  stretches (no more frozen `5h N% (→HH:MM)` countdown). 60s sits safely above
+  the Windows Node cold-start cost (1–3s) — no more harness-cancels-in-flight
+  races that plagued the old sub-second tickers.
+- **Env override `CAH_STATUSLINE_REFRESH_MS`** for users who want a different
+  cadence (e.g. `3000` on Linux/macOS where cold-start is sub-second, or
+  `300000` on a heavily-loaded machine).
+- **Migration on re-install.** Re-running `/clock` on a pre-0.4.4 install
+  rewrites the existing sentinel'd `statusLine` entry to include
+  `refreshInterval`, reporting `statusLine: migrated`. Foreign entries are
+  left untouched as always.
+
 ## [0.4.3]
 
 ### Changed
