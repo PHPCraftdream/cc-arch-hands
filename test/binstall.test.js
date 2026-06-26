@@ -31,6 +31,10 @@ function fakeSource(root) {
     join(root, 'bin', 'cah-checkpoint-hint.js'),
     "#!/usr/bin/env node\nconsole.log('hint');\n",
   );
+  writeFileSync(
+    join(root, 'bin', 'cah-status-probe.js'),
+    "#!/usr/bin/env node\nconsole.log('probe');\n",
+  );
   writeFileSync(join(root, 'lib', 'transcript-stats.js'), 'export const x = 1;\n');
 }
 

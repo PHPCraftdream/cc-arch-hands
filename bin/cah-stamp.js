@@ -9,8 +9,54 @@
 // It is deliberately fail-silent: any error, missing input, or filesystem
 // hiccup results in `exit 0` with no stdout, so it can never break the session.
 
-import { readFileSync } from 'node:fs';
-import { readTranscriptStats, modelLimit, formatStatusLine, currentHhMm } from '../lib/transcript-stats.js';
+import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { homedir } from 'node:os';
+import {
+  readTranscriptStats,
+  modelLimit,
+  formatStatusLine,
+  currentHhMm,
+  readRateLimitsCache,
+} from '../lib/transcript-stats.js';
+
+// Pro/Max rate_limits are only in the statusLine envelope; cah-status
+// persists them here so we can include them in the chat audit trail.
+// CAH_RATE_LIMITS_CACHE env override lets tests/CI redirect the read path.
+const RATE_LIMITS_CACHE =
+  process.env.CAH_RATE_LIMITS_CACHE ||
+  join(homedir(), '.claude', 'cah-bin', 'cache', 'rate-limits.json');
+
+// Throttle state for the chat audit-trail. stamp can fire both on Stop AND
+// PostToolUse hooks, which would otherwise spam the scrollback with many
+// near-identical lines per turn. We persist the last emit time and skip if it
+// is less than CAH_STAMP_MIN_INTERVAL_MS old (default 10s).
+const STAMP_THROTTLE_PATH =
+  process.env.CAH_STAMP_THROTTLE_PATH ||
+  join(homedir(), '.claude', 'cah-bin', 'cache', 'last-stamp.json');
+const STAMP_MIN_INTERVAL_MS =
+  parseInt(process.env.CAH_STAMP_MIN_INTERVAL_MS || '', 10) || 10_000;
+
+function readLastStampedAt(path) {
+  try {
+    const raw = readFileSync(path, 'utf8');
+    const obj = JSON.parse(raw);
+    return typeof obj.lastStampedAt === 'number' ? obj.lastStampedAt : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLastStampedAt(path, ts) {
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    const tmp = path + '.tmp';
+    writeFileSync(tmp, JSON.stringify({ lastStampedAt: ts }) + '\n');
+    renameSync(tmp, path);
+  } catch {
+    // fail-silent — throttling is best-effort
+  }
+}
 
 function readStdin() {
   try {
@@ -36,6 +82,13 @@ function main() {
 
   const transcriptPath = payload.transcript_path;
   if (!transcriptPath) return;
+
+  // Throttle: skip if we just stamped within the min interval. This is what
+  // lets us safely install the same bin on both Stop AND PostToolUse without
+  // spamming the chat with a stamp per tool call.
+  const nowMs = Date.now();
+  const last = readLastStampedAt(STAMP_THROTTLE_PATH);
+  if (last !== null && nowMs - last < STAMP_MIN_INTERVAL_MS) return;
 
   const time = currentHhMm();
 
@@ -63,7 +116,28 @@ function main() {
   const effectiveUsed = (usedTokens !== null && modelId !== null) ? usedTokens : null;
   const effectiveLimit = (usedTokens !== null && modelId !== null) ? limit : null;
 
-  const line = formatStatusLine({ time, displayName, usedTokens: effectiveUsed, limit: effectiveLimit });
+  let fiveHour = null;
+  let sevenDay = null;
+  try {
+    const cached = readRateLimitsCache(RATE_LIMITS_CACHE);
+    if (cached) {
+      fiveHour = cached.fiveHour;
+      sevenDay = cached.sevenDay;
+    }
+  } catch {
+    // fail-silent — proceed without rate_limits
+  }
+
+  const line = formatStatusLine({
+    time,
+    displayName,
+    usedTokens: effectiveUsed,
+    limit: effectiveLimit,
+    fiveHour,
+    sevenDay,
+    bars: false, // chat audit trail stays compact — bars belong on the statusLine
+  });
+  writeLastStampedAt(STAMP_THROTTLE_PATH, nowMs);
   const out = JSON.stringify({ continue: true, systemMessage: line });
   process.stdout.write(out + '\n');
 }

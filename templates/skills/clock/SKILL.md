@@ -1,26 +1,33 @@
 ---
 name: clock
-description: "Install a Claude Code statusLine that shows model + context-window usage at the bottom of the terminal (`<model> · X% (Nk/Mk)`), AND a Stop hook that emits an `HH:MM · model · X%` line as a systemMessage after each assistant turn for a timestamped chat audit trail. The statusLine refreshes on turn boundaries — no refreshInterval, to dodge Node cold-start races (the bin needs 1–3s on Windows, faster ticks just cancel each other and the bar blanks). Does not consume LLM context. Default global (~/.claude/settings.json); pass `--here` for project-local."
+description: "Install a Claude Code statusLine that shows model + context-window usage AND, for Pro/Max subscribers, the 5-hour and weekly quota use with reset times (`<model> · X% (Nk/Mk) · 5h N% (→HH:MM) · wk N% (→wd HH:MM)`). Also installs a chat-stamp hook (`cah-stamp`) on BOTH Stop AND PostToolUse, so an `HH:MM · model · X% · 5h N% · wk N%` audit line appears after every tool call — not only at end of turn. The statusLine refreshes on turn boundaries (no refreshInterval) to dodge Windows Node cold-start races. Default global (~/.claude/settings.json); pass `--here` for project-local."
 ---
 
 # clock
 
-Install (or remove, or inspect) two Claude Code settings entries:
+Install (or remove, or inspect) three Claude Code settings entries:
 
 1. A **`statusLine`** entry at the bottom of the terminal showing the active
-   model and context-window usage (`<model> · X% (Nk/Mk)`). Refreshes on each
-   assistant turn boundary — no `refreshInterval` is set. On Windows the
-   Node cold-start cost (1–3s) is longer than any sub-second tick, so a tighter
-   refresh just causes the harness to cancel in-flight scripts and the bar
-   intermittently disappears. The clock face was dropped from this line for
-   the same reason — the chat audit-trail Stop hook (`cah-stamp`) carries
-   the timestamp instead.
+   model, context-window usage, and (for Pro/Max subscribers) the **5-hour**
+   and **weekly** quota use with reset times:
+   `<model> · X% (Nk/Mk) · 5h N% (→HH:MM) · wk N% (→wd HH:MM)`. The 5h/wk
+   parts only appear after the first API response of the session, and are
+   omitted entirely on accounts where Claude Code does not deliver
+   `rate_limits` in the statusLine envelope. Refreshes on each assistant turn
+   boundary — no `refreshInterval`. On Windows the Node cold-start cost
+   (1–3s) is longer than any sub-second tick, so a tighter refresh just
+   causes the harness to cancel in-flight scripts and the bar intermittently
+   disappears. The clock face was dropped from this line for the same reason —
+   the chat audit-trail Stop hook (`cah-stamp`) carries the timestamp instead.
 
-2. A **Stop hook** (`cah-stamp`) that runs after each assistant turn and emits
-   an `HH:MM · model · X%` line as a `systemMessage` into the chat scrollback.
-   This gives you a timestamped audit trail: going back through the conversation
-   you can see when each exchange happened and what the context state was at
-   that moment.
+2. A **chat-stamp hook** (`cah-stamp`) installed on **BOTH** `Stop` AND
+   `PostToolUse`. It emits an `HH:MM · model · X% · 5h N% · wk N%` line as a
+   `systemMessage` into the chat scrollback, both after every tool call AND at
+   end of turn. This gives a fine-grained, timestamped audit trail: going back
+   through the conversation you can see when each tool fired and how the
+   context / 5h / weekly counters were rising at that moment. `cah-stamp` reads
+   the rate_limits from a small state file that `cah-status` writes (the Stop
+   and PostToolUse envelopes don't carry rate_limits themselves).
 
 ## When to use
 
@@ -106,6 +113,25 @@ appended to `hooks.Stop` as a new matcher object:
 }
 ```
 
+**PostToolUse hook entry** (same shape, same sentinel — appended to `hooks.PostToolUse`).
+This makes the audit-trail stamp fire after **every** tool call in a turn, not only
+at the end of the assistant message, so context %, 5h, and weekly counters tick visibly
+through long turns instead of jumping in one step. The matcher `""` means "all tools".
+
+```json
+{
+  "matcher": "",
+  "hooks": [
+    {
+      "type": "command",
+      "command": "node \"<HOME>/.claude/cah-bin/bin/cah-stamp.js\"",
+      "cah-sentinel": "cah-hook:v1",
+      "cah-name": "clock"
+    }
+  ]
+}
+```
+
 ### Default / `--here` (install)
 
 1. Resolve the target `settings.json` path (global for default, local for `--here`).
@@ -126,21 +152,25 @@ appended to `hooks.Stop` as a new matcher object:
    - If it exists WITHOUT our sentinel → treat as foreign, refuse to overwrite,
      ask the user whether to replace it.
    - If there is no `statusLine` key yet: add our entry (shown above).
-5. **Stop hook check**: Scan `hooks.Stop[*].hooks[*]` for an entry with
+5. **Stamp hook check (Stop AND PostToolUse).** Stamp is installed on **both**
+   events so the chat shows progress after every tool call, not only at the end
+   of the assistant message. Repeat the following for `event in ["Stop", "PostToolUse"]`:
+   Scan `hooks[event][*].hooks[*]` for an entry with
    `cah-sentinel === "cah-hook:v1"` AND `cah-name === "clock"`:
    - If found:
      - If its `command` already equals the computed
        `node "<HOME>/.claude/cah-bin/bin/cah-stamp.js"` → report
-       "chat-stamp: already enabled" and continue.
+       "chat-stamp.<event>: already enabled" and continue.
      - Otherwise rewrite that entry's `command` to the computed absolute path
        (migration from the bare `cah-stamp` or an old path), keep the sentinel
-       fields, and report "chat-stamp: migrated".
-   - If not found → append a new matcher entry to `hooks.Stop` (create
-     `hooks` and `hooks.Stop` as arrays if they don't exist yet). IMPORTANT:
-     if other entries already exist in `hooks.Stop` (e.g. from
-     `/checkpoint-watch`), append ours — never replace.
+       fields, and report "chat-stamp.<event>: migrated".
+   - If not found → append a new matcher entry to `hooks[event]` (create
+     `hooks` and `hooks[event]` as arrays if they don't exist yet). IMPORTANT:
+     if other entries already exist there (e.g. from `/checkpoint-watch` in
+     `hooks.Stop`), append ours — never replace.
 6. Save atomically: write to `settings.json.tmp`, then rename it over
-   `settings.json`. Report both pieces' final states.
+   `settings.json`. Report all three pieces' final states (statusLine,
+   chat-stamp.Stop, chat-stamp.PostToolUse).
 
 ### `--off` (disable)
 
@@ -150,10 +180,11 @@ appended to `hooks.Stop` as a new matcher object:
    - **statusLine**: if `data.statusLine` has our sentinel (`cah-sentinel ===
      "cah-status:v1"` AND `cah-name === "clock"`): delete the `statusLine` key.
      If foreign: refuse and report — do not touch it.
-   - **Stop hook**: walk `hooks.Stop`, drop inner hook entries with
+   - **Stamp hooks (Stop AND PostToolUse)**: for `event in ["Stop", "PostToolUse"]`,
+     walk `hooks[event]`, drop inner hook entries with
      `cah-sentinel === "cah-hook:v1"` AND `cah-name === "clock"`. After
      removal, drop any matcher entry whose `hooks` array is empty. Drop
-     `hooks.Stop` if it becomes empty. Drop `hooks` if it becomes empty.
+     `hooks[event]` if it becomes empty. Drop `hooks` if it becomes empty.
    - Save atomically. Never delete `settings.json` itself — even if it
      becomes `{}`.
 3. Report what was removed, or "not enabled" if nothing matched in either scope.
@@ -165,11 +196,13 @@ For both scopes (global `~/.claude/settings.json` and local
 
 ```
 ~/.claude/settings.json:
-  statusLine: enabled / foreign / not set / invalid JSON
-  chat-stamp: enabled / foreign / not set / invalid JSON
+  statusLine:              enabled / foreign / not set / invalid JSON
+  chat-stamp.Stop:         enabled / foreign / not set / invalid JSON
+  chat-stamp.PostToolUse:  enabled / foreign / not set / invalid JSON
 <cwd>/.claude/settings.json:
   statusLine: ...
-  chat-stamp: ...
+  chat-stamp.Stop: ...
+  chat-stamp.PostToolUse: ...
 ```
 
 - **statusLine "enabled"** — `data.statusLine` has `cah-sentinel ===
@@ -177,12 +210,13 @@ For both scopes (global `~/.claude/settings.json` and local
 - **statusLine "foreign"** — `data.statusLine` exists but lacks our sentinel.
 - **statusLine "not set"** — file is missing or has no `statusLine` key.
 - **statusLine "invalid JSON"** — file exists but cannot be parsed.
-- **chat-stamp "enabled"** — any entry in `hooks.Stop[*].hooks[*]` has
-  `cah-sentinel === "cah-hook:v1"` AND `cah-name === "clock"`.
-- **chat-stamp "foreign"** — `hooks.Stop` exists but contains no entry with
-  our sentinel (yet contains something).
-- **chat-stamp "not set"** — `hooks.Stop` is absent or empty.
-- **chat-stamp "invalid JSON"** — file exists but cannot be parsed.
+- **chat-stamp.<event> "enabled"** — any entry in `hooks[event][*].hooks[*]` has
+  `cah-sentinel === "cah-hook:v1"` AND `cah-name === "clock"` (checked
+  independently for `Stop` and `PostToolUse`).
+- **chat-stamp.<event> "foreign"** — `hooks[event]` exists but contains no
+  entry with our sentinel (yet contains something).
+- **chat-stamp.<event> "not set"** — `hooks[event]` is absent or empty.
+- **chat-stamp.<event> "invalid JSON"** — file exists but cannot be parsed.
 
 Never write in this mode.
 
@@ -192,8 +226,9 @@ Never write in this mode.
   `statusLine` lacking both `cah-sentinel === "cah-status:v1"` and
   `cah-name === "clock"` belongs to the user or another tool — ask before
   replacing.
-- **Never touch Stop hook entries WITHOUT our sentinel.** Other hooks in
-  `hooks.Stop` (e.g. from `/checkpoint-watch`) must be preserved exactly.
+- **Never touch hook entries WITHOUT our sentinel.** Other hooks in
+  `hooks.Stop` (e.g. from `/checkpoint-watch`) or in `hooks.PostToolUse`
+  (any third-party tool) must be preserved exactly.
 - **Atomic write only.** Stringify, write to `settings.json.tmp`, then rename it
   over `settings.json`. Never do a partial or in-place truncating write.
 - **Serialize with `JSON.stringify(value, null, 2) + "\n"`** — 2-space indent and

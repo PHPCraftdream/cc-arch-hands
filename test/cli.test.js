@@ -155,6 +155,7 @@ describe('run install/uninstall --only bins', () => {
     'bin/cah-status.js',
     'bin/cah-stamp.js',
     'bin/cah-checkpoint-hint.js',
+    'bin/cah-status-probe.js',
     'lib/transcript-stats.js',
   ];
 

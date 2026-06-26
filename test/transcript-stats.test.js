@@ -10,6 +10,10 @@ import {
   modelLimit,
   formatStatusLine,
   currentHhMm,
+  formatFiveHourReset,
+  formatWeeklyReset,
+  readRateLimitsCache,
+  makeBar,
 } from '../lib/transcript-stats.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -219,7 +223,7 @@ describe('formatStatusLine', () => {
       usedTokens: 46_000,
       limit: 1_000_000,
     });
-    assert.equal(result, '14:05 · Opus 4.7 · 5% (46k/1M)');
+    assert.match(result, /^14:05 · Opus 4\.7 · \[[█▏▎▍▌▋▊▉░]{10}\] 4\.6% \(46k\/1M\)$/);
   });
 
   it('tokens missing → HH:MM · name', () => {
@@ -249,7 +253,7 @@ describe('formatStatusLine', () => {
       usedTokens: 670_000,
       limit: 1_000_000,
     });
-    assert.equal(result, '14:05 · Opus 4.8 · 67% (670k/1M)');
+    assert.match(result, /^14:05 · Opus 4\.8 · \[[█▏▎▍▌▋▊▉░]{10}\] 67% \(670k\/1M\)$/);
     assert.ok(!result.includes('Claude Opus'), 'should not contain "Claude Opus"');
   });
 
@@ -274,16 +278,13 @@ describe('formatStatusLine', () => {
     assert.ok(result.includes('/200k)'), `expected /200k) in "${result}"`);
   });
 
-  it('percentage is rounded', () => {
-    const result = formatStatusLine({
-      time: TIME,
-      displayName: 'Opus',
-      usedTokens: 670_400,
-      limit: 1_000_000,
-    });
-    // 670400 / 1000000 * 100 = 67.04 → rounds to 67
-    assert.ok(result.includes('67%'), `expected 67% in "${result}"`);
-    assert.ok(!result.includes('67.'), 'should not include decimal percentage');
+  it('percentage formatted to two decimals, trailing zeros trimmed', () => {
+    const r1 = formatStatusLine({ time: TIME, displayName: 'Opus', usedTokens: 670_400, limit: 1_000_000 });
+    assert.ok(r1.includes('67.04%'), `expected 67.04% in "${r1}"`);
+    const r2 = formatStatusLine({ time: TIME, displayName: 'Opus', usedTokens: 670_000, limit: 1_000_000 });
+    assert.ok(r2.includes('67%') && !r2.includes('67.'), `whole percent stays integer in "${r2}"`);
+    const r3 = formatStatusLine({ time: TIME, displayName: 'Opus', usedTokens: 678_000, limit: 1_000_000 });
+    assert.ok(r3.includes('67.8%') && !r3.includes('67.80'), `trailing zero stripped in "${r3}"`);
   });
 });
 
@@ -310,5 +311,216 @@ describe('currentHhMm', () => {
   it('handles end of day', () => {
     const date = new Date(2024, 0, 1, 23, 59, 0); // 23:59
     assert.equal(currentHhMm(date), '23:59');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatFiveHourReset / formatWeeklyReset
+// ---------------------------------------------------------------------------
+
+describe('formatFiveHourReset (remaining time)', () => {
+  it('returns "Hч Mм" when more than an hour remains', () => {
+    const now = new Date(2024, 5, 1, 10, 0, 0);
+    const reset = new Date(2024, 5, 1, 13, 25, 0).toISOString();
+    assert.equal(formatFiveHourReset(reset, now), '3ч 25м');
+  });
+
+  it('returns "Mм" when less than an hour remains', () => {
+    const now = new Date(2024, 5, 1, 10, 0, 0);
+    const reset = new Date(2024, 5, 1, 10, 23, 0).toISOString();
+    assert.equal(formatFiveHourReset(reset, now), '23м');
+  });
+
+  it('returns "<1м" for sub-minute remainder', () => {
+    const now = new Date(2024, 5, 1, 10, 0, 0);
+    const reset = new Date(2024, 5, 1, 10, 0, 30).toISOString();
+    assert.equal(formatFiveHourReset(reset, now), '<1м');
+  });
+
+  it('returns "0м" when reset is in the past', () => {
+    const now = new Date(2024, 5, 1, 10, 0, 0);
+    const reset = new Date(2024, 5, 1, 9, 50, 0).toISOString();
+    assert.equal(formatFiveHourReset(reset, now), '0м');
+  });
+
+  it('returns null for null / undefined / empty / malformed', () => {
+    assert.equal(formatFiveHourReset(null), null);
+    assert.equal(formatFiveHourReset(undefined), null);
+    assert.equal(formatFiveHourReset(''), null);
+    assert.equal(formatFiveHourReset('not-a-date'), null);
+  });
+});
+
+describe('formatWeeklyReset (weekday + date + time)', () => {
+  it('returns "wd DD.MM HH:MM" with zero-padded fields', () => {
+    const reset = new Date(2024, 0, 5, 3, 0, 0).toISOString();
+    const result = formatWeeklyReset(reset);
+    assert.match(result, /^.+ 05\.01 03:00$/, `got "${result}"`);
+    assert.ok(result.includes(' '), 'must contain weekday + date');
+  });
+
+  it('returns null on malformed input', () => {
+    assert.equal(formatWeeklyReset(null), null);
+    assert.equal(formatWeeklyReset('x'), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// formatStatusLine with rate_limits
+// ---------------------------------------------------------------------------
+
+describe('formatStatusLine rate_limits', () => {
+  const now = new Date(2024, 5, 1, 10, 0, 0);
+  const reset5h = new Date(2024, 5, 1, 14, 30, 0).toISOString(); // 14:30 same day
+  const resetWk = new Date(2024, 5, 5, 3, 0, 0).toISOString(); // 4 days out, 03:00
+
+  it('appends 5h and wk parts when both provided', () => {
+    const line = formatStatusLine({
+      time: null,
+      displayName: 'claude-opus-4-7',
+      usedTokens: 90_000,
+      limit: 200_000,
+      fiveHour: { used: 23, resetsAt: reset5h },
+      sevenDay: { used: 67, resetsAt: resetWk },
+      now,
+    });
+    assert.match(line, /^Opus 4\.7 · \[[█▏▎▍▌▋▊▉░]{10}\] 45% \(90k\/200k\) · 5h \[[█▏▎▍▌▋▊▉░]{10}\] 23% →[\dч м<]+ · wk \[[█▏▎▍▌▋▊▉░]{10}\] 67% →.+ 05\.06 03:00$/, line);
+  });
+
+  it('omits rate_limits parts when missing', () => {
+    const line = formatStatusLine({
+      time: null,
+      displayName: 'claude-opus-4-7',
+      usedTokens: 90_000,
+      limit: 200_000,
+    });
+    assert.match(line, /^Opus 4\.7 · \[[█▏▎▍▌▋▊▉░]{10}\] 45% \(90k\/200k\)$/);
+  });
+
+  it('appends only one slot when only one is present', () => {
+    const line = formatStatusLine({
+      time: null,
+      displayName: 'claude-opus-4-7',
+      usedTokens: null,
+      limit: null,
+      fiveHour: { used: 0, resetsAt: reset5h },
+      sevenDay: null,
+      now,
+    });
+    assert.match(line, /^Opus 4\.7 · 5h \[░{10}\] 0% →[\dч м<]+$/);
+  });
+
+  it('formats slot without reset time when resetsAt is null', () => {
+    const line = formatStatusLine({
+      time: null,
+      displayName: 'claude-opus-4-7',
+      fiveHour: { used: 50, resetsAt: null },
+      now,
+    });
+    assert.match(line, /^Opus 4\.7 · 5h \[[█▏▎▍▌▋▊▉░]{10}\] 50%$/);
+  });
+
+  it('formats percentages to two decimals (trailing zeros trimmed)', () => {
+    const line = formatStatusLine({
+      time: null,
+      displayName: 'claude-opus-4-7',
+      fiveHour: { used: 23.7, resetsAt: null },
+      sevenDay: { used: 66.43, resetsAt: null },
+      now,
+    });
+    assert.match(line, /^Opus 4\.7 · 5h \[[█▏▎▍▌▋▊▉░]{10}\] 23\.7% · wk \[[█▏▎▍▌▋▊▉░]{10}\] 66\.43%$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// makeBar
+// ---------------------------------------------------------------------------
+
+describe('makeBar', () => {
+  it('0% → 10 empty cells in square brackets, limit mode', () => {
+    assert.equal(makeBar(0), '[░░░░░░░░░░]');
+  });
+
+  it('100% → 10 full block cells in square brackets, limit mode', () => {
+    assert.equal(makeBar(100), '[██████████]');
+  });
+
+  it('limit mode uses 8-level subblock partial', () => {
+    // 23% → 2 full + a partial near ▍ (round((3/10)*8)=2 → ▎)
+    const bar = makeBar(23);
+    assert.match(bar, /^\[██[▏▎▍▌▋▊▉]░{7}\]$/, bar);
+  });
+
+  it('time mode uses ▓ fill and ▒ partial inside round brackets', () => {
+    const bar = makeBar(25, 'time');
+    assert.match(bar, /^\(▓▓▒░{7}\)$/, bar);
+  });
+
+  it('time mode at 100% → 10 ▓ cells', () => {
+    assert.equal(makeBar(100, 'time'), '(▓▓▓▓▓▓▓▓▓▓)');
+  });
+
+  it('clamps over-range and under-range', () => {
+    assert.equal(makeBar(-5), '[░░░░░░░░░░]');
+    assert.equal(makeBar(120), '[██████████]');
+  });
+
+  it('limit mode rounds remainder up to full block when ≥ 7.5/8', () => {
+    // 99% → 9 full + remainder 9, eighths = round(9/10*8)=7 → ▉
+    const bar = makeBar(99);
+    assert.equal(bar, '[█████████▉]');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readRateLimitsCache
+// ---------------------------------------------------------------------------
+
+describe('readRateLimitsCache', () => {
+  it('returns null when file missing', () => {
+    const dir = isolatedDir();
+    assert.equal(readRateLimitsCache(join(dir, 'nope.json')), null);
+  });
+
+  it('returns null on malformed JSON', () => {
+    const dir = isolatedDir();
+    const path = join(dir, 'rl.json');
+    writeFileSync(path, '{not json');
+    assert.equal(readRateLimitsCache(path), null);
+  });
+
+  it('returns null when capturedAt missing', () => {
+    const dir = isolatedDir();
+    const path = join(dir, 'rl.json');
+    writeFileSync(path, JSON.stringify({ fiveHour: { used: 1, resetsAt: null } }));
+    assert.equal(readRateLimitsCache(path), null);
+  });
+
+  it('returns null when older than 1h', () => {
+    const dir = isolatedDir();
+    const path = join(dir, 'rl.json');
+    const oldMs = 1_700_000_000_000;
+    writeFileSync(path, JSON.stringify({
+      fiveHour: { used: 10, resetsAt: null },
+      sevenDay: null,
+      capturedAt: oldMs,
+    }));
+    assert.equal(readRateLimitsCache(path, oldMs + 60 * 60 * 1000 + 1), null);
+  });
+
+  it('returns slots when fresh', () => {
+    const dir = isolatedDir();
+    const path = join(dir, 'rl.json');
+    const t = 1_700_000_000_000;
+    writeFileSync(path, JSON.stringify({
+      fiveHour: { used: 10, resetsAt: '2024-06-01T14:30:00Z' },
+      sevenDay: { used: 50, resetsAt: '2024-06-05T03:00:00Z' },
+      capturedAt: t,
+    }));
+    const got = readRateLimitsCache(path, t + 60 * 1000);
+    assert.deepEqual(got, {
+      fiveHour: { used: 10, resetsAt: '2024-06-01T14:30:00Z' },
+      sevenDay: { used: 50, resetsAt: '2024-06-05T03:00:00Z' },
+    });
   });
 });

@@ -308,7 +308,17 @@ npx cah list                             # tabular: NAME | KIND | STATE
 npx cah list --json                      # NDJSON for scripting
 npx cah doctor                           # condensed health verdict
 npx cah version                          # version + counts
+
+npx cah probe statusline start           # diagnostic: capture raw statusLine envelope
+npx cah probe statusline stop            # restore + print captured envelope
+npx cah probe statusline status          # is the probe armed?
 ```
+
+`cah probe statusline` atomically rewires `settings.statusLine` to a
+capturing bin and backs up the original. `stop` restores the original and
+prints the parsed envelope so you can see exactly which fields Claude Code
+delivers on your account (e.g. whether `rate_limits.five_hour.resets_at` is
+populated). No manual `settings.json` edits.
 
 From source (same commands, prefix with `node bin/cah.js`):
 

@@ -5,6 +5,40 @@ All notable changes to `cc-arch-hands` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1]
+
+### Added
+
+- **statusLine: 5-hour and weekly quota (Pro/Max).** `cah-status` reads
+  `rate_limits.{five_hour,seven_day}.{used_percentage,resets_at}` from the
+  statusLine envelope and persists them to `~/.claude/cah-bin/cache/rate-limits.json`
+  so `cah-stamp` (which receives a different envelope) can include them in the
+  chat audit trail.
+- **Progress bars in statusLine** for context, 5h, and weekly windows.
+  Limit bars use square brackets and precise 8-level subblocks `[████▍░░░░░]`;
+  time-elapsed bars use round brackets and medium-shade fill `(▓▓▓▒░░░░░░)`
+  so the two axes are visually distinct.
+- **`cah probe statusline start|stop|status`** — installer-driven diagnostic
+  for the statusLine envelope. Atomically swaps `settings.statusLine` to a
+  capturing bin (`cah-status-probe`), backs up the original, dumps each tick
+  as JSONL, and restores the original on `stop` while printing the parsed
+  envelope. Cross-platform, no manual `settings.json` edits.
+- **Throttle for chat-stamp**: `cah-stamp` skips if it already emitted within
+  `CAH_STAMP_MIN_INTERVAL_MS` (default 10s). Lets the stamp safely run on
+  both `Stop` and `PostToolUse` hooks without spamming the scrollback.
+
+### Changed
+
+- **`/clock` installs chat-stamp on BOTH `Stop` AND `PostToolUse`** so the
+  audit line ticks while a long turn is still running, not only at end of
+  turn.
+- Percentages formatted to two decimals with trailing zeros trimmed
+  (`12.34%`, `50%`, `66.4%`) — previously rounded to whole percents.
+- Reset times for 5h and weekly windows shown as `DD.MM HH:MM` (was
+  `HH:MM` / `wd HH:MM`) — explicit date even when reset is on another day.
+- Chat-stamp output stays **bar-free** (compact text); progress bars live
+  only in the statusLine.
+
 ## [0.4.0]
 
 ### Added

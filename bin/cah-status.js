@@ -14,10 +14,50 @@
 // Never crashes, never produces empty stdout (the harness would blank
 // the bar), always exits 0.
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdirSync, writeFileSync, renameSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { homedir } from 'node:os';
 import { formatStatusLine } from '../lib/transcript-stats.js';
 
 const FALLBACK = '—';
+
+// Pro/Max rate_limits (five_hour, seven_day) live ONLY in the statusLine
+// envelope. Persist the last seen values so the Stop / PostToolUse hook bin
+// (cah-stamp) — which receives a different envelope without rate_limits —
+// can include them in the chat audit trail.
+// CAH_RATE_LIMITS_CACHE env override lets tests/CI redirect the write path.
+const RATE_LIMITS_CACHE =
+  process.env.CAH_RATE_LIMITS_CACHE ||
+  join(homedir(), '.claude', 'cah-bin', 'cache', 'rate-limits.json');
+
+function extractRateSlot(slot) {
+  if (!slot || typeof slot !== 'object') return null;
+  const used = typeof slot.used_percentage === 'number' ? slot.used_percentage : null;
+  let resetsAt = null;
+  if (typeof slot.resets_at === 'string') {
+    resetsAt = slot.resets_at;
+  } else if (typeof slot.resets_at === 'number') {
+    // Claude Code sends resets_at as a Unix timestamp (seconds since epoch).
+    resetsAt = new Date(slot.resets_at * 1000).toISOString();
+  }
+  if (used === null && resetsAt === null) return null;
+  return { used, resetsAt };
+}
+
+function persistRateLimits(fiveHour, sevenDay) {
+  if (!fiveHour && !sevenDay) return;
+  try {
+    mkdirSync(dirname(RATE_LIMITS_CACHE), { recursive: true });
+    const tmp = RATE_LIMITS_CACHE + '.tmp';
+    writeFileSync(
+      tmp,
+      JSON.stringify({ fiveHour, sevenDay, capturedAt: Date.now() }) + '\n',
+    );
+    renameSync(tmp, RATE_LIMITS_CACHE);
+  } catch {
+    // Fail-silent: the statusLine bin must never break the bar over a cache miss.
+  }
+}
 
 function buildLine(data) {
   let displayName = null;
@@ -39,8 +79,23 @@ function buildLine(data) {
     // ignore
   }
 
+  let fiveHour = null;
+  let sevenDay = null;
+  try {
+    const rl = data && data.rate_limits;
+    if (rl && typeof rl === 'object') {
+      fiveHour = extractRateSlot(rl.five_hour);
+      sevenDay = extractRateSlot(rl.seven_day);
+    }
+  } catch {
+    // ignore
+  }
+  persistRateLimits(fiveHour, sevenDay);
+
   // Reuse the shared formatter with time omitted (it's tolerant of null time).
-  const line = formatStatusLine({ time: null, displayName, usedTokens, limit });
+  const line = formatStatusLine({
+    time: null, displayName, usedTokens, limit, fiveHour, sevenDay,
+  });
   return line || FALLBACK;
 }
 
