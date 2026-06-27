@@ -5,6 +5,66 @@ All notable changes to `cc-arch-hands` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.5]
+
+Hardening release addressing a third-party Node.js code review. No new
+features; the focus is preventing data loss, fixing CLI contract gaps, and
+improving cross-platform robustness.
+
+### Fixed
+
+- **Skill install/uninstall no longer destroys user files.** Previously a
+  whole skill directory was deleted based only on the `SKILL.md` sentinel, so
+  any file you dropped into a managed skill dir — or a `cp -r` copy of an
+  installed skill carrying the sentinel — was silently wiped on the next
+  `install`/`reinstall`/`uninstall`. Ownership is now decided per file: only
+  files cah owns are overwritten/removed, and anything extra is preserved and
+  reported (`preserved N (user data)` / `kept: <path>`).
+- **Atomic writes for sentinel-bearing files.** Model command/agent `.md`
+  files and skill manifests are written via a temp file + rename, so an
+  interrupted or failed write can no longer strand a file in the unrecoverable
+  `foreign` state (the sentinel sits at the end of the body).
+- **`cah reinstall --templates DIR` no longer aborts.** The flag is documented
+  but every invocation failed in the uninstall phase with
+  `Unknown option '--templates'`; it now passes through cleanly.
+- **`cah probe statusline` survives a UTF-8 BOM / preserves formatting.**
+  A BOM-prefixed `settings.json` (some editors add one) no longer makes
+  `probe stop` throw and strand the probe; existing indentation is preserved
+  instead of being forced to 2-space; parse failures now print recovery
+  guidance.
+- **Probe command is cross-platform.** The `statusLine` command path is
+  normalized to forward slashes (works under POSIX-like shells on Windows and
+  across synced dotfiles) and embedded double-quotes are escaped.
+- **Companion bins are installed executable** (`0o755`) and the sentinel is
+  injected without producing mixed line endings when source files are checked
+  out with CRLF. Added `.gitattributes` to keep `bin/`+`lib/` LF-only.
+- **`cah-checkpoint-hint` cleans up after itself.** Stale one-shot marker
+  files in `~/.claude/` (one per session) are pruned after 7 days; the bin is
+  now strictly fail-silent (no stray stderr) and its displayed percentage is
+  derived from the threshold constant.
+- **Transcript stats read only the tail** of large transcripts instead of the
+  whole file on every Stop/PostToolUse hook, and skip `type:"user"` entries
+  entirely so a tool result echoing an upstream `usage`/`model` can't be
+  mistaken for session context or mispaired with assistant usage. Guarded a
+  `limit == 0` division that produced `Infinity%`.
+
+### Changed
+
+- **`cah doctor` now exits non-zero when unhealthy** — `2` if conflicting
+  `foreign` files block a clean install, `1` if expected files are `missing`,
+  `0` only when fully healthy. This makes `doctor` usable as a CI/script health
+  gate (e.g. `cah doctor || cah install`). **Note:** scripts that relied on
+  `doctor` always exiting `0` — including a fresh check before any install,
+  which now returns `1` — must be updated.
+- **`cah probe statusline <action>` rejects unknown trailing flags** (exit `2`),
+  matching the strict-flag contract of every other subcommand. A typo like
+  `--globl` now fails loudly instead of silently succeeding.
+- **Install/uninstall now warn** when `--local`/`--cwd` is combined with the
+  `bins` class, since bins always target the global `~/.claude/cah-bin/`.
+- Top-level exception boundary in `bin/cah.js` turns an unexpected internal
+  throw into a clean `cah: unexpected error: …` + exit 1 instead of a raw
+  stack trace, and guards against a non-numeric exit code.
+
 ## [0.4.4]
 
 ### Added

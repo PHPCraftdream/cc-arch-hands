@@ -1,0 +1,5 @@
+# Keep the companion bins and their shared lib LF-only on every platform so
+# the installer's sentinel injection never produces mixed line endings, even
+# under git core.autocrlf on Windows.
+bin/*.js text eol=lf
+lib/*.js text eol=lf
