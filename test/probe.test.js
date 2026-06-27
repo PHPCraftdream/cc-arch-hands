@@ -101,6 +101,35 @@ describe('disableProbe', () => {
     unlinkSync(h.backupPath);
     assert.throws(() => disableProbe(h), MissingBackupError);
   });
+
+  it('tolerates a UTF-8 BOM in settings.json (review M6)', () => {
+    const h = harness();
+    const original = { type: 'command', command: 'foo', padding: 0 };
+    // editor-added BOM in front of otherwise valid JSON
+    writeFileSync(h.settingsPath, '﻿' + JSON.stringify({ statusLine: original }));
+    enableProbe(h);
+    // a BOM-prefixed file must not stop the probe from being disabled
+    const { restored } = disableProbe(h);
+    assert.deepEqual(restored, original);
+  });
+});
+
+describe('probe command portability (review M10/L12)', () => {
+  it('normalizes path separators and escapes quotes in the command', () => {
+    const h = harness();
+    enableProbe(h);
+    const s = JSON.parse(readFileSync(h.settingsPath, 'utf8'));
+    assert.ok(!s.statusLine.command.includes('\\'), 'no backslash separators');
+    assert.match(s.statusLine.command, /^node "/);
+  });
+
+  it('preserves 4-space indentation of an existing settings.json (review L15)', () => {
+    const h = harness();
+    writeFileSync(h.settingsPath, JSON.stringify({ other: 'keep' }, null, 4));
+    enableProbe(h);
+    const text = readFileSync(h.settingsPath, 'utf8');
+    assert.match(text, /\n {4}"other"/, 'indentation must stay 4-space');
+  });
 });
 
 describe('readProbeLog', () => {

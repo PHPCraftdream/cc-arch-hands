@@ -531,6 +531,70 @@ describe('removeSkills', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Skill data-loss protection (review H1/H2/M5)
+// ---------------------------------------------------------------------------
+
+describe('skill data-loss protection', () => {
+  it('writeSkills preserves user files dropped into a managed skill dir', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const tpl = embeddedTemplates();
+    writeSkills(tpl, scope);
+
+    const name = AllSkills[0];
+    const userFile = join(dir, '.claude', 'skills', name, 'my-notes.md');
+    writeFileSync(userFile, 'my private notes');
+
+    const { preserved } = writeSkills(tpl, scope); // reinstall
+    assert.equal(readFileSync(userFile, 'utf8'), 'my private notes');
+    assert.ok(preserved.includes(`${name}/my-notes.md`));
+    // the manifest is still rewritten (and stamped) alongside
+    const manifest = readFileSync(join(dir, '.claude', 'skills', name, SKILL_MANIFEST_LEAF), 'utf8');
+    assert.ok(manifest.includes(SentinelSkill));
+  });
+
+  it('removeSkills keeps user files, removing only our manifest', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const tpl = embeddedTemplates();
+    writeSkills(tpl, scope);
+
+    const name = AllSkills[0];
+    const userFile = join(dir, '.claude', 'skills', name, 'keep.md');
+    writeFileSync(userFile, 'keep me');
+
+    const { removed, preserved } = removeSkills(scope);
+    assert.ok(preserved.includes(name));
+    // the skill with user data is reported under preserved, not removed
+    assert.equal(removed, AllSkills.length - 1);
+    assert.equal(readFileSync(userFile, 'utf8'), 'keep me');
+    assert.throws(
+      () => statSync(join(dir, '.claude', 'skills', name, SKILL_MANIFEST_LEAF)),
+      { code: 'ENOENT' },
+    );
+  });
+
+  it('pruneOrphanDirs spares a copied skill dir that holds extra user files', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const tpl = embeddedTemplates();
+    writeSkills(tpl, scope);
+
+    // Simulate `cp -r ~/.claude/skills/<x> ~/.claude/skills/my-custom-copy`
+    // followed by the user adding their own file.
+    const copyDir = join(dir, '.claude', 'skills', 'my-custom-copy');
+    mkdirSync(copyDir, { recursive: true });
+    writeFileSync(join(copyDir, SKILL_MANIFEST_LEAF), `# copy\n${SentinelSkill}\n`);
+    writeFileSync(join(copyDir, 'extra.md'), 'user data');
+
+    const { preserved, pruned } = writeSkills(tpl, scope);
+    assert.equal(pruned, 0);
+    assert.ok(preserved.some((p) => p.startsWith('my-custom-copy')));
+    assert.equal(readFileSync(join(copyDir, 'extra.md'), 'utf8'), 'user data');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Strict scope
 // ---------------------------------------------------------------------------
 

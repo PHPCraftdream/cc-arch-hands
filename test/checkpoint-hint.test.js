@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, existsSync, mkdirSync, utimesSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -87,6 +87,26 @@ describe('cah-checkpoint-hint bin', () => {
     );
     assert.equal(stdout, '');
     assert.equal(status, 0);
+  });
+
+  it('prunes stale hint markers older than the TTL but keeps fresh ones', () => {
+    const home = isolatedHome();
+    const claudeDir = join(home, '.claude');
+    mkdirSync(claudeDir, { recursive: true });
+
+    const stale = join(claudeDir, 'cah-hint-shown-old');
+    writeFileSync(stale, '');
+    const old = Date.now() / 1000 - 30 * 24 * 60 * 60; // ~30 days ago
+    utimesSync(stale, old, old);
+
+    const fresh = join(claudeDir, 'cah-hint-shown-recent');
+    writeFileSync(fresh, '');
+
+    const tp = writeTranscript(home, 'claude-opus-4-8', 10_000); // below threshold
+    runHint(JSON.stringify({ session_id: 's-new', transcript_path: tp }), home);
+
+    assert.equal(existsSync(stale), false, 'stale marker pruned');
+    assert.equal(existsSync(fresh), true, 'fresh marker kept');
   });
 
   it('transcript missing/unreadable → silent, exit 0', () => {

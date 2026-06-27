@@ -52,11 +52,11 @@ The codebase has two layers: a thin CLI (`lib/cli.js`) that does arg parsing and
 | `lib/sentinel.js` | Sentinel constants, `classifyContent`, `isOurs` |
 | `lib/scope.js` | `Scope` class, `resolve*Dir()`, strict-mode guard |
 | `lib/templates.js` | Bundled / disk template abstraction, `skillTree` walker |
-| `lib/fsutil.js` | `readFileMaybe` + `pruneOrphans` + `pruneOrphanDirs` helpers |
+| `lib/fsutil.js` | `readFileMaybe` + `writeFileAtomic` + `listFilesRel` + `pruneOrphans` + `pruneOrphanDirs` helpers |
 | `lib/transcript-stats.js` | Shared transcript walker + status-line formatter for all hook bins |
 | `lib/commands.js` | `writeModelCommands` / `removeModelCommands` |
 | `lib/agents.js` | `writeModelAgents` / `removeModelAgents`, git-safety & test-scope clauses |
-| `lib/skills.js` | `writeSkills` / `removeSkills` (wipe-and-reinstall on upgrade) |
+| `lib/skills.js` | `writeSkills` / `removeSkills` — overwrite owned files in place (atomic), never wipe the whole dir; user-added files inside a managed skill are preserved and reported |
 | `lib/binstall.js` | `writeBins` / `removeBins` + `BinFiles` registry — copies companion bins into `~/.claude/cah-bin/` with `// cah-bin:v1` sentinel |
 | `lib/probe.js` | `enableProbe` / `disableProbe` / `readProbeLog` / `probeStatus` — atomic settings.json swap to wire `cah-status-probe` as the statusLine bin, with a sidecar backup file |
 | `test/*.test.js` | Full test suite (`node:test` + `node:assert/strict`) — installer, cli, binstall, checkpoint-hint, clock, stamp, transcript-stats, probe |
@@ -70,3 +70,5 @@ The codebase has two layers: a thin CLI (`lib/cli.js`) that does arg parsing and
 - **README install examples must cover every installable artefact.** The `Use` section must contain a one-line `npx cah install --only <name>` example for **every** skill in `AllSkills` AND for `bins`. Classes `commands` and `agents` are exempt — they have no point-install story. When adding a new skill to `AllSkills`, add its example line in `README.md` in the same PR; CI does not enforce this, the project does.
 - **Skill ⇄ dependency map is centralised in `lib/manifest.js` `SkillDeps`.** When a new skill needs companion bins or any other class, register it there — `lib/cli.js resolveDeps()` reads from that map and prints the `notice: auto-added 'bins' (required by: …)` line on install. Uninstall is explicit-only and never consults `SkillDeps`.
 - **`parseOnly` returns `{classes, skills}`, not a flat array.** When wiring a new subcommand that takes `--only`, use `resolveDeps(parseOnly(vals.only))` and pass `skillsSubset` into `writeSkills` / `removeSkills` so subset installs/uninstalls leave foreign skills untouched.
+- **Never recursively delete a skill directory based only on the `SKILL.md` sentinel.** `writeSkills`/`removeSkills`/`pruneOrphanDirs` must classify per-file: anything beyond the owned template tree is user data — preserve it and report via the `preserved` list. All file writes that carry an end-of-body sentinel go through `writeFileAtomic` (tmp + rename) so a torn write can't strand a file in `foreign` state.
+- **`cah doctor` exits non-zero when unhealthy** — 2 if any `foreign` files block a clean install, 1 if expected files are `missing`, 0 only when fully healthy. It is a CI/script health gate; don't regress it back to always-0.
