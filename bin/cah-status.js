@@ -44,14 +44,14 @@ function extractRateSlot(slot) {
   return { used, resetsAt };
 }
 
-function persistRateLimits(fiveHour, sevenDay) {
-  if (!fiveHour && !sevenDay) return;
+function persistSessionState(fiveHour, sevenDay, effort) {
+  if (!fiveHour && !sevenDay && !effort) return;
   try {
     mkdirSync(dirname(RATE_LIMITS_CACHE), { recursive: true });
     const tmp = RATE_LIMITS_CACHE + '.tmp';
     writeFileSync(
       tmp,
-      JSON.stringify({ fiveHour, sevenDay, capturedAt: Date.now() }) + '\n',
+      JSON.stringify({ fiveHour, sevenDay, effort, capturedAt: Date.now() }) + '\n',
     );
     renameSync(tmp, RATE_LIMITS_CACHE);
   } catch {
@@ -90,11 +90,24 @@ function buildLine(data) {
   } catch {
     // ignore
   }
-  persistRateLimits(fiveHour, sevenDay);
+
+  // effort.level lives only in the statusLine envelope. Persist it next to
+  // rate_limits so cah-stamp (Stop / PostToolUse hook, different envelope
+  // without effort) can echo it into the chat audit trail.
+  let effort = null;
+  try {
+    const e = data && data.effort;
+    if (e && typeof e === 'object' && typeof e.level === 'string') {
+      effort = e.level;
+    }
+  } catch {
+    // ignore
+  }
+  persistSessionState(fiveHour, sevenDay, effort);
 
   // Reuse the shared formatter with time omitted (it's tolerant of null time).
   const line = formatStatusLine({
-    time: null, displayName, usedTokens, limit, fiveHour, sevenDay,
+    time: null, displayName, usedTokens, limit, fiveHour, sevenDay, effort,
   });
   return line || FALLBACK;
 }

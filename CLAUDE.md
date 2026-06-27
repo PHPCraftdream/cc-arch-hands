@@ -25,7 +25,7 @@ node bin/cah.js install --templates ./templates --only skills --cwd /tmp/sandbox
 
 The codebase has two layers: a thin CLI (`lib/cli.js`) that does arg parsing and dispatch, and the installer modules (`lib/*.js`) that own all side effects.
 
-**Manifest-driven generation.** The 35 model entries live in `lib/manifest.js` as `AllModelCommands`. Both commands and agents are rendered parametrically at install time from this single registry. Adding a new model/effort pair = one object in the array.
+**Manifest-driven generation.** The 36 model entries live in `lib/manifest.js` as `AllModelCommands`. Both commands and agents are rendered parametrically at install time from this single registry. Adding a new model/effort pair = one object in the array.
 
 **Skills are static trees.** Each skill is a directory under `templates/skills/<name>/`. The `AllSkills` array in `lib/manifest.js` is the registry. Adding a skill = drop a directory + append the name.
 
@@ -35,7 +35,7 @@ The codebase has two layers: a thin CLI (`lib/cli.js`) that does arg parsing and
 
 **Templates.** `lib/templates.js` resolves skill trees from either the bundled `templates/` directory (relative to package root via `import.meta.url`) or from an arbitrary disk path via `--templates <dir>`.
 
-**Companion bins.** Three skills ship a companion bin used as the Stop hook or statusLine command in user `settings.json`: `/checkpoint-watch` → `cah-checkpoint-hint`, `/clock` → `cah-status` (statusLine) + `cah-stamp` (Stop hook). All three bins share `lib/transcript-stats.js` for transcript JSONL walking, cache-aware token sum (`input_tokens + cache_creation_input_tokens + cache_read_input_tokens`), model→limit mapping, and the `HH:MM · model · X% (Nk/Mk)` formatter. **Don't recompute these values inline in any new bin — extend `transcript-stats.js`.**
+**Companion bins.** Three skills ship a companion bin used as the Stop hook or statusLine command in user `settings.json`: `/checkpoint-watch` → `cah-checkpoint-hint`, `/clock` → `cah-status` (statusLine) + `cah-stamp` (Stop+PostToolUse hook). All three bins share `lib/transcript-stats.js` for transcript JSONL walking, cache-aware token sum (`input_tokens + cache_creation_input_tokens + cache_read_input_tokens`), model→limit mapping, per-turn `requestId` extraction (used by `cah-stamp` for per-message dedup so a long turn produces one chat stamp, not many), and the `HH:MM · <model> [effort] · X% (Nk/Mk)` formatter. **Don't recompute these values inline in any new bin — extend `transcript-stats.js`.** The `effort` level (`low/medium/high/xhigh/max`) is rendered as a one-letter bracketed suffix matching the slash-command convention (`/sl /sm /sh /sx /sxx` → `[l] [m] [h] [x] [xx]`); models without effort support render the bare name. The statusLine envelope carries `effort.level` directly; `cah-stamp` reads it from the shared `~/.claude/cah-bin/cache/rate-limits.json` cache that `cah-status` populates (the Stop/PostToolUse envelope does not include `effort` or `rate_limits`).
 
 **The `bins` install class (since 0.4.0).** `cah install` copies the three companion bins **and** their lone dependency `lib/transcript-stats.js` into `~/.claude/cah-bin/`, mirroring the package's `bin/` + `lib/` layout so the bins' relative import resolves unchanged. `settings.json` then references them by absolute path (`node "<HOME>/.claude/cah-bin/bin/cah-status.js"`) instead of a bare PATH name. This decouples `/clock` and `/checkpoint-watch` from where the npm package lives — moving, relinking, or uninstalling the package no longer breaks the statusLine/hooks. Each copied file carries the `// cah-bin:v1` sentinel (rides the line after the shebang); install does a wipe-and-prune of orphans, foreign files are never touched. The bins are **always written to the global `~/.claude/cah-bin/`** regardless of scope flags (`Scope.resolveBinDir()` ignores `--local`/`--cwd`) — there is one stable copy, and even project-local `settings.json` points at it. The npm package still declares the bins in `package.json` `bin` for backward compat, but the skills no longer rely on PATH resolution. **The `/clock` and `/checkpoint-watch` SKILL.md migrate a pre-0.4.0 bare-name `command` to the absolute path on re-run.**
 
@@ -48,7 +48,7 @@ The codebase has two layers: a thin CLI (`lib/cli.js`) that does arg parsing and
 | `bin/cah-status.js` | statusLine bin: renders rich JSON envelope to one line |
 | `bin/cah-stamp.js` | Stop hook bin: per-turn audit-trail systemMessage |
 | `lib/cli.js` | CLI dispatch, arg parsing (`node:util parseArgs`), presentation |
-| `lib/manifest.js` | `AllModelCommands` registry (35 entries) + `AllSkills` list |
+| `lib/manifest.js` | `AllModelCommands` registry (36 entries) + `AllSkills` list |
 | `lib/sentinel.js` | Sentinel constants, `classifyContent`, `isOurs` |
 | `lib/scope.js` | `Scope` class, `resolve*Dir()`, strict-mode guard |
 | `lib/templates.js` | Bundled / disk template abstraction, `skillTree` walker |

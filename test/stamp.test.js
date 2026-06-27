@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -262,6 +262,62 @@ describe('cah-stamp bin', () => {
       { CAH_STAMP_THROTTLE_PATH: throttle, CAH_STAMP_MIN_INTERVAL_MS: '10000' },
     );
     assert.ok(second.stdout.trim().length > 0, 'second stamp after interval should emit');
+  });
+
+  it('per-message dedup: same requestId twice → second suppressed even past throttle', () => {
+    const dir = isolatedDir();
+    const tp = join(dir, 'transcript.jsonl');
+    // Same requestId on the assistant entry → marks the same turn.
+    writeFileSync(tp, JSON.stringify({
+      type: 'assistant',
+      requestId: 'req_dedup_same_turn',
+      message: { role: 'assistant', model: 'claude-opus-4-7', usage: { input_tokens: 46_000, output_tokens: 10 } },
+    }) + '\n');
+    const throttle = join(dir, 'last-stamp.json');
+    const first = runStamp(
+      { session_id: 's', transcript_path: tp },
+      { CAH_STAMP_THROTTLE_PATH: throttle, CAH_STAMP_MIN_INTERVAL_MS: '1' },
+    );
+    assert.ok(first.stdout.trim().length > 0, 'first stamp should emit');
+    // Pretend MIN_INTERVAL elapsed, so only the requestId dedup can block this.
+    const file = JSON.parse(readFileSync(throttle, 'utf8'));
+    file.lastStampedAt = Date.now() - 60_000;
+    writeFileSync(throttle, JSON.stringify(file));
+    const second = runStamp(
+      { session_id: 's', transcript_path: tp },
+      { CAH_STAMP_THROTTLE_PATH: throttle, CAH_STAMP_MIN_INTERVAL_MS: '1' },
+    );
+    assert.equal(second.stdout, '', 'second stamp for the same requestId must be suppressed');
+  });
+
+  it('per-message dedup: different requestId → new stamp emits (past throttle)', () => {
+    const dir = isolatedDir();
+    const tp = join(dir, 'transcript.jsonl');
+    writeFileSync(tp, JSON.stringify({
+      type: 'assistant',
+      requestId: 'req_turn_A',
+      message: { role: 'assistant', model: 'claude-opus-4-7', usage: { input_tokens: 46_000, output_tokens: 10 } },
+    }) + '\n');
+    const throttle = join(dir, 'last-stamp.json');
+    const first = runStamp(
+      { session_id: 's', transcript_path: tp },
+      { CAH_STAMP_THROTTLE_PATH: throttle, CAH_STAMP_MIN_INTERVAL_MS: '1' },
+    );
+    assert.ok(first.stdout.trim().length > 0);
+    // Pretend MIN_INTERVAL elapsed, and the next turn has a fresh requestId.
+    const file = JSON.parse(readFileSync(throttle, 'utf8'));
+    file.lastStampedAt = Date.now() - 60_000;
+    writeFileSync(throttle, JSON.stringify(file));
+    writeFileSync(tp, JSON.stringify({
+      type: 'assistant',
+      requestId: 'req_turn_B',
+      message: { role: 'assistant', model: 'claude-opus-4-7', usage: { input_tokens: 50_000, output_tokens: 10 } },
+    }) + '\n');
+    const second = runStamp(
+      { session_id: 's', transcript_path: tp },
+      { CAH_STAMP_THROTTLE_PATH: throttle, CAH_STAMP_MIN_INTERVAL_MS: '1' },
+    );
+    assert.ok(second.stdout.trim().length > 0, 'new requestId → new stamp');
   });
 
   it('ignores stale rate_limits state file (>1h old)', () => {
