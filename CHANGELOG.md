@@ -5,6 +5,37 @@ All notable changes to `cc-arch-hands` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.6]
+
+### Added
+
+- **Sonnet (top) max — `/sxx`.** `claude-sonnet-4-6` at the `max` effort level
+  is now available as a slash-command, sub-agent, and `Agent` selector
+  (`/sxx`, `sxx`). Sonnet's effort scale jumps straight from `high` to `max`
+  in Claude Code (no `xhigh`), so only one new entry is added — total goes
+  from 35 → 36 model commands.
+- **Effort code rendered next to the model name** in both the statusLine and
+  the chat audit stamp:
+  `Opus 4.7 [h] · 24% (240k/1M) · 5h 12% · wk 95%`. The bracketed code matches
+  the slash-command suffix convention — `[l]` low, `[m]` medium, `[h]` high,
+  `[x]` xhigh, `[xx]` max. Models without effort support (Haiku) render the
+  bare name with no brackets.
+- **Per-message dedup for `cah-stamp`.** Every assistant entry of the same
+  turn shares an API `requestId`; the stamp records it and skips emission
+  when the same turn would otherwise produce a second stamp (e.g. a long turn
+  with many `PostToolUse` hooks crossing the throttle window). One stamp per
+  assistant message, guaranteed.
+
+### Changed
+
+- **`CAH_STAMP_MIN_INTERVAL_MS` default lowered to 10 s** (was 60 s). The
+  per-message dedup above is now the primary spam guard; the time-throttle
+  is a safety net for odd hook bursts and a short value is fine.
+- `readTranscriptStats` now also returns `requestId` (a third field alongside
+  `usedTokens` and `modelId`). The on-disk `rate-limits.json` cache layout
+  gains `effort` (string|null); old cache files without it read as
+  `effort: null` and degrade gracefully.
+
 ## [0.4.5]
 
 Hardening release addressing a third-party Node.js code review. No new

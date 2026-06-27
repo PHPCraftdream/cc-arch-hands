@@ -27,31 +27,37 @@ const RATE_LIMITS_CACHE =
   process.env.CAH_RATE_LIMITS_CACHE ||
   join(homedir(), '.claude', 'cah-bin', 'cache', 'rate-limits.json');
 
-// Throttle state for the chat audit-trail. stamp can fire both on Stop AND
-// PostToolUse hooks, which would otherwise spam the scrollback with many
-// near-identical lines per turn. We persist the last emit time and skip if it
-// is less than CAH_STAMP_MIN_INTERVAL_MS old (default 60s).
+// Throttle state for the chat audit-trail. The primary dedup is per-message
+// via requestId (every assistant entry of the same turn shares it), so this
+// time-throttle is a safety net only. Default 10s — short enough to never
+// suppress the next real turn, long enough to ignore odd hook bursts.
 const STAMP_THROTTLE_PATH =
   process.env.CAH_STAMP_THROTTLE_PATH ||
   join(homedir(), '.claude', 'cah-bin', 'cache', 'last-stamp.json');
 const STAMP_MIN_INTERVAL_MS =
-  parseInt(process.env.CAH_STAMP_MIN_INTERVAL_MS || '', 10) || 60_000;
+  parseInt(process.env.CAH_STAMP_MIN_INTERVAL_MS || '', 10) || 10_000;
 
-function readLastStampedAt(path) {
+function readLastStamp(path) {
   try {
     const raw = readFileSync(path, 'utf8');
     const obj = JSON.parse(raw);
-    return typeof obj.lastStampedAt === 'number' ? obj.lastStampedAt : null;
+    return {
+      ts: typeof obj.lastStampedAt === 'number' ? obj.lastStampedAt : null,
+      requestId: typeof obj.lastStampedRequestId === 'string' ? obj.lastStampedRequestId : null,
+    };
   } catch {
-    return null;
+    return { ts: null, requestId: null };
   }
 }
 
-function writeLastStampedAt(path, ts) {
+function writeLastStamp(path, ts, requestId) {
   try {
     mkdirSync(dirname(path), { recursive: true });
     const tmp = path + '.tmp';
-    writeFileSync(tmp, JSON.stringify({ lastStampedAt: ts }) + '\n');
+    writeFileSync(
+      tmp,
+      JSON.stringify({ lastStampedAt: ts, lastStampedRequestId: requestId }) + '\n',
+    );
     renameSync(tmp, path);
   } catch {
     // fail-silent — throttling is best-effort
@@ -83,12 +89,12 @@ function main() {
   const transcriptPath = payload.transcript_path;
   if (!transcriptPath) return;
 
-  // Throttle: skip if we just stamped within the min interval. This is what
-  // lets us safely install the same bin on both Stop AND PostToolUse without
-  // spamming the chat with a stamp per tool call.
+  // Throttle (time): skip if we just stamped within the min interval. This is
+  // a safety net for unusual hook cadences; the primary dedup is per-message
+  // via requestId below.
   const nowMs = Date.now();
-  const last = readLastStampedAt(STAMP_THROTTLE_PATH);
-  if (last !== null && nowMs - last < STAMP_MIN_INTERVAL_MS) return;
+  const last = readLastStamp(STAMP_THROTTLE_PATH);
+  if (last.ts !== null && nowMs - last.ts < STAMP_MIN_INTERVAL_MS) return;
 
   // HH:MM:SS so cadence bugs (e.g. throttle not honoured, dual-hook spam)
   // are diagnosable from the chat scrollback alone.
@@ -96,15 +102,24 @@ function main() {
 
   let usedTokens = null;
   let modelId = null;
+  let requestId = null;
   try {
     const stats = readTranscriptStats(transcriptPath);
     if (stats) {
       usedTokens = stats.usedTokens;
       modelId = stats.modelId;
+      requestId = stats.requestId;
     }
   } catch {
     // transcript missing / unreadable — still emit with time only
   }
+
+  // Per-message dedup: every assistant entry of the same turn shares the same
+  // requestId (text + each tool_use block). If we already stamped this turn,
+  // skip — even if the throttle window has elapsed (a long turn would
+  // otherwise show a second stamp under the same assistant message). Falls
+  // through to emit when requestId is unknown (e.g. very first turn).
+  if (requestId !== null && requestId === last.requestId) return;
 
   let limit = null;
   if (modelId) {
@@ -120,14 +135,16 @@ function main() {
 
   let fiveHour = null;
   let sevenDay = null;
+  let effort = null;
   try {
     const cached = readRateLimitsCache(RATE_LIMITS_CACHE);
     if (cached) {
       fiveHour = cached.fiveHour;
       sevenDay = cached.sevenDay;
+      effort = cached.effort;
     }
   } catch {
-    // fail-silent — proceed without rate_limits
+    // fail-silent — proceed without rate_limits / effort
   }
 
   const line = formatStatusLine({
@@ -137,9 +154,10 @@ function main() {
     limit: effectiveLimit,
     fiveHour,
     sevenDay,
+    effort,
     bars: false, // chat audit trail stays compact — bars belong on the statusLine
   });
-  writeLastStampedAt(STAMP_THROTTLE_PATH, nowMs);
+  writeLastStamp(STAMP_THROTTLE_PATH, nowMs, requestId);
   const out = JSON.stringify({ continue: true, systemMessage: line });
   process.stdout.write(out + '\n');
 }

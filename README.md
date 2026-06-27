@@ -34,8 +34,8 @@ The artifacts:
 The companion bins:
 - **`cah`** (and its alias `cc-arch-hands`) — the installer CLI itself.
 - **`cah-checkpoint-hint`** — Stop hook bin invoked by `/checkpoint-watch`. Emits one `[hint] Context at 90%…` per session when context fills past 90%.
-- **`cah-status`** — statusLine command invoked by `/clock`. Renders `<model> · X.XX% (Nk/Mk)` with a usage bar and, for Pro/Max accounts, the 5-hour and weekly quota use with reset info (`5h N% →48м · wk N% →сб 27.06 16:19`). Refreshes on each turn boundary.
-- **`cah-stamp`** — Stop hook bin invoked by `/clock` on both `Stop` AND `PostToolUse`. Emits an `HH:MM · model · X.XX% · 5h N% · wk N%` line as a `systemMessage` (no bars, compact text). Throttled to one emission per minute (configurable via `CAH_STAMP_MIN_INTERVAL_MS`) so the dual-hook install does not spam the scrollback.
+- **`cah-status`** — statusLine command invoked by `/clock`. Renders `<model> [effort] · X.XX% (Nk/Mk)` with a usage bar and, for Pro/Max accounts, the 5-hour and weekly quota use with reset info (`5h N% →48м · wk N% →сб 27.06 16:19`). The bracketed effort code matches the slash-command suffix convention — `[l]/[m]/[h]/[x]/[xx]` for low/medium/high/xhigh/max; omitted for models without effort support (Haiku). Refreshes every 60 s (`refreshInterval` on the entry) and on every turn boundary.
+- **`cah-stamp`** — Stop hook bin invoked by `/clock` on both `Stop` AND `PostToolUse`. Emits an `HH:MM:SS · model [effort] · X.XX% · 5h N% · wk N%` line as a `systemMessage` (no bars, compact text). Two safeguards prevent scrollback spam: **per-message dedup** (every assistant entry of the same turn shares an API `requestId` — if we already stamped this turn, the next hook of the same turn is suppressed) and a **time-throttle safety net** (default 10 s, configurable via `CAH_STAMP_MIN_INTERVAL_MS`).
 - **`cah-status-probe`** — diagnostic statusLine bin armed by `cah probe statusline start`. Captures the raw stdin envelope to a JSONL log so you can inspect exactly which fields Claude Code delivers on your account (added in 0.4.1).
 
 All three hook bins share `lib/transcript-stats.js` for transcript
@@ -45,7 +45,7 @@ Claude Code's own `used_percentage` formula. Without this, raw
 `input_tokens` after the first turn is ~1 token (everything else is
 served from the prompt cache) and a naive percentage would always read 0%.
 
-### 1. Per-model slash-commands (35)
+### 1. Per-model slash-commands (36)
 
 A short slash-command for every `{model, effort}` pair, so you can switch
 the model **and** reasoning effort for a single turn just by how you start
@@ -63,7 +63,7 @@ effort suffix:
 Suffixes: `l` low · `m` medium · `h` high · `x` xhigh · `xx` max.
 Whatever you type after the command becomes the prompt for that turn.
 
-### 2. Per-model sub-agents (35)
+### 2. Per-model sub-agents (36)
 
 The same matrix as the commands — but as **delegated sub-agents** instead
 of inline commands. Use them to hand a self-contained task to a fresh
@@ -98,7 +98,7 @@ you don't care about pinning an exact version.
 | **Opus** (top) | `claude-opus-4-8` | `/ol` | `/om` | `/oh` | `/ox` | `/oxx` |
 | Opus 4.7 | `claude-opus-4-7` | `/o47l` | `/o47m` | `/o47h` | `/o47x` | `/o47xx` |
 | Opus 4.6 | `claude-opus-4-6` | `/o46l` | `/o46m` | `/o46h` | `/o46x` | `/o46xx` |
-| **Sonnet** (top) | `claude-sonnet-4-6` | `/sl` | `/sm` | `/sh` | — | — |
+| **Sonnet** (top) | `claude-sonnet-4-6` | `/sl` | `/sm` | `/sh` | — | `/sxx` |
 | Sonnet 4.6 | `claude-sonnet-4-6` | `/s46l` | `/s46m` | `/s46h` | — | — |
 | Sonnet 4.5 | `claude-sonnet-4-5` | `/s45l` | `/s45m` | `/s45h` | — | — |
 | **Haiku** (top) | `claude-haiku-4-5` | `/hl` | `/hm` | `/hh` | — | — |
@@ -145,21 +145,22 @@ Reusable capability packs Claude Code loads on demand. Each is invoked as
 
 | Skill | Purpose |
 |---|---|
-| `/clock` | Per-scope Claude Code statusLine showing `HH:MM · model · X% (Nk/Mk)` at the bottom of the terminal, plus a Stop hook that emits the same line as a `systemMessage` after each assistant turn for a timestamped chat audit trail. Refreshes every second. Does not consume LLM context. Usage: `/clock` (global), `/clock --here` (project-local), `/clock --off`, `/clock --status`. |
+| `/clock` | Per-scope Claude Code statusLine showing `<model> [effort] · X% (Nk/Mk)` at the bottom of the terminal, plus a Stop+PostToolUse hook that emits an `HH:MM:SS · <model> [effort] · X%` line as a `systemMessage` once per assistant turn (per-message dedup) for a timestamped chat audit trail. statusLine refreshes every 60 s and on every turn boundary. Does not consume LLM context. Usage: `/clock` (global), `/clock --here` (project-local), `/clock --off`, `/clock --status`. |
 
 #### Workspace HUD in detail
 
 `/clock` installs two complementary signals into the same `settings.json`:
 
 - **statusLine** (`cah-status` process): a persistent one-line bar at the bottom
-  of the terminal that refreshes every second and shows `HH:MM · model · X% (Nk/Mk)`.
-  It runs as a separate process and never enters LLM context.
-- **chat turn-stamp** (`cah-stamp` Stop hook): after every assistant turn, the hook
-  reads the session transcript JSONL to find the latest `usage.input_tokens` and
-  `model`, then emits the same `HH:MM · model · X%` line as a `systemMessage` that
-  lands in the chat scrollback. This gives you a permanent audit trail — scrolling
-  back through a long session you can see exactly when each exchange happened and
-  what the context state was at that moment. The `systemMessage` is user-facing only
+  of the terminal that refreshes every 60 s (and on every turn boundary) and shows
+  `<model> [effort] · X% (Nk/Mk)` plus, for Pro/Max accounts, the 5-hour and weekly
+  quota use. It runs as a separate process and never enters LLM context.
+- **chat turn-stamp** (`cah-stamp` on Stop AND PostToolUse): once per assistant turn,
+  the hook reads the session transcript JSONL to find the latest `usage.input_tokens`,
+  `model`, and per-turn API `requestId`, then emits an `HH:MM:SS · model [effort] · X%`
+  line as a `systemMessage` that lands in the chat scrollback. Per-message dedup
+  (via `requestId`) guarantees one stamp per assistant message — even a long turn with
+  many tool calls produces exactly one stamp. The `systemMessage` is user-facing only
   and does not add any tokens to the LLM context.
 
 Both pieces are installed together by `/clock`, removed together by `/clock --off`,
@@ -413,7 +414,7 @@ cc-arch-hands/
 ├── bin/cah-status-probe.js      # diagnostic statusLine bin used by `cah probe statusline`
 ├── lib/
 │   ├── cli.js                   # dispatch, arg parsing (node:util parseArgs), --only resolver
-│   ├── manifest.js              # AllModelCommands (35 entries), AllSkills (10), SkillDeps
+│   ├── manifest.js              # AllModelCommands (36 entries), AllSkills (10), SkillDeps
 │   ├── sentinel.js              # new + legacy markers, ownership classifier
 │   ├── scope.js                 # global vs local target dir resolution
 │   ├── templates.js             # bundled / disk template abstraction
