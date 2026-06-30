@@ -5,6 +5,28 @@ All notable changes to `cc-arch-hands` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0]
+
+### Changed
+
+- **Sonnet (top) is now `claude-sonnet-5`.** `/sl /sm /sh /sx /sxx` (and the
+  matching `Agent` selectors `sl/sm/sh/sx/sxx`) now point at the new
+  `claude-sonnet-5` model on its full five-level effort scale (low → max,
+  including `xhigh` for the first time on Sonnet) and a **1M** context
+  window — display strings updated from `Sonnet (top, 200k)` to
+  `Sonnet (top, 1M)`, and `modelLimit()` in `lib/transcript-stats.js` now
+  special-cases `claude-sonnet-5` to report 1M tokens (affects the `/clock`
+  statusLine and chat audit stamp percentage).
+- **Sonnet 4.6 renamed `s46* → s4*` and gains `max`.** The old duplicate
+  `/s46l /s46m /s46h` block (3 entries, no `max`) is replaced by
+  `/s4l /s4m /s4h /s4xx` (4 entries). Total model commands/agents goes from
+  36 → 38: +1 for Sonnet (top)'s new `xhigh` slot, +1 for Sonnet 4.6's new
+  `max` slot.
+- Running `cah reinstall` (or `cah install` after a prior install) cleans up
+  all old `s46*`/old-mapping `sl/sm/sh/sxx` sentinel-owned files automatically
+  — removal is sentinel-based, not name-list-based, so no manual cleanup is
+  needed when upgrading.
+
 ## [0.4.6]
 
 ### Added

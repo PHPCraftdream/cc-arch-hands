@@ -98,8 +98,8 @@ you don't care about pinning an exact version.
 | **Opus** (top) | `claude-opus-4-8` | `/ol` | `/om` | `/oh` | `/ox` | `/oxx` |
 | Opus 4.7 | `claude-opus-4-7` | `/o47l` | `/o47m` | `/o47h` | `/o47x` | `/o47xx` |
 | Opus 4.6 | `claude-opus-4-6` | `/o46l` | `/o46m` | `/o46h` | `/o46x` | `/o46xx` |
-| **Sonnet** (top) | `claude-sonnet-4-6` | `/sl` | `/sm` | `/sh` | — | `/sxx` |
-| Sonnet 4.6 | `claude-sonnet-4-6` | `/s46l` | `/s46m` | `/s46h` | — | — |
+| **Sonnet** (top, 1M) | `claude-sonnet-5` | `/sl` | `/sm` | `/sh` | `/sx` | `/sxx` |
+| Sonnet 4.6 | `claude-sonnet-4-6` | `/s4l` | `/s4m` | `/s4h` | — | `/s4xx` |
 | Sonnet 4.5 | `claude-sonnet-4-5` | `/s45l` | `/s45m` | `/s45h` | — | — |
 | **Haiku** (top) | `claude-haiku-4-5` | `/hl` | `/hm` | `/hh` | — | — |
 | Haiku 4.5 | `claude-haiku-4-5` | `/h45l` | `/h45m` | `/h45h` | — | — |
