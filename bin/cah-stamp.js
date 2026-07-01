@@ -135,18 +135,22 @@ function main() {
 
   let fiveHour = null;
   let sevenDay = null;
-  let effort = null;
   try {
     const cached = readRateLimitsCache(RATE_LIMITS_CACHE);
     if (cached) {
       fiveHour = cached.fiveHour;
       sevenDay = cached.sevenDay;
-      effort = cached.effort;
     }
   } catch {
-    // fail-silent — proceed without rate_limits / effort
+    // fail-silent — proceed without rate_limits
   }
 
+  // Effort is deliberately omitted here: Claude Code only ever exposes
+  // effort.level in the statusLine envelope, never in the Stop/PostToolUse
+  // hook payload or the transcript. Echoing the cached statusLine value into
+  // the chat stamp can show the previous turn's effort for one turn after a
+  // model/effort switch — better to omit it than show a value that isn't
+  // reliably tied to the turn being stamped.
   const line = formatStatusLine({
     time,
     displayName,
@@ -154,7 +158,6 @@ function main() {
     limit: effectiveLimit,
     fiveHour,
     sevenDay,
-    effort,
     bars: false, // chat audit trail stays compact — bars belong on the statusLine
   });
   writeLastStamp(STAMP_THROTTLE_PATH, nowMs, requestId);

@@ -1,6 +1,6 @@
 {
   "name": "cc-arch-hands",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Installer for Claude Code per-model commands, agents and skills",
   "type": "module",
   "bin": {
