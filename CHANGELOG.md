@@ -5,6 +5,18 @@ All notable changes to `cc-arch-hands` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1]
+
+### Changed
+
+- **`cah-stamp` no longer renders an effort suffix in the chat audit trail.**
+  Claude Code only exposes `effort.level` in the statusLine envelope, never
+  in the transcript or the Stop/PostToolUse hook payload — the chat stamp
+  could only ever echo the value `cah-status` last cached, which can lag one
+  turn behind a model/effort switch (e.g. right after `/oxx`). The
+  statusLine itself is unaffected and keeps rendering effort live and
+  accurately on every render.
+
 ## [0.5.0]
 
 ### Changed
