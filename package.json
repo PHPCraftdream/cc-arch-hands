@@ -1,6 +1,6 @@
 {
   "name": "cc-arch-hands",
-  "version": "0.5.2",
+  "version": "0.5.3",
   "description": "Installer for Claude Code per-model commands, agents and skills",
   "type": "module",
   "bin": {
@@ -19,7 +19,7 @@
     "LICENSE-APACHE"
   ],
   "scripts": {
-    "test": "node --test test/cli.test.js test/installer.test.js test/binstall.test.js test/checkpoint-hint.test.js test/clock.test.js test/stamp.test.js test/transcript-stats.test.js test/probe.test.js"
+    "test": "node --test test/cli.test.js test/installer.test.js test/binstall.test.js test/checkpoint-hint.test.js test/clock.test.js test/stamp.test.js test/transcript-stats.test.js test/probe.test.js test/update-check.test.js"
   },
   "engines": {
     "node": ">=18.17.0"
