@@ -20,6 +20,14 @@ function runStamp(stdinData, env) {
   // accidentally suppress each other through the live ~/.claude/.../last-stamp.json.
   const throttleOverride = (env && env.CAH_STAMP_THROTTLE_PATH)
     || join(tmpdir(), `cah-stamp-throttle-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+  // Default: a fresh, already-populated (no update) cache so tests never
+  // shell out to curl / hit the real npm registry unless a test explicitly
+  // overrides it to exercise the update-notice path.
+  let updateCacheOverride = env && env.CAH_UPDATE_CHECK_CACHE;
+  if (!updateCacheOverride) {
+    updateCacheOverride = join(tmpdir(), `cah-stamp-updatecache-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+    writeFileSync(updateCacheOverride, JSON.stringify({ latestVersion: null, checkedAt: Date.now() }));
+  }
   const res = spawnSync(process.execPath, [BIN], {
     input,
     encoding: 'utf8',
@@ -28,6 +36,7 @@ function runStamp(stdinData, env) {
       ...(env || {}),
       CAH_RATE_LIMITS_CACHE: cacheOverride,
       CAH_STAMP_THROTTLE_PATH: throttleOverride,
+      CAH_UPDATE_CHECK_CACHE: updateCacheOverride,
     },
   });
   return { stdout: res.stdout, status: res.status, throttlePath: throttleOverride };
@@ -336,5 +345,62 @@ describe('cah-stamp bin', () => {
     );
     const parsed = JSON.parse(stdout.trim());
     assert.ok(!parsed.systemMessage.includes('5h'), `stale cache leaked: ${parsed.systemMessage}`);
+  });
+
+  describe('update notice', () => {
+    function freshUpdateCache(dir, latestVersion) {
+      const p = join(dir, 'update-check.json');
+      writeFileSync(p, JSON.stringify({ latestVersion, checkedAt: Date.now() }));
+      return p;
+    }
+
+    it('Stop event + newer version cached → appends the notice once', () => {
+      const dir = isolatedDir();
+      const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
+      const updateCache = freshUpdateCache(dir, '99.0.0');
+      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const payload = { session_id: 'update-session', transcript_path: tp, hook_event_name: 'Stop' };
+      const env = { CAH_UPDATE_CHECK_CACHE: updateCache, CAH_STAMP_HINT_HOME: hintHome };
+
+      const first = runStamp(payload, env);
+      const firstParsed = JSON.parse(first.stdout.trim());
+      assert.match(firstParsed.systemMessage, /99\.0\.0/);
+      assert.match(firstParsed.systemMessage, /npx cah reinstall/);
+
+      // Second Stop in the same session (distinct throttle path so it isn't
+      // suppressed by the time/requestId dedup) must NOT repeat the notice.
+      const second = runStamp(
+        { ...payload, transcript_path: writeTranscript(dir, 'claude-opus-4-7', 2000) },
+        { ...env, CAH_STAMP_THROTTLE_PATH: join(tmpdir(), `cah-stamp-throttle-2nd-${process.pid}.json`) },
+      );
+      const secondParsed = JSON.parse(second.stdout.trim());
+      assert.ok(!secondParsed.systemMessage.includes('99.0.0'), 'notice repeated in same session');
+    });
+
+    it('PostToolUse event → never appends the notice, even with a newer version cached', () => {
+      const dir = isolatedDir();
+      const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
+      const updateCache = freshUpdateCache(dir, '99.0.0');
+      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const { stdout } = runStamp(
+        { session_id: 'tool-session', transcript_path: tp, hook_event_name: 'PostToolUse' },
+        { CAH_UPDATE_CHECK_CACHE: updateCache, CAH_STAMP_HINT_HOME: hintHome },
+      );
+      const parsed = JSON.parse(stdout.trim());
+      assert.ok(!parsed.systemMessage.includes('99.0.0'));
+    });
+
+    it('no newer version cached → no notice', () => {
+      const dir = isolatedDir();
+      const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
+      const updateCache = freshUpdateCache(dir, '0.0.1');
+      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const { stdout } = runStamp(
+        { session_id: 'no-update-session', transcript_path: tp, hook_event_name: 'Stop' },
+        { CAH_UPDATE_CHECK_CACHE: updateCache, CAH_STAMP_HINT_HOME: hintHome },
+      );
+      const parsed = JSON.parse(stdout.trim());
+      assert.ok(!parsed.systemMessage.includes('🔵'));
+    });
   });
 });

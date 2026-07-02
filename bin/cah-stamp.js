@@ -9,7 +9,7 @@
 // It is deliberately fail-silent: any error, missing input, or filesystem
 // hiccup results in `exit 0` with no stdout, so it can never break the session.
 
-import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import {
@@ -19,6 +19,7 @@ import {
   currentHhMmSs,
   readRateLimitsCache,
 } from '../lib/transcript-stats.js';
+import { CURRENT_VERSION, getLatestVersion, isNewerVersion } from '../lib/update-check.js';
 
 // Pro/Max rate_limits are only in the statusLine envelope; cah-status
 // persists them here so we can include them in the chat audit trail.
@@ -36,6 +37,73 @@ const STAMP_THROTTLE_PATH =
   join(homedir(), '.claude', 'cah-bin', 'cache', 'last-stamp.json');
 const STAMP_MIN_INTERVAL_MS =
   parseInt(process.env.CAH_STAMP_MIN_INTERVAL_MS || '', 10) || 10_000;
+
+// Shared with cah-status: whichever bin runs first populates this cache, so
+// the npm registry is only ever hit once per TTL window (see lib/update-check.js).
+const UPDATE_CHECK_CACHE =
+  process.env.CAH_UPDATE_CHECK_CACHE ||
+  join(homedir(), '.claude', 'cah-bin', 'cache', 'update-check.json');
+
+// One marker file per session gates the one-shot "new version" notice —
+// same pattern as cah-checkpoint-hint. Stale markers (older than the TTL)
+// are swept on each run so they never accumulate.
+const UPDATE_MARKER_PREFIX = 'cah-update-shown-';
+const UPDATE_MARKER_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+function pruneStaleMarkers(markerDir, nowMs) {
+  let entries;
+  try {
+    entries = readdirSync(markerDir);
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    if (!name.startsWith(UPDATE_MARKER_PREFIX)) continue;
+    const p = join(markerDir, name);
+    try {
+      if (nowMs - statSync(p).mtimeMs > UPDATE_MARKER_TTL_MS) unlinkSync(p);
+    } catch {
+      // ignore individual failures — best-effort hygiene
+    }
+  }
+}
+
+// Builds the one-shot "new version available" notice, or '' if none is due:
+// only on a real Stop event (never PostToolUse, which fires per tool call),
+// only once per session, and only when the cached registry check found a
+// newer version than CURRENT_VERSION.
+function buildUpdateNotice(payload, nowMs) {
+  if (payload.hook_event_name !== 'Stop') return '';
+  const sessionId = payload.session_id;
+  if (!sessionId) return '';
+
+  const home = process.env.CAH_STAMP_HINT_HOME || homedir();
+  const markerDir = join(home, '.claude');
+  const marker = join(markerDir, `${UPDATE_MARKER_PREFIX}${sessionId}`);
+  pruneStaleMarkers(markerDir, nowMs);
+  if (existsSync(marker)) return '';
+
+  let latest = null;
+  try {
+    latest = getLatestVersion(UPDATE_CHECK_CACHE);
+  } catch {
+    return '';
+  }
+  if (!isNewerVersion(CURRENT_VERSION, latest)) return '';
+
+  try {
+    mkdirSync(markerDir, { recursive: true });
+    writeFileSync(marker, '');
+  } catch {
+    // best-effort — worst case the notice repeats next turn
+  }
+
+  return (
+    `\n🔵 cc-arch-hands v${latest} is out (you're on v${CURRENT_VERSION}). Update:\n` +
+    '  global: npm install -g cc-arch-hands@latest && npx cah reinstall\n' +
+    '  local:  npm install cc-arch-hands@latest && npx cah reinstall --local'
+  );
+}
 
 function readLastStamp(path) {
   try {
@@ -161,7 +229,15 @@ function main() {
     bars: false, // chat audit trail stays compact — bars belong on the statusLine
   });
   writeLastStamp(STAMP_THROTTLE_PATH, nowMs, requestId);
-  const out = JSON.stringify({ continue: true, systemMessage: line });
+
+  let updateNotice = '';
+  try {
+    updateNotice = buildUpdateNotice(payload, nowMs);
+  } catch {
+    // fail-silent — the stamp itself must still ship without the notice
+  }
+
+  const out = JSON.stringify({ continue: true, systemMessage: line + updateNotice });
   process.stdout.write(out + '\n');
 }
 

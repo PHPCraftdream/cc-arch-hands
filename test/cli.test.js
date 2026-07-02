@@ -213,6 +213,7 @@ describe('run install/uninstall --only bins', () => {
     'bin/cah-checkpoint-hint.js',
     'bin/cah-status-probe.js',
     'lib/transcript-stats.js',
+    'lib/update-check.js',
   ];
 
   it('copies the real companion bins into <HOME>/.claude/cah-bin and removes them', () => {

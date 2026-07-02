@@ -36,6 +36,7 @@ function fakeSource(root) {
     "#!/usr/bin/env node\nconsole.log('probe');\n",
   );
   writeFileSync(join(root, 'lib', 'transcript-stats.js'), 'export const x = 1;\n');
+  writeFileSync(join(root, 'lib', 'update-check.js'), 'export const y = 1;\n');
 }
 
 describe('writeBins', () => {

@@ -18,8 +18,15 @@ import { readFileSync, mkdirSync, writeFileSync, renameSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { formatStatusLine } from '../lib/transcript-stats.js';
+import { CURRENT_VERSION, getLatestVersion, isNewerVersion } from '../lib/update-check.js';
 
 const FALLBACK = '—';
+
+// Shared with cah-stamp: whichever bin runs first populates this cache, so
+// the npm registry is only ever hit once per UPDATE_CHECK_TTL_MS window.
+const UPDATE_CHECK_CACHE =
+  process.env.CAH_UPDATE_CHECK_CACHE ||
+  join(homedir(), '.claude', 'cah-bin', 'cache', 'update-check.json');
 
 // Pro/Max rate_limits (five_hour, seven_day) live ONLY in the statusLine
 // envelope. Persist the last seen values so the Stop / PostToolUse hook bin
@@ -109,7 +116,18 @@ function buildLine(data) {
   const line = formatStatusLine({
     time: null, displayName, usedTokens, limit, fiveHour, sevenDay, effort,
   });
-  return line || FALLBACK;
+
+  let updateSuffix = '';
+  try {
+    const latest = getLatestVersion(UPDATE_CHECK_CACHE);
+    if (isNewerVersion(CURRENT_VERSION, latest)) {
+      updateSuffix = ` · 🔵 v${latest}`;
+    }
+  } catch {
+    // fail-silent — the bar must never break over an update check
+  }
+
+  return line ? line + updateSuffix : FALLBACK;
 }
 
 function main() {

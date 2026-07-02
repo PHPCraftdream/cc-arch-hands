@@ -5,6 +5,26 @@ All notable changes to `cc-arch-hands` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3]
+
+### Added
+
+- **New-version check for `/clock`.** `cah-status` and `cah-stamp` now check
+  whether a newer `cc-arch-hands` is published on npm, via a TTL-cached
+  (24h) registry read shared between the two bins — the actual network
+  call (`curl`, 1.5s timeout, fully fail-silent offline/no-curl) happens at
+  most once a day, not on every render.
+  - `cah-status` appends `· 🔵 vX.Y.Z` to the statusLine when a newer
+    version is available.
+  - `cah-stamp` emits a one-shot per-session notice in the chat, appended
+    to the Stop-event stamp only (never on `PostToolUse`, which fires per
+    tool call), with copy-pasteable update commands for both global and
+    local installs:
+    `npm install -g cc-arch-hands@latest && npx cah reinstall` /
+    `npm install cc-arch-hands@latest && npx cah reinstall --local`.
+  - New shared module `lib/update-check.js`, added to the `bins` install
+    class's copied files (`~/.claude/cah-bin/lib/update-check.js`).
+
 ## [0.5.2]
 
 ### Changed
