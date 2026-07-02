@@ -5,6 +5,23 @@ All notable changes to `cc-arch-hands` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2]
+
+### Changed
+
+- **Model-command note shortened, and no longer explains itself as an
+  Agent-tool disclaimer only implicitly.** Every model slash-command
+  (`/ox`, `/sl`, etc.) now carries a short, static note before
+  `$ARGUMENTS` clarifying that the command just switches the current
+  turn's model/effort and is **not** a request to launch the `Agent`
+  tool with a matching `subagent_type` — Claude Code registers a
+  same-named sub-agent for every model command, and without this note
+  the assistant could mistake `/ox <task>` for a delegation request.
+  The note was later trimmed to drop the model/effort values it
+  already duplicated from the command's frontmatter (`model:`/`effort:`),
+  leaving just: `(Switches this turn's model/effort — not a request to
+  launch an Agent.)`.
+
 ## [0.5.1]
 
 ### Changed
