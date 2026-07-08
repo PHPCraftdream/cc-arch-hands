@@ -25,7 +25,7 @@ node bin/cah.js install --templates ./templates --only skills --cwd /tmp/sandbox
 
 The codebase has two layers: a thin CLI (`lib/cli.js`) that does arg parsing and dispatch, and the installer modules (`lib/*.js`) that own all side effects.
 
-**Manifest-driven generation.** The 36 model entries live in `lib/manifest.js` as `AllModelCommands`. Both commands and agents are rendered parametrically at install time from this single registry. Adding a new model/effort pair = one object in the array.
+**Manifest-driven generation.** The Claude model entries live in `lib/manifest.js` as `AllModelCommands`. Both Claude commands and Claude agents are rendered parametrically at install time from this single registry. Optional Codex agents live in `AllCodexAgents` and are installed only with `--codex-agents`.
 
 **Skills are static trees.** Each skill is a directory under `templates/skills/<name>/`. The `AllSkills` array in `lib/manifest.js` is the registry. Adding a skill = drop a directory + append the name.
 
@@ -50,7 +50,7 @@ The codebase has two layers: a thin CLI (`lib/cli.js`) that does arg parsing and
 | `bin/cah-status.js` | statusLine bin: renders rich JSON envelope to one line |
 | `bin/cah-stamp.js` | Stop hook bin: per-turn audit-trail systemMessage |
 | `lib/cli.js` | CLI dispatch, arg parsing (`node:util parseArgs`), presentation |
-| `lib/manifest.js` | `AllModelCommands` registry (36 entries) + `AllSkills` list |
+| `lib/manifest.js` | `AllModelCommands` registry + `AllCodexAgents` registry + `AllSkills` list |
 | `lib/sentinel.js` | Sentinel constants, `classifyContent`, `isOurs` |
 | `lib/scope.js` | `Scope` class, `resolve*Dir()`, strict-mode guard |
 | `lib/templates.js` | Bundled / disk template abstraction, `skillTree` walker |
@@ -59,6 +59,7 @@ The codebase has two layers: a thin CLI (`lib/cli.js`) that does arg parsing and
 | `lib/update-check.js` | `CURRENT_VERSION`, `isNewerVersion`, `getLatestVersion` — TTL-cached npm registry check shared by `cah-status`/`cah-stamp` |
 | `lib/commands.js` | `writeModelCommands` / `removeModelCommands` |
 | `lib/agents.js` | `writeModelAgents` / `removeModelAgents`, git-safety & test-scope clauses |
+| `lib/codex-agents.js` | `writeCodexAgents` / `removeCodexAgents` for optional Codex TOML custom agents |
 | `lib/skills.js` | `writeSkills` / `removeSkills` — overwrite owned files in place (atomic), never wipe the whole dir; user-added files inside a managed skill are preserved and reported |
 | `lib/binstall.js` | `writeBins` / `removeBins` + `BinFiles` registry — copies companion bins into `~/.claude/cah-bin/` with `// cah-bin:v1` sentinel |
 | `lib/probe.js` | `enableProbe` / `disableProbe` / `readProbeLog` / `probeStatus` — atomic settings.json swap to wire `cah-status-probe` as the statusLine bin, with a sidecar backup file |

@@ -265,6 +265,64 @@ describe('run install/uninstall --only bins', () => {
   });
 });
 
+
+describe('run install/uninstall --codex-agents', () => {
+  it('default install does not write Codex agents', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
+    try {
+      withHome(home, () => {
+        assert.equal(run(['install', '--only', 'commands']), 0);
+        assert.ok(!existsSync(join(home, '.codex', 'agents', 'h55.toml')));
+        // codex-agents is an opt-in selector — valid via --only but excluded from
+        // the default (empty --only) install set.
+        assert.deepEqual(parseOnly('codex-agents'), { classes: ['codex-agents'], skills: [] });
+        assert.deepEqual(parseOnly(''), { classes: ['commands', 'agents', 'skills', 'bins'], skills: [] });
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('writes Codex agents under <HOME>/.codex/agents and removes them', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
+    try {
+      withHome(home, () => {
+        assert.equal(run(['install', '--codex-agents']), 0);
+        assert.ok(existsSync(join(home, '.codex', 'agents', 'h55.toml')));
+        assert.ok(readFileSync(join(home, '.codex', 'agents', 'h55.toml'), 'utf8').includes('model = "gpt-5.5"'));
+
+        const out = captureStdout(() => run(['list', '--json']));
+        const rows = out.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+        const codexRows = rows.filter((r) => r.kind === 'codex-agent');
+        assert.equal(codexRows.length, 12);
+        assert.ok(codexRows.every((r) => r.state === 'mine'));
+
+        assert.equal(run(['uninstall', '--codex-agents']), 0);
+        assert.ok(!existsSync(join(home, '.codex', 'agents', 'h55.toml')));
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('selects Codex agents via --only codex-agents (no flag needed)', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
+    try {
+      withHome(home, () => {
+        assert.equal(run(['install', '--only', 'codex-agents']), 0);
+        assert.ok(existsSync(join(home, '.codex', 'agents', 'h55.toml')));
+        // claude-side must NOT be touched by a codex-only selection
+        assert.ok(!existsSync(join(home, '.claude', 'commands')));
+
+        assert.equal(run(['uninstall', '--only', 'codex-agents']), 0);
+        assert.ok(!existsSync(join(home, '.codex', 'agents', 'h55.toml')));
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // targeted install/uninstall/reinstall by skill name
 // ---------------------------------------------------------------------------

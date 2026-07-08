@@ -5,15 +5,16 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
-  SentinelModelCommand, SentinelModelAgent, SentinelSkill,
+  SentinelModelCommand, SentinelModelAgent, SentinelCodexAgent, SentinelSkill,
   LegacyModelCommand, LegacyModelAgent,
-  SetForModelCommand, SetForModelAgent, SetForSkill,
+  SetForModelCommand, SetForModelAgent, SetForCodexAgent, SetForSkill,
   Ownership, classifyContent,
 } from '../lib/sentinel.js';
-import { AllModelCommands, AllSkills } from '../lib/manifest.js';
+import { AllModelCommands, AllCodexAgents, AllSkills } from '../lib/manifest.js';
 import { Scope, StrictMissingRootError, SKILL_MANIFEST_LEAF } from '../lib/scope.js';
 import { writeModelCommands, removeModelCommands } from '../lib/commands.js';
 import { writeModelAgents, removeModelAgents } from '../lib/agents.js';
+import { writeCodexAgents, removeCodexAgents } from '../lib/codex-agents.js';
 import { writeSkills, removeSkills } from '../lib/skills.js';
 import { embeddedTemplates, diskTemplates } from '../lib/templates.js';
 
@@ -354,6 +355,102 @@ describe('removeModelAgents', () => {
     assert.throws(() => statSync(legacyMine), { code: 'ENOENT' });
     assert.throws(() => statSync(legacyCrush), { code: 'ENOENT' });
     assert.equal(readFileSync(foreignA, 'utf8'), 'someone else');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WriteCodexAgents
+// ---------------------------------------------------------------------------
+
+describe('writeCodexAgents', () => {
+  it('empty dir installs all Codex TOML agents', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const { written, skipped } = writeCodexAgents(null, scope);
+
+    assert.equal(written, AllCodexAgents.length);
+    assert.deepEqual(skipped, []);
+
+    const agentsDir = join(dir, '.codex', 'agents');
+    for (const agent of AllCodexAgents) {
+      const data = readFileSync(join(agentsDir, `${agent.name}.toml`), 'utf8');
+      assert.ok(data.startsWith(`${SentinelCodexAgent}\n`));
+      assert.ok(data.includes(`name = "${agent.name}"`));
+      assert.ok(data.includes(`model = "${agent.model}"`));
+      assert.ok(data.includes(`model_reasoning_effort = "${agent.effort}"`));
+      assert.ok(data.includes('developer_instructions = """'));
+    }
+  });
+
+  it('foreign Codex agent is preserved and skipped', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const agentsDir = join(dir, '.codex', 'agents');
+    mkdirSync(agentsDir, { recursive: true });
+
+    const foreignPath = join(agentsDir, 'h55.toml');
+    const foreignBody = 'someone else owns this';
+    writeFileSync(foreignPath, foreignBody);
+
+    const { written, skipped } = writeCodexAgents(null, scope);
+    assert.equal(written, AllCodexAgents.length - 1);
+    assert.deepEqual(skipped, [foreignPath]);
+    assert.equal(readFileSync(foreignPath, 'utf8'), foreignBody);
+  });
+
+  it('prunes orphan Codex agents whose names are no longer in the manifest', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const agentsDir = join(dir, '.codex', 'agents');
+    mkdirSync(agentsDir, { recursive: true });
+
+    const orphanMine = join(agentsDir, 'old.toml');
+    writeFileSync(orphanMine, `dropped\n${SentinelCodexAgent}\n`);
+    const orphanForeign = join(agentsDir, 'foreign.toml');
+    writeFileSync(orphanForeign, 'not yours');
+
+    const { pruned } = writeCodexAgents(null, scope);
+    assert.equal(pruned, 1);
+    assert.throws(() => statSync(orphanMine), { code: 'ENOENT' });
+    assert.equal(readFileSync(orphanForeign, 'utf8'), 'not yours');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RemoveCodexAgents
+// ---------------------------------------------------------------------------
+
+describe('removeCodexAgents', () => {
+  it('all mine are removed', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    writeCodexAgents(null, scope);
+
+    const { removed, skipped } = removeCodexAgents(scope);
+    assert.equal(removed, AllCodexAgents.length);
+    assert.deepEqual(skipped, []);
+
+    const agentsDir = join(dir, '.codex', 'agents');
+    assert.equal(readdirSync(agentsDir).length, 0);
+  });
+
+  it('mixed mine foreign missing', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const agentsDir = join(dir, '.codex', 'agents');
+    mkdirSync(agentsDir, { recursive: true });
+
+    const minePath = join(agentsDir, 'h55.toml');
+    writeFileSync(minePath, `x\n${SentinelCodexAgent}\n`);
+    const foreignPath = join(agentsDir, 'm55.toml');
+    const foreignBody = 'not yours';
+    writeFileSync(foreignPath, foreignBody);
+
+    const { removed, skipped } = removeCodexAgents(scope);
+    assert.equal(removed, 1);
+    assert.deepEqual(skipped, [foreignPath]);
+    assert.throws(() => statSync(minePath), { code: 'ENOENT' });
+    assert.equal(readFileSync(foreignPath, 'utf8'), foreignBody);
   });
 });
 

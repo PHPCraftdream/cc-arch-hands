@@ -5,6 +5,41 @@ All notable changes to `cc-arch-hands` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0]
+
+### Added
+
+- **Optional Codex custom agents.** A new install class installs 12 TOML
+  custom-agent files for Codex under `~/.codex/agents/`, covering
+  `gpt-5.5`, `gpt-5.4`, and `gpt-5.4-mini` across four reasoning-effort
+  levels (`low`/`medium`/`high`/`xhigh`). Codex agents are **opt-in** and
+  never installed by the default `cah install`.
+  - Activated via the `--codex-agents` flag, or selected as a class with
+    `--only codex-agents` (combinable, e.g. `--only skills,codex-agents`).
+  - New registry `AllCodexAgents` in `lib/manifest.js`, new module
+    `lib/codex-agents.js` (`writeCodexAgents`/`removeCodexAgents`), new
+    sentinel `# cah-codex-agent:v1`, and new scope resolver
+    `resolveCodexAgentsDir()` → `~/.codex/agents/`.
+  - Generated names: `l55 m55 h55 x55` · `l54 m54 h54 x54` ·
+    `l54m m54m h54m x54m`.
+  - Orphan pruning on install removes stale Codex TOML files whose names
+    are no longer in the manifest (same pattern as commands/agents).
+  - `cah list` and `cah doctor` report Codex agents; `cah doctor` excludes
+    them from its health totals when none are installed (so it doesn't
+    report 12 phantom "missing" files for a user who never opted in).
+
+### Changed
+
+- **`o46*` → `o4*` — Opus 4.6 command/agent names shortened.** The five
+  Opus 4.6 entries are renamed: `o46l o46m o46h o46x o46xx` →
+  `o4l o4m o4h o4x o4xx`. The underlying `model` id
+  (`claude-opus-4-6`) and display strings are unchanged.
+  - **Breaking for existing installs:** the `/o46l` … `/o46xx`
+    slash-commands and the `ao46*` sub-agents move to their new names.
+  - Running `cah install` (or `cah reinstall`) automatically prunes the
+    five orphaned `o46*.md` / `ao46*.md` files and writes the new `o4*`
+    ones — no manual cleanup needed.
+
 ## [0.5.3]
 
 ### Added
