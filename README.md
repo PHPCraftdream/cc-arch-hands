@@ -23,6 +23,9 @@ The artifacts:
 - **skills** (10) under `~/.claude/skills/`,
 - **companion bins** under `~/.claude/cah-bin/` (since 0.4.0).
 
+Optional Codex artifacts are installed only when requested:
+- **Codex custom agents** (12) under `~/.codex/agents/`, via `--codex-agents`.
+
 > **Since 0.4.0:** `cah install` copies the companion bins into
 > `~/.claude/cah-bin/` and `settings.json` references them by absolute path
 > (`node "<HOME>/.claude/cah-bin/bin/cah-status.js"`) rather than a bare PATH
@@ -97,7 +100,7 @@ you don't care about pinning an exact version.
 | **Fable** (top) | `claude-fable-5` | `/fl` | `/fm` | `/fh` | `/fx` | `/fxx` |
 | **Opus** (top) | `claude-opus-4-8` | `/ol` | `/om` | `/oh` | `/ox` | `/oxx` |
 | Opus 4.7 | `claude-opus-4-7` | `/o47l` | `/o47m` | `/o47h` | `/o47x` | `/o47xx` |
-| Opus 4.6 | `claude-opus-4-6` | `/o46l` | `/o46m` | `/o46h` | `/o46x` | `/o46xx` |
+| Opus 4.6 | `claude-opus-4-6` | `/o4l` | `/o4m` | `/o4h` | `/o4x` | `/o4xx` |
 | **Sonnet** (top, 1M) | `claude-sonnet-5` | `/sl` | `/sm` | `/sh` | `/sx` | `/sxx` |
 | Sonnet 4.6 | `claude-sonnet-4-6` | `/s4l` | `/s4m` | `/s4h` | — | `/s4xx` |
 | Sonnet 4.5 | `claude-sonnet-4-5` | `/s45l` | `/s45m` | `/s45h` | — | — |
@@ -109,10 +112,22 @@ slash-command body; `oh` (no prefix) is the agent invoked by the `Agent`
 tool with `subagent_type: "oh"`. The two live in separate lookup tables
 inside Claude Code, so identical names do not collide.
 
-35 commands, 35 agents — one line per row-cell in
+38 commands, 38 agents — one line per row-cell in
 [`lib/manifest.js`](lib/manifest.js).
 
-### 3. Skills (10)
+### 3. Optional Codex custom agents (12)
+
+Codex agents are not part of the default install. Install them explicitly with `--codex-agents`, or select them as a class via `--only codex-agents` (also combinable, e.g. `--only skills,codex-agents`):
+
+```bash
+npx cah install --codex-agents
+npx cah reinstall --codex-agents
+npx cah uninstall --codex-agents
+```
+
+Generated agent names use effort prefix + model suffix: `l55`, `m55`, `h55`, `x55`; `l54`, `m54`, `h54`, `x54`; `l54m`, `m54m`, `h54m`, `x54m`. They write TOML custom-agent files for Codex under `~/.codex/agents/`.
+
+### 4. Skills (10)
 
 Reusable capability packs Claude Code loads on demand. Each is invoked as
 `/skill-name` from a chat. Grouped by purpose:
@@ -241,9 +256,10 @@ What `/resume` does:
 
 | Artifact | Count | Destination |
 |---|---|---|
-| Slash-commands | 35 | `<scope>/.claude/commands/<name>.md` |
-| Sub-agents | 35 | `<scope>/.claude/agents/<name>.md` |
+| Slash-commands | 38 | `<scope>/.claude/commands/<name>.md` |
+| Sub-agents | 38 | `<scope>/.claude/agents/<name>.md` |
 | Skills | 10 | `<scope>/.claude/skills/<name>/` |
+| Codex custom agents | 12 | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
 
 `<scope>` is `~/` by default (global install). Use `--local` or `--cwd`
 to target a specific project directory instead.
@@ -300,6 +316,7 @@ Via npx (no install):
 npx cah install                          # global (default): ~/.claude/{commands,agents,skills,cah-bin}
 npx cah install --local                  # local: <cwd>/.claude/... (must already exist); bins still go global
 npx cah install --cwd /path/to/project   # local at a specific path; bins still go global
+npx cah install --codex-agents           # optional: install only Codex agents into ~/.codex/agents
 
 # --only takes install classes, individual skill names, or any mix.
 npx cah install --only skills                       # all 10 skills
@@ -330,8 +347,10 @@ npx cah install --only commands,clock               # mix class + skill name
 # uninstall is explicit-only — it never auto-pulls deps (so you can drop
 # clock without losing the bins that checkpoint-watch needs).
 npx cah reinstall --only clock                      # uninstall + install of just the clock skill
+npx cah reinstall --codex-agents                    # reinstall only Codex agents
 npx cah uninstall                                   # symmetric remove (sentinel-gated)
-npx cah uninstall --only agents                     # remove only agents
+npx cah uninstall --only agents                     # remove only Claude agents
+npx cah uninstall --codex-agents                    # remove only Codex agents
 npx cah uninstall --only clock                      # remove only the clock skill, keep bins
 
 npx cah list                             # tabular: NAME | KIND | STATE
