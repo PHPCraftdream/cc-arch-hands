@@ -1,0 +1,24 @@
+name: Unpublish npm version
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: npm version to unpublish
+        required: true
+        type: string
+
+jobs:
+  unpublish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Unpublish requested version
+        run: npm unpublish "cc-arch-hands@${{ inputs.version }}" --force
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
