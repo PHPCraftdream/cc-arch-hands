@@ -290,11 +290,14 @@ describe('run install/uninstall --codex-agents', () => {
         assert.equal(run(['install', '--codex-agents']), 0);
         assert.ok(existsSync(join(home, '.codex', 'agents', 'h55.toml')));
         assert.ok(readFileSync(join(home, '.codex', 'agents', 'h55.toml'), 'utf8').includes('model = "gpt-5.5"'));
+        assert.ok(readFileSync(join(home, '.codex', 'agents', 'xxt.toml'), 'utf8').includes('model_reasoning_effort = "max"'));
+        assert.ok(readFileSync(join(home, '.codex', 'agents', 'ul.toml'), 'utf8').includes('model = "luna"'));
+        assert.ok(readFileSync(join(home, '.codex', 'agents', 'us.toml'), 'utf8').includes('model_reasoning_effort = "ultra"'));
 
         const out = captureStdout(() => run(['list', '--json']));
         const rows = out.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
         const codexRows = rows.filter((r) => r.kind === 'codex-agent');
-        assert.equal(codexRows.length, 12);
+        assert.equal(codexRows.length, 30);
         assert.ok(codexRows.every((r) => r.state === 'mine'));
 
         assert.equal(run(['uninstall', '--codex-agents']), 0);
