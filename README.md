@@ -125,7 +125,7 @@ npx cah reinstall --codex-agents
 npx cah uninstall --codex-agents
 ```
 
-Generated agent names use effort prefix + model suffix. Existing GPT agents use `l/m/h/x` for `low/medium/high/xhigh`; Terra (`t`), Luna (`l`) and Sun (`s`) use all six levels: `l/m/h` for `low/medium/high` and `x/xx/u` for `extra/max/ultra`. They write TOML custom-agent files for Codex under `~/.codex/agents/`.
+Generated agent names use effort prefix + model suffix. Existing GPT agents use `l/m/h/x` for `low/medium/high/xhigh`; Terra (`t`), Luna (`l`) and Sol (`s`) use all six levels: `l/m/h` for `low/medium/high` and `x/xx/u` for `extra/max/ultra`. They write TOML custom-agent files for Codex under `~/.codex/agents/`.
 
 | Model | Agents by effort |
 |---|---|
@@ -134,7 +134,7 @@ Generated agent names use effort prefix + model suffix. Existing GPT agents use 
 | GPT-5.4 mini | `l54m` low · `m54m` medium · `h54m` high · `x54m` xhigh |
 | Terra | `lt` low · `mt` medium · `ht` high · `xt` extra · `xxt` max · `ut` ultra |
 | Luna | `ll` low · `ml` medium · `hl` high · `xl` extra · `xxl` max · `ul` ultra |
-| Sun | `ls` low · `ms` medium · `hs` high · `xs` extra · `xxs` max · `us` ultra |
+| Sol | `ls` low · `ms` medium · `hs` high · `xs` extra · `xxs` max · `us` ultra |
 
 ### 4. Skills (10)
 

@@ -292,6 +292,7 @@ describe('run install/uninstall --codex-agents', () => {
         assert.ok(readFileSync(join(home, '.codex', 'agents', 'h55.toml'), 'utf8').includes('model = "gpt-5.5"'));
         assert.ok(readFileSync(join(home, '.codex', 'agents', 'xxt.toml'), 'utf8').includes('model_reasoning_effort = "max"'));
         assert.ok(readFileSync(join(home, '.codex', 'agents', 'ul.toml'), 'utf8').includes('model = "luna"'));
+        assert.ok(readFileSync(join(home, '.codex', 'agents', 'us.toml'), 'utf8').includes('model = "sol"'));
         assert.ok(readFileSync(join(home, '.codex', 'agents', 'us.toml'), 'utf8').includes('model_reasoning_effort = "ultra"'));
 
         const out = captureStdout(() => run(['list', '--json']));
