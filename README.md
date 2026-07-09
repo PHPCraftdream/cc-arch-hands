@@ -18,13 +18,13 @@ lockstep — plus the three companion bins that some skills use as hooks or
 statusLine commands, copied into `~/.claude/cah-bin/` at install time.
 
 The artifacts:
-- **per-model slash-commands** (35) under `~/.claude/commands/`,
-- **per-model sub-agents** (35) under `~/.claude/agents/`,
+- **per-model slash-commands** (38) under `~/.claude/commands/`,
+- **per-model sub-agents** (38) under `~/.claude/agents/`,
 - **skills** (10) under `~/.claude/skills/`,
 - **companion bins** under `~/.claude/cah-bin/` (since 0.4.0).
 
 Optional Codex artifacts are installed only when requested:
-- **Codex custom agents** (12) under `~/.codex/agents/`, via `--codex-agents`.
+- **Codex custom agents** (30) under `~/.codex/agents/`, via `--codex-agents`.
 
 > **Since 0.4.0:** `cah install` copies the companion bins into
 > `~/.claude/cah-bin/` and `settings.json` references them by absolute path
@@ -48,7 +48,7 @@ Claude Code's own `used_percentage` formula. Without this, raw
 `input_tokens` after the first turn is ~1 token (everything else is
 served from the prompt cache) and a naive percentage would always read 0%.
 
-### 1. Per-model slash-commands (36)
+### 1. Per-model slash-commands (38)
 
 A short slash-command for every `{model, effort}` pair, so you can switch
 the model **and** reasoning effort for a single turn just by how you start
@@ -66,7 +66,7 @@ effort suffix:
 Suffixes: `l` low · `m` medium · `h` high · `x` xhigh · `xx` max.
 Whatever you type after the command becomes the prompt for that turn.
 
-### 2. Per-model sub-agents (36)
+### 2. Per-model sub-agents (38)
 
 The same matrix as the commands — but as **delegated sub-agents** instead
 of inline commands. Use them to hand a self-contained task to a fresh
@@ -115,7 +115,7 @@ inside Claude Code, so identical names do not collide.
 38 commands, 38 agents — one line per row-cell in
 [`lib/manifest.js`](lib/manifest.js).
 
-### 3. Optional Codex custom agents (12)
+### 3. Optional Codex custom agents (30)
 
 Codex agents are not part of the default install. Install them explicitly with `--codex-agents`, or select them as a class via `--only codex-agents` (also combinable, e.g. `--only skills,codex-agents`):
 
@@ -125,7 +125,16 @@ npx cah reinstall --codex-agents
 npx cah uninstall --codex-agents
 ```
 
-Generated agent names use effort prefix + model suffix: `l55`, `m55`, `h55`, `x55`; `l54`, `m54`, `h54`, `x54`; `l54m`, `m54m`, `h54m`, `x54m`. They write TOML custom-agent files for Codex under `~/.codex/agents/`.
+Generated agent names use effort prefix + model suffix. Existing GPT agents use `l/m/h/x` for `low/medium/high/xhigh`; Terra (`t`), Luna (`l`) and Sun (`s`) use all six levels: `l/m/h` for `low/medium/high` and `x/xx/u` for `extra/max/ultra`. They write TOML custom-agent files for Codex under `~/.codex/agents/`.
+
+| Model | Agents by effort |
+|---|---|
+| GPT-5.5 | `l55` low · `m55` medium · `h55` high · `x55` xhigh |
+| GPT-5.4 | `l54` low · `m54` medium · `h54` high · `x54` xhigh |
+| GPT-5.4 mini | `l54m` low · `m54m` medium · `h54m` high · `x54m` xhigh |
+| Terra | `lt` low · `mt` medium · `ht` high · `xt` extra · `xxt` max · `ut` ultra |
+| Luna | `ll` low · `ml` medium · `hl` high · `xl` extra · `xxl` max · `ul` ultra |
+| Sun | `ls` low · `ms` medium · `hs` high · `xs` extra · `xxs` max · `us` ultra |
 
 ### 4. Skills (10)
 
@@ -259,7 +268,7 @@ What `/resume` does:
 | Slash-commands | 38 | `<scope>/.claude/commands/<name>.md` |
 | Sub-agents | 38 | `<scope>/.claude/agents/<name>.md` |
 | Skills | 10 | `<scope>/.claude/skills/<name>/` |
-| Codex custom agents | 12 | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
+| Codex custom agents | 30 | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
 
 `<scope>` is `~/` by default (global install). Use `--local` or `--cwd`
 to target a specific project directory instead.
