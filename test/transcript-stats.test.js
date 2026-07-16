@@ -15,6 +15,7 @@ import {
   formatWeeklyReset,
   readRateLimitsCache,
   makeBar,
+  toDisplayName,
 } from '../lib/transcript-stats.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -217,6 +218,35 @@ describe('readTranscriptStats', () => {
     assert.ok(result !== null);
     assert.equal(result.usedTokens, 42_000);
     assert.equal(result.modelId, 'claude-sonnet-4-6');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// toDisplayName — context-size annotation stripping
+// ---------------------------------------------------------------------------
+
+describe('toDisplayName', () => {
+  it('strips a trailing context-size annotation ("(1M context)", "(1M)", "(200k)")', () => {
+    assert.equal(toDisplayName('Opus 4.8 (1M context)'), 'Opus 4.8');
+    assert.equal(toDisplayName('Opus 4.8 (1M)'), 'Opus 4.8');
+    assert.equal(toDisplayName('Sonnet 4.6 (200k)'), 'Sonnet 4.6');
+    assert.equal(toDisplayName('Fable (Context 1M)'), 'Fable');
+  });
+
+  it('strips the "Claude " prefix before stripping the annotation', () => {
+    assert.equal(toDisplayName('Claude Opus 4.8 (1M context)'), 'Opus 4.8');
+  });
+
+  it('leaves non-size parentheticals alone', () => {
+    assert.equal(toDisplayName('Opus (beta)'), 'Opus (beta)');
+  });
+
+  it('leaves names without any parenthetical unchanged', () => {
+    assert.equal(toDisplayName('Sonnet 5'), 'Sonnet 5');
+  });
+
+  it('still converts a raw model id', () => {
+    assert.equal(toDisplayName('claude-opus-4-8'), 'Opus 4.8');
   });
 });
 
