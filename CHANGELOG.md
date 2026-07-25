@@ -5,6 +5,38 @@ All notable changes to `cc-arch-hands` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0]
+
+### Added
+
+- **Opus 5.** The top Opus slash-commands/agents (`ol/om/oh/ox/oxx`) now run
+  `claude-opus-5` instead of `claude-opus-4-8`.
+- **Doc generator (`scripts/gen-docs.js`).** The README model-commands table,
+  the Codex-agents table, and every "N commands/agents" item count are now
+  generated from `lib/manifest.js` instead of hand-maintained — the exact
+  drift that caused README's item count to silently go stale (it said 38
+  while the manifest actually held 43 entries). Marked regions:
+  `<!--gen:table:KEY-->...<!--/gen:table:KEY-->` and
+  `<!--gen:count:KEY-->N<!--/gen-->`.
+  - `npm run gen:docs` rewrites README.md from the manifest.
+  - `npm run gen:docs:check` exits 1 if README.md has drifted; wired into
+    `npm test` via `test/gen-docs.test.js` so drift now fails CI instead of
+    silently accumulating.
+
+### Changed
+
+- **Opus command/agent naming switched from a version suffix to "releases
+  behind top" numbering.** `o47*` → `o2*`, `o4*` (4.6) → `o3*`, and the
+  previous top (`claude-opus-4-8`, formerly bare `ol/om/oh/ox/oxx`) is now
+  `o1*`. `o1*` always means "the Opus that was top before the current one" —
+  when the next Opus generation ships, everything renumbers down one slot
+  rather than gaining a new version-specific prefix. Sonnet and Haiku are
+  unaffected and continue to encode the literal version (`s45*`, `h45*`).
+  Total model commands/agents unchanged in count, just renumbered/repointed.
+- Model display names no longer echo a redundant context-size annotation
+  Claude Code sometimes sends (e.g. `Opus 4.8 (1M context)` → `Opus 4.8`) —
+  the size is already visible in the adjacent usage bar `(Nk/1M)`.
+
 ## [0.6.2] - 2026-07-10
 
 ### Fixed
