@@ -79,7 +79,7 @@ describe('writeModelCommands', () => {
     const entries = readdirSync(cmdDir).filter((f) => f.endsWith('.md'));
     assert.equal(entries.length, AllModelCommands.length);
 
-    for (const name of ['o47h', 'fh']) {
+    for (const name of ['o2h', 'fh']) {
       const data = readFileSync(join(cmdDir, `${name}.md`), 'utf8');
       assert.ok(data.endsWith(`${SentinelModelCommand}\n`), `${name} must end with sentinel`);
       const mc = AllModelCommands.find((c) => c.name === name);
@@ -107,7 +107,7 @@ describe('writeModelCommands', () => {
     const cmdDir = join(dir, '.claude', 'commands');
     mkdirSync(cmdDir, { recursive: true });
 
-    const foreignPath = join(cmdDir, 'o47x.md');
+    const foreignPath = join(cmdDir, 'o2x.md');
     const foreignBody = 'someone else owns this';
     writeFileSync(foreignPath, foreignBody);
 
@@ -116,7 +116,7 @@ describe('writeModelCommands', () => {
     assert.deepEqual(skipped, [foreignPath]);
 
     assert.equal(readFileSync(foreignPath, 'utf8'), foreignBody);
-    statSync(join(cmdDir, 'o47h.md'));
+    statSync(join(cmdDir, 'o2h.md'));
   });
 
   it('legacy file is migrated', () => {
@@ -125,7 +125,7 @@ describe('writeModelCommands', () => {
     const cmdDir = join(dir, '.claude', 'commands');
     mkdirSync(cmdDir, { recursive: true });
 
-    const legacyPath = join(cmdDir, 'o47h.md');
+    const legacyPath = join(cmdDir, 'o2h.md');
     writeFileSync(legacyPath, `---\ndescription: stale\n---\n\nold body\n${LegacyModelCommand}\n`);
 
     const { skipped } = writeModelCommands(null, scope);
@@ -184,11 +184,11 @@ describe('removeModelCommands', () => {
     const cmdDir = join(dir, '.claude', 'commands');
     mkdirSync(cmdDir, { recursive: true });
 
-    const minePath = join(cmdDir, 'o47h.md');
+    const minePath = join(cmdDir, 'o2h.md');
     writeFileSync(minePath, `x\n${SentinelModelCommand}\n`);
-    const legacyPath = join(cmdDir, 'o47m.md');
+    const legacyPath = join(cmdDir, 'o2m.md');
     writeFileSync(legacyPath, `y\n${LegacyModelCommand}\n`);
-    const foreignPath = join(cmdDir, 'o47l.md');
+    const foreignPath = join(cmdDir, 'o2l.md');
     const foreignBody = 'not yours';
     writeFileSync(foreignPath, foreignBody);
 
@@ -233,7 +233,7 @@ describe('writeModelAgents', () => {
     const agentsDir = join(dir, '.claude', 'agents');
     mkdirSync(agentsDir, { recursive: true });
 
-    const foreignPath = join(agentsDir, 'o47h.md');
+    const foreignPath = join(agentsDir, 'o2h.md');
     const foreignBody = "someone else's agent";
     writeFileSync(foreignPath, foreignBody);
 
@@ -272,11 +272,11 @@ describe('writeModelAgents', () => {
     const agentsDir = join(dir, '.claude', 'agents');
     mkdirSync(agentsDir, { recursive: true });
 
-    // Pre-0.2.0 layout: agent file lives at agents/ao47h.md, stamped with our sentinel.
-    const legacyPath = join(agentsDir, 'ao47h.md');
+    // Pre-0.2.0 layout: agent file lives at agents/ao2h.md, stamped with our sentinel.
+    const legacyPath = join(agentsDir, 'ao2h.md');
     writeFileSync(legacyPath, `old aoh body\n${SentinelModelAgent}\n`);
     // Also an a-prefixed file with the truly-legacy crush sentinel.
-    const crushLegacyPath = join(agentsDir, 'ao47m.md');
+    const crushLegacyPath = join(agentsDir, 'ao2m.md');
     writeFileSync(crushLegacyPath, `old crush body\n${LegacyModelAgent}\n`);
 
     const { written, skipped, pruned } = writeModelAgents(null, scope);
@@ -288,10 +288,10 @@ describe('writeModelAgents', () => {
     assert.throws(() => statSync(crushLegacyPath), { code: 'ENOENT' });
 
     // New files at the unprefixed paths.
-    const newO47h = readFileSync(join(agentsDir, 'o47h.md'), 'utf8');
-    assert.ok(newO47h.includes('name: o47h'));
-    const newO47m = readFileSync(join(agentsDir, 'o47m.md'), 'utf8');
-    assert.ok(newO47m.includes('name: o47m'));
+    const newO47h = readFileSync(join(agentsDir, 'o2h.md'), 'utf8');
+    assert.ok(newO47h.includes('name: o2h'));
+    const newO47m = readFileSync(join(agentsDir, 'o2m.md'), 'utf8');
+    assert.ok(newO47m.includes('name: o2m'));
   });
 });
 
@@ -319,11 +319,11 @@ describe('removeModelAgents', () => {
     const agentsDir = join(dir, '.claude', 'agents');
     mkdirSync(agentsDir, { recursive: true });
 
-    const minePath = join(agentsDir, 'o47h.md');
+    const minePath = join(agentsDir, 'o2h.md');
     writeFileSync(minePath, `x\n${SentinelModelAgent}\n`);
-    const legacyPath = join(agentsDir, 'o47m.md');
+    const legacyPath = join(agentsDir, 'o2m.md');
     writeFileSync(legacyPath, `y\n${LegacyModelAgent}\n`);
-    const foreignPath = join(agentsDir, 'o47l.md');
+    const foreignPath = join(agentsDir, 'o2l.md');
     const foreignBody = 'not yours';
     writeFileSync(foreignPath, foreignBody);
 
@@ -342,11 +342,11 @@ describe('removeModelAgents', () => {
     // Pre-0.2.0 file at agents/aoh.md with our sentinel.
     const legacyMine = join(agentsDir, 'aoh.md');
     writeFileSync(legacyMine, `legacy\n${SentinelModelAgent}\n`);
-    // Pre-0.2.0 file at agents/ao47m.md with the crush-era sentinel.
-    const legacyCrush = join(agentsDir, 'ao47m.md');
+    // Pre-0.2.0 file at agents/ao2m.md with the crush-era sentinel.
+    const legacyCrush = join(agentsDir, 'ao2m.md');
     writeFileSync(legacyCrush, `crush legacy\n${LegacyModelAgent}\n`);
     // Foreign a-prefixed file — must not be touched.
-    const foreignA = join(agentsDir, 'ao47l.md');
+    const foreignA = join(agentsDir, 'ao2l.md');
     writeFileSync(foreignA, 'someone else');
 
     const { removed, skipped } = removeModelAgents(scope);

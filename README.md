@@ -18,13 +18,13 @@ lockstep — plus the three companion bins that some skills use as hooks or
 statusLine commands, copied into `~/.claude/cah-bin/` at install time.
 
 The artifacts:
-- **per-model slash-commands** (38) under `~/.claude/commands/`,
-- **per-model sub-agents** (38) under `~/.claude/agents/`,
+- **per-model slash-commands** (<!--gen:count:model-commands-->43<!--/gen-->) under `~/.claude/commands/`,
+- **per-model sub-agents** (<!--gen:count:model-commands-->43<!--/gen-->) under `~/.claude/agents/`,
 - **skills** (10) under `~/.claude/skills/`,
 - **companion bins** under `~/.claude/cah-bin/` (since 0.4.0).
 
 Optional Codex artifacts are installed only when requested:
-- **Codex custom agents** (30) under `~/.codex/agents/`, via `--codex-agents`.
+- **Codex custom agents** (<!--gen:count:codex-agents-->30<!--/gen-->) under `~/.codex/agents/`, via `--codex-agents`.
 
 > **Since 0.4.0:** `cah install` copies the companion bins into
 > `~/.claude/cah-bin/` and `settings.json` references them by absolute path
@@ -48,7 +48,7 @@ Claude Code's own `used_percentage` formula. Without this, raw
 `input_tokens` after the first turn is ~1 token (everything else is
 served from the prompt cache) and a naive percentage would always read 0%.
 
-### 1. Per-model slash-commands (38)
+### 1. Per-model slash-commands (<!--gen:count:model-commands-->43<!--/gen-->)
 
 A short slash-command for every `{model, effort}` pair, so you can switch
 the model **and** reasoning effort for a single turn just by how you start
@@ -57,7 +57,7 @@ effort suffix:
 
 ```
 /oh   run this turn on Opus (top) at high effort
-/o47x run this turn on Opus 4.7 at xhigh effort
+/o2x  run this turn on Opus 4.7 (2 releases behind top) at xhigh effort
 /sm   Sonnet (top), medium effort
 /fxx  Fable 5, max effort
 /hl   Haiku, low effort
@@ -66,7 +66,7 @@ effort suffix:
 Suffixes: `l` low · `m` medium · `h` high · `x` xhigh · `xx` max.
 Whatever you type after the command becomes the prompt for that turn.
 
-### 2. Per-model sub-agents (38)
+### 2. Per-model sub-agents (<!--gen:count:model-commands-->43<!--/gen-->)
 
 The same matrix as the commands — but as **delegated sub-agents** instead
 of inline commands. Use them to hand a self-contained task to a fresh
@@ -93,29 +93,39 @@ Rows are sorted by tier (strongest first). Bold rows are **top** shortcuts
 that always point at the freshest version of each family — use them when
 you don't care about pinning an exact version.
 
+**Opus uses "releases behind top" numbering, not a version number.** `o1*`
+is whichever Opus was top before the current one, `o2*` the one before
+that, and so on — so `o1x` today means Opus 4.8, but after the next Opus
+release `o1x` will mean today's `ox` (the model, not the number, shifts).
+Other families (Sonnet, Haiku) still encode the actual version number
+(`s45*`, `h45*`).
+
 **Slash-commands**
 
+<!--gen:table:model-commands (run `npm run gen:docs` after editing lib/manifest.js) -->
 | Model | model id | low | medium | high | xhigh | max |
 |---|---|---|---|---|---|---|
-| **Fable** (top) | `claude-fable-5` | `/fl` | `/fm` | `/fh` | `/fx` | `/fxx` |
-| **Opus** (top) | `claude-opus-4-8` | `/ol` | `/om` | `/oh` | `/ox` | `/oxx` |
-| Opus 4.7 | `claude-opus-4-7` | `/o47l` | `/o47m` | `/o47h` | `/o47x` | `/o47xx` |
-| Opus 4.6 | `claude-opus-4-6` | `/o4l` | `/o4m` | `/o4h` | `/o4x` | `/o4xx` |
+| **Fable** (top, 1M) | `claude-fable-5` | `/fl` | `/fm` | `/fh` | `/fx` | `/fxx` |
+| **Opus** (top, 1M) | `claude-opus-5` | `/ol` | `/om` | `/oh` | `/ox` | `/oxx` |
+| Opus 4.8 (1M) | `claude-opus-4-8` | `/o1l` | `/o1m` | `/o1h` | `/o1x` | `/o1xx` |
+| Opus 4.7 (1M) | `claude-opus-4-7` | `/o2l` | `/o2m` | `/o2h` | `/o2x` | `/o2xx` |
+| Opus 4.6 (1M) | `claude-opus-4-6` | `/o3l` | `/o3m` | `/o3h` | `/o3x` | `/o3xx` |
 | **Sonnet** (top, 1M) | `claude-sonnet-5` | `/sl` | `/sm` | `/sh` | `/sx` | `/sxx` |
-| Sonnet 4.6 | `claude-sonnet-4-6` | `/s4l` | `/s4m` | `/s4h` | — | `/s4xx` |
-| Sonnet 4.5 | `claude-sonnet-4-5` | `/s45l` | `/s45m` | `/s45h` | — | — |
-| **Haiku** (top) | `claude-haiku-4-5` | `/hl` | `/hm` | `/hh` | — | — |
-| Haiku 4.5 | `claude-haiku-4-5` | `/h45l` | `/h45m` | `/h45h` | — | — |
+| Sonnet 4.6 (200k) | `claude-sonnet-4-6` | `/s4l` | `/s4m` | `/s4h` | — | `/s4xx` |
+| Sonnet 4.5 (200k) | `claude-sonnet-4-5` | `/s45l` | `/s45m` | `/s45h` | — | — |
+| **Haiku** (top, 200k) | `claude-haiku-4-5` | `/hl` | `/hm` | `/hh` | — | — |
+| Haiku 4.5 (200k) | `claude-haiku-4-5` | `/h45l` | `/h45m` | `/h45h` | — | — |
+<!--/gen:table:model-commands-->
 
 **Sub-agents** share the same names as the commands above. `/oh` is the
 slash-command body; `oh` (no prefix) is the agent invoked by the `Agent`
 tool with `subagent_type: "oh"`. The two live in separate lookup tables
 inside Claude Code, so identical names do not collide.
 
-38 commands, 38 agents — one line per row-cell in
+<!--gen:count:model-commands-->43<!--/gen--> commands, <!--gen:count:model-commands-->43<!--/gen--> agents — one line per row-cell in
 [`lib/manifest.js`](lib/manifest.js).
 
-### 3. Optional Codex custom agents (30)
+### 3. Optional Codex custom agents (<!--gen:count:codex-agents-->30<!--/gen-->)
 
 Codex agents are not part of the default install. Install them explicitly with `--codex-agents`, or select them as a class via `--only codex-agents` (also combinable, e.g. `--only skills,codex-agents`):
 
@@ -127,6 +137,7 @@ npx cah uninstall --codex-agents
 
 Generated agent names use effort prefix + model suffix. Existing GPT agents use `l/m/h/x` for `low/medium/high/xhigh`; Terra (`t`), Luna (`l`) and Sol (`s`) use all six levels: `l/m/h` for `low/medium/high` and `x/xx/u` for `extra/max/ultra`. They write TOML custom-agent files for Codex under `~/.codex/agents/`.
 
+<!--gen:table:codex-agents (run `npm run gen:docs` after editing lib/manifest.js) -->
 | Model | Agents by effort |
 |---|---|
 | GPT-5.5 | `l55` low · `m55` medium · `h55` high · `x55` xhigh |
@@ -135,6 +146,7 @@ Generated agent names use effort prefix + model suffix. Existing GPT agents use 
 | Terra | `lt` low · `mt` medium · `ht` high · `xt` extra · `xxt` max · `ut` ultra |
 | Luna | `ll` low · `ml` medium · `hl` high · `xl` extra · `xxl` max · `ul` ultra |
 | Sol | `ls` low · `ms` medium · `hs` high · `xs` extra · `xxs` max · `us` ultra |
+<!--/gen:table:codex-agents-->
 
 ### 4. Skills (10)
 
@@ -265,10 +277,10 @@ What `/resume` does:
 
 | Artifact | Count | Destination |
 |---|---|---|
-| Slash-commands | 38 | `<scope>/.claude/commands/<name>.md` |
-| Sub-agents | 38 | `<scope>/.claude/agents/<name>.md` |
+| Slash-commands | <!--gen:count:model-commands-->43<!--/gen--> | `<scope>/.claude/commands/<name>.md` |
+| Sub-agents | <!--gen:count:model-commands-->43<!--/gen--> | `<scope>/.claude/agents/<name>.md` |
 | Skills | 10 | `<scope>/.claude/skills/<name>/` |
-| Codex custom agents | 30 | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
+| Codex custom agents | <!--gen:count:codex-agents-->30<!--/gen--> | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
 
 `<scope>` is `~/` by default (global install). Use `--local` or `--cwd`
 to target a specific project directory instead.
