@@ -5,6 +5,18 @@ All notable changes to `cc-arch-hands` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1]
+
+### Changed
+
+- **`/resume` checkpoint-selection wording clarified.** The skill already picked the
+  most recently modified checkpoint file when run with no argument, but the
+  instruction text now spells out explicitly that "most recently modified"
+  means filesystem `mtime`, never a timestamp parsed from the filename —
+  named checkpoints (e.g. `pre-refactor.md`) carry no filename timestamp at
+  all, so mtime is the only signal that works uniformly for both auto-named
+  and named checkpoint files.
+
 ## [0.7.0]
 
 ### Added

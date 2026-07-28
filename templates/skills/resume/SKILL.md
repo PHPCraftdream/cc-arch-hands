@@ -20,7 +20,7 @@ The other half of `/checkpoint`. Reads a saved snapshot of session state and res
 
 1. **Locate the checkpoint directory.** Use `<repo-root>/docs/checkpoints/` if a `.git` directory exists in the current working directory or any parent; otherwise fall back to `~/.claude/checkpoints/`.
 2. **`--list` mode.** Read the directory, sort by mtime descending, and print a table: name, size, mtime, first-line title from the file. Then stop — do NOT restore.
-3. **Resolve the target file.** With no argument: the most recently modified `.md` in the directory. With an argument:
+3. **Resolve the target file.** With no argument: sort every `.md` in the directory by filesystem mtime descending and pick the first — the actual disk write time, not any timestamp embedded in the filename (named checkpoints like `pre-refactor.md` carry no filename timestamp at all, so mtime is the only signal that works for both auto-named and named files). With an argument:
    - Exact filename match (with or without `.md`): take it.
    - Otherwise prefix match against filenames. **If multiple files match**, list them and ask the user to disambiguate — do not silently pick.
    - If nothing matches: say so and stop. Do not invent state.
