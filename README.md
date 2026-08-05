@@ -135,7 +135,7 @@ npx cah reinstall --codex-agents
 npx cah uninstall --codex-agents
 ```
 
-Generated agent names use effort prefix + model suffix. Existing GPT agents use `l/m/h/x` for `low/medium/high/xhigh`; Terra (`t`), Luna (`l`) and Sol (`s`) use all six levels: `l/m/h` for `low/medium/high` and `x/xx/u` for `extra/max/ultra`. They write TOML custom-agent files for Codex under `~/.codex/agents/`.
+Generated agent names use effort prefix + model suffix. Existing GPT agents use `l/m/h/x` for `low/medium/high/xhigh`; Terra (`t`), Luna (`l`) and Sol (`s`) use all six levels: `l/m/h` for `low/medium/high` and `x/xx/u` for `extra/max/ultra`. Their full Codex model IDs are `gpt-5.6-terra`, `gpt-5.6-luna`, and `gpt-5.6-sol`. They write TOML custom-agent files for Codex under `~/.codex/agents/`.
 
 <!--gen:table:codex-agents (run `npm run gen:docs` after editing lib/manifest.js) -->
 | Model | Agents by effort |

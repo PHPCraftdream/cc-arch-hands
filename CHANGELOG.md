@@ -5,6 +5,15 @@ All notable changes to `cc-arch-hands` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] - 2026-08-05
+
+### Fixed
+
+- Updated all optional Terra, Luna, and Sol Codex-agent definitions from the
+  obsolete short model identifiers to `gpt-5.6-terra`, `gpt-5.6-luna`, and
+  `gpt-5.6-sol`. Reinstalling `codex-agents` now writes model IDs accepted by
+  current Codex clients.
+
 ## [0.7.1]
 
 ### Changed
