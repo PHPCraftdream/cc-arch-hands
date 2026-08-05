@@ -5,6 +5,14 @@ All notable changes to `cc-arch-hands` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Upgraded `actions/checkout` and `actions/setup-node` from v4 to v7 across
+  CI and npm-publish workflows. Both actions now run on the Node 24 action
+  runtime instead of the deprecated Node 20 runtime.
+
 ## [0.7.2] - 2026-08-05
 
 ### Fixed
