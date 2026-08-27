@@ -23,8 +23,9 @@ The artifacts:
 - **skills** (10) under `~/.claude/skills/`,
 - **companion bins** under `~/.claude/cah-bin/` (since 0.4.0).
 
-Optional Codex artifacts are installed only when requested:
+Optional artifacts are installed only when requested:
 - **Codex custom agents** (<!--gen:count:codex-agents-->30<!--/gen-->) under `~/.codex/agents/`, via `--codex-agents`.
+- **Agent-tree skills** (`agent`, `agent-new` — 2) under `~/.claude/skills/`, via `--agent-tree`.
 
 > **Since 0.4.0:** `cah install` copies the companion bins into
 > `~/.claude/cah-bin/` and `settings.json` references them by absolute path
@@ -273,6 +274,39 @@ What `/resume` does:
 6. Warns if the checkpoint is older than 7 days, since repo state may
    have drifted.
 
+### 5. Optional persistent sub-agent tree (`agent`, `agent-new`)
+
+Not part of the default install — same opt-in shape as Codex agents. Install
+explicitly with `--agent-tree`, or select it as a class via `--only agent-tree`
+(also combinable, e.g. `--only skills,agent-tree`):
+
+```bash
+npx cah install --agent-tree
+npx cah reinstall --agent-tree
+npx cah uninstall --agent-tree
+```
+
+| Skill | Purpose |
+|---|---|
+| `/agent-new` | Create a persistent sub-agent (or fork one from an existing agent's memory) as a node in this project's `.agents` tree (a sibling of `.claude/`) — a cache-cheap session (native `--resume`, not replayed history) with its own contract, write-scoped memory, and cost/depth/fanout limits. Usage: `/agent-new <address> --role "..." [--model M] [--effort E] [--from <address>] [--depth-max N] [--fanout-max N] [--budget N]`. |
+| `/agent` | Work with agents already created by `/agent-new`: `send`/`up` a message, read `tree`/`status`/`log`/`cost` (0 tokens), tune `config`, `compact` a bloated one, `retire` one, or relay a `request-limit` to the user for `limits approve`. |
+
+Architecture, invariants, and the reasoning behind every design boundary
+(directory layout, the `claude` backend's path-scoped permission model, the
+`ASK_SIBLING`/`up` relay protocol, limit inheritance) live in
+[`docs/plan-agent-tree.md`](docs/plan-agent-tree.md), with the accompanying
+test plan in [`docs/test-plan-agent-tree.md`](docs/test-plan-agent-tree.md).
+These two files install nowhere — they're contributor-facing design docs, not
+runtime artifacts.
+
+Installed like a regular multi-file skill (`~/.claude/skills/agent-new/`
+carries its own `assets/agent-tree.js` engine and `assets/backends/claude.js`)
+but kept out of `AllSkills` and stamped with its own sentinel
+(`<!-- cah-agent-tree:v1 -->` rather than `<!-- cah-skill:v1 -->`) — see
+`lib/agent-tree.js`. That separation is deliberate: a plain `--only skills`
+install/reinstall must never prune these directories as orphans just because
+they aren't in the main skill registry.
+
 ### Where it goes
 
 | Artifact | Count | Destination |
@@ -281,6 +315,7 @@ What `/resume` does:
 | Sub-agents | <!--gen:count:model-commands-->43<!--/gen--> | `<scope>/.claude/agents/<name>.md` |
 | Skills | 10 | `<scope>/.claude/skills/<name>/` |
 | Codex custom agents | <!--gen:count:codex-agents-->30<!--/gen--> | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
+| Agent-tree skills | 2 | `<scope>/.claude/skills/<name>/` (only with `--agent-tree`) |
 
 `<scope>` is `~/` by default (global install). Use `--local` or `--cwd`
 to target a specific project directory instead.
@@ -338,6 +373,7 @@ npx cah install                          # global (default): ~/.claude/{commands
 npx cah install --local                  # local: <cwd>/.claude/... (must already exist); bins still go global
 npx cah install --cwd /path/to/project   # local at a specific path; bins still go global
 npx cah install --codex-agents           # optional: install only Codex agents into ~/.codex/agents
+npx cah install --agent-tree             # optional: install only the agent/agent-new skills
 
 # --only takes install classes, individual skill names, or any mix.
 npx cah install --only skills                       # all 10 skills
@@ -369,9 +405,11 @@ npx cah install --only commands,clock               # mix class + skill name
 # clock without losing the bins that checkpoint-watch needs).
 npx cah reinstall --only clock                      # uninstall + install of just the clock skill
 npx cah reinstall --codex-agents                    # reinstall only Codex agents
+npx cah reinstall --agent-tree                      # reinstall only the agent/agent-new skills
 npx cah uninstall                                   # symmetric remove (sentinel-gated)
 npx cah uninstall --only agents                     # remove only Claude agents
 npx cah uninstall --codex-agents                    # remove only Codex agents
+npx cah uninstall --agent-tree                      # remove only the agent/agent-new skills
 npx cah uninstall --only clock                      # remove only the clock skill, keep bins
 
 npx cah list                             # tabular: NAME | KIND | STATE
@@ -468,7 +506,7 @@ cc-arch-hands/
 ├── templates/
 │   └── skills/                  # repo-sight, task, babygoal, babysit,
 │       └── <name>/SKILL.md      # checkpoint, resume, checkpoint-prune, triage,
-│                                # checkpoint-watch, clock
+│                                # checkpoint-watch, clock, agent-new, agent
 ├── test/
 │   ├── installer.test.js        # installer tests (node:test + node:assert)
 │   ├── cli.test.js              # CLI layer tests (scope, parseOnly, resolveDeps, --only subset)
