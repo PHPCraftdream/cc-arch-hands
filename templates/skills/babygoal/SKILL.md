@@ -77,6 +77,8 @@ This contract exists because two failure modes are extremely common:
 
    The ordering protects the user: even if your work turn errors out, dies, or runs out of context mid-edit, `/babysit` is already running and the next tick will pick up where you left off. And every in-flight piece is visible in the TaskList so the tick can find it.
 
+6. **After each task completes, continue immediately — don't wait for a tick.** Mark the finished task `completed` via `TaskUpdate`, then pick the next ready task (lowest-id pending whose `blockedBy` is empty or resolved; for a parallel strategy, the next batch) and start it yourself, in this same session, without pausing. The babysit tick exists to recover work when THIS session stops responding on its own — an API error, a crash, a context blowout, a closed terminal — it is not the pacing mechanism for ordinary completed-task hand-offs. A live session that finishes a task and then sits idle waiting for the next cron fire has misread the contract: the tick's own job-picking (`/babysit`'s tick prompt, step 4) is a fallback for stalled/unattended work, not a gate on a session that is still there and working. Keep pulling ready tasks until the list is exhausted — only then does the tick's own self-delete (its step 2) actually fire.
+
 ## Important
 
 - **The user's argument is *intent*, not the final plan.** The agent enriches it into a TaskList in step 4 (decomposition) and acts on it in step 5 (install heartbeat + start work).

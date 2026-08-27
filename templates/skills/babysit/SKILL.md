@@ -70,6 +70,7 @@ Each tick must end with at most one short line of output: still running #N / res
 
 ## Important
 
+- **The tick's job-picking (tick step 4) is a fallback for a stalled or dead session, not a pacing gate.** A session actively working a TaskList (typically one started by `/babygoal`) picks up its own next ready task the instant the current one completes — it never pauses between tasks to wait for a tick to do that for it. The tick only matters when nobody live is around to pick tasks up; it exists to survive an API error, a crash, or a silent stall, not to throttle normal progress to once per interval.
 - The skill loader does not execute the cron for you. **Reading this file is not the same as installing the cron.** Don't move on until step 3 above has logged a confirmed `<job-id>`.
 - This skill changes neither the goal nor the plan — it only nudges existing work forward. New tasks come from `/task` or `/babygoal`. List hygiene comes from `/triage`.
 - If `CronList` shows the TaskList is empty of your work but other agents' tasks are still alive — leave their tasks alone, but do call CronDelete on your own job. It's not yours to babysit.
