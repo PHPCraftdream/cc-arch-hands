@@ -20,7 +20,7 @@ statusLine commands, copied into `~/.claude/cah-bin/` at install time.
 The artifacts:
 - **per-model slash-commands** (<!--gen:count:model-commands-->43<!--/gen-->) under `~/.claude/commands/`,
 - **per-model sub-agents** (<!--gen:count:model-commands-->43<!--/gen-->) under `~/.claude/agents/`,
-- **skills** (10) under `~/.claude/skills/`,
+- **skills** (11) under `~/.claude/skills/`,
 - **companion bins** under `~/.claude/cah-bin/` (since 0.4.0).
 
 Optional artifacts are installed only when requested:
@@ -149,7 +149,7 @@ Generated agent names use effort prefix + model suffix. Existing GPT agents use 
 | Sol | `ls` low · `ms` medium · `hs` high · `xs` extra · `xxs` max · `us` ultra |
 <!--/gen:table:codex-agents-->
 
-### 4. Skills (10)
+### 4. Skills (11)
 
 Reusable capability packs Claude Code loads on demand. Each is invoked as
 `/skill-name` from a chat. Grouped by purpose:
@@ -173,6 +173,7 @@ Reusable capability packs Claude Code loads on demand. Each is invoked as
 | Skill | Purpose |
 |---|---|
 | `/checkpoint` | Persist current session state (active `/goal`, TaskList with `blockedBy`, recent decisions, open questions, repo state) to a markdown file under `docs/checkpoints/`. Usage: `/checkpoint` (auto-timestamped) or `/checkpoint <name>` (named, re-runs overwrite). |
+| `/ccheckpoint` | Same as `/checkpoint`, plus a local `git commit` of the checkpoint file it writes (skipped, not erred, when the target isn't inside a git repo). Usage: same as `/checkpoint`. |
 | `/resume` | Reload a checkpoint, rebuild the TaskList via TaskCreate, restate the goal as a copy-paste line, surface open questions. Usage: `/resume` (most recent), `/resume <name>` (exact or prefix), `/resume --list` (browse without restoring). |
 | `/checkpoint-prune` | Delete checkpoints. Arg auto-detected: `<name>` (one file), `14d`/`48h` (older than), bare number (keep last N), no arg (all). Confirms before batch deletes; `--dry` reports only. Usage: `/checkpoint-prune`, `/checkpoint-prune 14d`, `/checkpoint-prune 10`, `/checkpoint-prune <name>`. |
 | `/triage` | TaskList hygiene — flag stale `in_progress`, orphan blockers, dead-end chains, trivial sibling clusters, completed clutter, duplicate subjects. Advisory by default; asks before mutating. Usage: `/triage` or `/triage --dry`. |
@@ -247,7 +248,10 @@ What goes into a checkpoint:
 
 Empty sections stay empty with a one-line reason — the skill never
 invents content to look complete. Checkpoints are not added to git
-automatically; that decision stays with you.
+automatically; that decision stays with you — unless you use
+`/ccheckpoint` instead of `/checkpoint`, which is identical except it
+also runs `git add`+`git commit` (that one file only, never a push) on
+the checkpoint it just wrote.
 
 `cah` also installs `/checkpoint-watch` globally, but invoking it in a project
 writes a Stop hook into *that project's* `.claude/settings.json` (never the
@@ -376,7 +380,7 @@ npx cah install --codex-agents           # optional: install only Codex agents i
 npx cah install --agent-tree             # optional: install only the agent/agent-new skills
 
 # --only takes install classes, individual skill names, or any mix.
-npx cah install --only skills                       # all 10 skills
+npx cah install --only skills                       # all 11 skills
 npx cah install --only bins                         # companion bins (cah-status, cah-stamp,
                                                     #   cah-checkpoint-hint, cah-status-probe,
                                                     #   + their shared lib/transcript-stats.js)
@@ -388,6 +392,7 @@ npx cah install --only babysit
 npx cah install --only babygoal
 npx cah install --only task
 npx cah install --only checkpoint
+npx cah install --only ccheckpoint
 npx cah install --only checkpoint-prune
 npx cah install --only resume
 npx cah install --only triage
@@ -492,7 +497,7 @@ cc-arch-hands/
 ├── bin/cah-status-probe.js      # diagnostic statusLine bin used by `cah probe statusline`
 ├── lib/
 │   ├── cli.js                   # dispatch, arg parsing (node:util parseArgs), --only resolver
-│   ├── manifest.js              # AllModelCommands (36 entries), AllSkills (10), SkillDeps
+│   ├── manifest.js              # AllModelCommands (36 entries), AllSkills (11), SkillDeps
 │   ├── sentinel.js              # new + legacy markers, ownership classifier
 │   ├── scope.js                 # global vs local target dir resolution
 │   ├── templates.js             # bundled / disk template abstraction
@@ -505,7 +510,7 @@ cc-arch-hands/
 │   └── probe.js                 # enable/disable cah-status-probe via settings.json edits
 ├── templates/
 │   └── skills/                  # repo-sight, task, babygoal, babysit,
-│       └── <name>/SKILL.md      # checkpoint, resume, checkpoint-prune, triage,
+│       └── <name>/SKILL.md      # checkpoint, ccheckpoint, resume, checkpoint-prune, triage,
 │                                # checkpoint-watch, clock, agent-new, agent
 ├── test/
 │   ├── installer.test.js        # installer tests (node:test + node:assert)
