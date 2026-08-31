@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`agent`/`agent-new` persistent sub-agent tree** (opt-in, `--agent-tree`):
+  a backend-agnostic engine (`templates/skills/agent-new/assets/agent-tree.js`)
+  that births addressable, persistently-memoried sub-agents into a directory
+  tree, each with its own git-backed cell, passport, and dialog log.
+  - **Sessions**: one cell can hold many named conversations
+    (`session new`/`list`/`close`), each with its own backend and
+    `--backend-opt` bag fixed at creation; `compact` is the one place those
+    options can change, since it already mints a fresh identity under the
+    same name.
+  - **Task lifecycle**: `task open` (prepare a brief with zero backend
+    calls), `send --task-file` (dispatch it), `send --task-resume` (append a
+    follow-up round to an open brief), `task done`/`task list`/`task
+    resolve`. A `preamble.md` (per-cell or tree-wide) is mixed into every new
+    brief, with `--task-var key=value` placeholder substitution.
+  - **Backend registry**: any `backends/<name>.js` exporting the documented
+    contract (`backends/README.md`) is auto-discovered; `claude` ships as the
+    default and reference implementation.
+  - **Run ledger** (`runs`): an append-only start/end record of every backend
+    call, distinguishing `ok`/`error`/`rejected`/`launch-failed`/`unknown`
+    outcomes — including calls whose birth failed before a passport existed.
+  - Distinct exit codes for limit refusal (2), retired/closed (6), busy (7),
+    and — a name that exists on the agent but not as a session (8).
+  - `depth_max`/`fanout_max`/`budget_usd` are enforced atomically against
+    concurrent `new`/`send`: a reservation marker settles fanout and
+    address-uniqueness under a short per-parent mutex before any billed call,
+    and a dedicated budget mutex serializes calls sharing a capped scope
+    until each one's real cost is committed.
+
 ### Changed
 
 - Upgraded `actions/checkout` and `actions/setup-node` from v4 to v7 across
