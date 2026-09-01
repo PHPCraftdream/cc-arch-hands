@@ -317,7 +317,7 @@ they aren't in the main skill registry.
 |---|---|---|
 | Slash-commands | <!--gen:count:model-commands-->43<!--/gen--> | `<scope>/.claude/commands/<name>.md` |
 | Sub-agents | <!--gen:count:model-commands-->43<!--/gen--> | `<scope>/.claude/agents/<name>.md` |
-| Skills | 10 | `<scope>/.claude/skills/<name>/` |
+| Skills | 11 | `<scope>/.claude/skills/<name>/` |
 | Codex custom agents | <!--gen:count:codex-agents-->30<!--/gen--> | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
 | Agent-tree skills | 2 | `<scope>/.claude/skills/<name>/` (only with `--agent-tree`) |
 

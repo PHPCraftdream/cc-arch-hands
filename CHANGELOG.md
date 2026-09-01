@@ -36,6 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     address-uniqueness under a short per-parent mutex before any billed call,
     and a dedicated budget mutex serializes calls sharing a capped scope
     until each one's real cost is committed.
+- **`/ccheckpoint`**: identical to `/checkpoint`, plus a local `git commit` of
+  the one checkpoint file it just wrote (skipped, not erred, when the target
+  isn't inside a git repo). Never touches anything else that happens to be
+  dirty or staged in the working tree.
 
 ### Changed
 
