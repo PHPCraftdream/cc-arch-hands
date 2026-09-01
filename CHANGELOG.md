@@ -5,7 +5,7 @@ All notable changes to `cc-arch-hands` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.0] - 2026-09-01
 
 ### Added
 
@@ -31,11 +31,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     outcomes — including calls whose birth failed before a passport existed.
   - Distinct exit codes for limit refusal (2), retired/closed (6), busy (7),
     and — a name that exists on the agent but not as a session (8).
-  - `depth_max`/`fanout_max`/`budget_usd` are enforced atomically against
-    concurrent `new`/`send`: a reservation marker settles fanout and
-    address-uniqueness under a short per-parent mutex before any billed call,
-    and a dedicated budget mutex serializes calls sharing a capped scope
-    until each one's real cost is committed.
+  - `depth_max`/`fanout_max` are enforced atomically against concurrent
+    `new`: a reservation marker settles fanout and address-uniqueness under a
+    short per-parent mutex before any billed call. `budget_usd` is enforced
+    by a per-scope reservation against a durable cost journal (see below) —
+    an atomic check-and-reserve that closes the same stale-snapshot race a
+    naive check-then-call would hit, without serializing every call sharing a
+    capped scope.
+  - **Cost journal** (`_meta/cost-journal.jsonl`, tree-wide): every billed
+    call writes a paired intent (before the call) and settlement (after it
+    returns) record. An intent with no settlement is, by definition, an
+    unknown-cost call — nothing has to remember to increment a counter for a
+    crash mid-call. Distinguishes a call still genuinely in flight (owning
+    process alive, per the same PID+start-time liveness check locks use) from
+    one abandoned by a crash (owning process confirmed dead): only the
+    abandoned case taints the scope's budget trust; a live pending call
+    counts toward budget headroom via a conservative per-call estimate
+    instead. Replaces the old `orphan_unknown_cost_calls` passport counter
+    and tree-wide `root_orphan_ledger.json`, migrating their historical
+    counts in on first touch so existing trees don't silently lose a
+    previously-tripped budget-trust flag. `subtreeCost`/
+    `subtreeHasUnknownCost`, and the orphan warnings in `tree`/`cost`, all
+    read from the journal now.
+  - **`locks` CLI**: `locks list [address] [--json]` shows every open
+    session/budget/cell lock with its owning pid and a 3-state
+    live/reclaimable/unknown status (the same liveness rule real lock
+    reclaim uses, so the display can't disagree with what a real command
+    would do); `locks release <address> <session> --force` force-clears a
+    stuck lock with no ownership check, printing a loud warning naming the
+    residual race risk.
+  - **Lock identity is PID **and** OS-reported process start time**, not PID
+    alone — closes a PID-reuse gap where a dead process's PID could be
+    recycled by an unrelated process before a stale-lock reclaim ran and be
+    mistaken for the original (still-recorded) owner.
+  - A concurrent section that's still busy after its wait ceiling now
+    **refuses** (exit 7, retryable) instead of silently proceeding
+    unguarded — "proceed anyway" accepted a lost-update risk that a
+    since-added salvage path could turn into silently losing a paid call's
+    record entirely.
 - **`/ccheckpoint`**: identical to `/checkpoint`, plus a local `git commit` of
   the one checkpoint file it just wrote (skipped, not erred, when the target
   isn't inside a git repo). Never touches anything else that happens to be
@@ -46,6 +79,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Upgraded `actions/checkout` and `actions/setup-node` from v4 to v7 across
   CI and npm-publish workflows. Both actions now run on the Node 24 action
   runtime instead of the deprecated Node 20 runtime.
+- **Agent-tree engine: `die()`/refusals are exceptions, not `process.exit()`.**
+  Every early-exit path now throws (an internal `EngineDie`, caught once at
+  the top of the CLI dispatch) instead of calling `process.exit()` directly
+  mid-function — every `try/finally` in the engine (lock release, dialog
+  salvage, passport writes) now actually runs on a refusal, closing a class
+  of "lock never released because the refusal skipped the `finally`" bugs
+  that kept resurfacing across review rounds. External behavior (exit codes,
+  stdout/stderr) is unchanged.
+  - Backed by a new runtime test suite (`test/agent-tree.runtime.*.test.js`)
+    that spawns the real engine binary against a stubbed backend — lifecycle,
+    locks (including real-process-kill scenarios, killed by exact PID),
+    tasks, validation, and cost accounting are now exercised end-to-end
+    instead of only by hand.
+- **Agent-tree CLI flag validation is subcommand-aware.** Commands with
+  subcommands (`config`, `contacts`, `limits`, `session`, `task`) now
+  validate against a flag allowlist scoped to the actual subcommand invoked,
+  closing a gap where an unrelated flag (or a subcommand name shadowed by an
+  inherited `Object.prototype` property) could silently slip through.
+- **Task dispatch is admission-first.** `send --task`/`--task-resume`/
+  `--task-file` now build the brief lazily, inside the same protected window
+  as the backend call itself — a dispatch refused for being busy, retired, or
+  over budget now leaves zero trace under `tasks/`, instead of a phantom
+  brief file for a call that never went out.
+- Session maps read off a passport are defended against prototype-pollution
+  lookups (`Object.create(null)` rehydration on read, on top of the existing
+  name blacklist), and `config set`'s read-modify-write now runs under its
+  own mutex, closing a lost-update race between two concurrent `config set`
+  calls.
+
+### Fixed
+
+- **Round 10/11 hardening**: `session new`/`retire` re-check current state
+  after acquiring their lock, not just on a cold pre-lock snapshot (closes a
+  duplicate-session-name race and a retire-during-busy-session race);
+  `retire` now holds every open session's lock before flipping state, and
+  releases everything it acquired if any session turns out busy; `compact`
+  passes its already-held session lock through to `wake()` instead of
+  re-acquiring it; a `relay`/`up` now preflights the asker's own session
+  before waking the target, so a doomed consult no longer bills the target
+  for an answer the asker can never receive; task-file writes reject
+  ENOENT'd parent directories and blank `--task-var` values instead of
+  writing a malformed brief; ask-target addresses are validated before use.
 
 ## [0.7.2] - 2026-08-05
 
