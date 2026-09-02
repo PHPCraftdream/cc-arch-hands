@@ -5,7 +5,8 @@ workshop: per-model slash-commands, per-model delegated sub-agents, and
 skills. Zero runtime dependencies — only Node.js built-ins.
 
 ```bash
-npx cc-arch-hands install        # that's it — installs commands, agents & skills into ~/.claude/
+npx cc-arch-hands install        # that's it — installs agents & skills into ~/.claude/
+                                  # (per-model slash-commands are opt-in — see below)
 ```
 
 > Other ways to run: [npm global install](#quick-start), [from source](#from-source). Full command reference in [Use](#use).
@@ -18,12 +19,12 @@ lockstep — plus the three companion bins that some skills use as hooks or
 statusLine commands, copied into `~/.claude/cah-bin/` at install time.
 
 The artifacts:
-- **per-model slash-commands** (<!--gen:count:model-commands-->43<!--/gen-->) under `~/.claude/commands/`,
-- **per-model sub-agents** (<!--gen:count:model-commands-->43<!--/gen-->) under `~/.claude/agents/`,
+- **per-model sub-agents** (<!--gen:count:model-commands-->48<!--/gen-->) under `~/.claude/agents/`,
 - **skills** (11) under `~/.claude/skills/`,
 - **companion bins** under `~/.claude/cah-bin/` (since 0.4.0).
 
 Optional artifacts are installed only when requested:
+- **per-model slash-commands** (<!--gen:count:model-commands-->48<!--/gen-->) under `~/.claude/commands/`, via `--commands`. Opt-in — see the [known Claude Code regression](#1-per-model-slash-commands-48) below; the sub-agent half above is unaffected and stays in the default install.
 - **Codex custom agents** (<!--gen:count:codex-agents-->30<!--/gen-->) under `~/.codex/agents/`, via `--codex-agents`.
 - **Agent-tree skills** (`agent`, `agent-new` — 2) under `~/.claude/skills/`, via `--agent-tree`.
 
@@ -49,7 +50,17 @@ Claude Code's own `used_percentage` formula. Without this, raw
 `input_tokens` after the first turn is ~1 token (everything else is
 served from the prompt cache) and a naive percentage would always read 0%.
 
-### 1. Per-model slash-commands (<!--gen:count:model-commands-->43<!--/gen-->)
+### 1. Per-model slash-commands (<!--gen:count:model-commands-->48<!--/gen-->)
+
+Not part of the default install (see the regression note below). Install
+explicitly with `--commands`, or select it as a class via `--only commands`
+(also combinable, e.g. `--only skills,commands`):
+
+```bash
+npx cah install --commands
+npx cah reinstall --commands
+npx cah uninstall --commands
+```
 
 A short slash-command for every `{model, effort}` pair, so you can switch
 the model **and** reasoning effort for a single turn just by how you start
@@ -67,7 +78,26 @@ effort suffix:
 Suffixes: `l` low · `m` medium · `h` high · `x` xhigh · `xx` max.
 Whatever you type after the command becomes the prompt for that turn.
 
-### 2. Per-model sub-agents (<!--gen:count:model-commands-->43<!--/gen-->)
+> **Known Claude Code regression (interactive sessions).** Since Claude Code
+> v2.1.220 the `model:`/`effort:` frontmatter that these commands rely on is
+> **silently ignored on the interactive TUI path** — the turn runs on the
+> session's current model/effort instead, with no warning, and the model
+> will still *claim* to be the one you asked for. Tracked upstream in
+> [anthropics/claude-code#81318](https://github.com/anthropics/claude-code/issues/81318)
+> (worked on v2.1.197; intermittent, not 100%). Until it is fixed:
+>
+> - **Per-task pinning → use the sub-agents (`@oh`, `@f1x`, …) instead.**
+>   The `Agent`-tool dispatch path honors `model:`/`effort:` reliably; the
+>   slash-command path does not.
+> - **Session-wide → `/model <name>`** (survives across turns), and
+>   `CLAUDE_CODE_EFFORT_LEVEL=<level>` in the environment for effort.
+> - **Scripts / CI → `claude -p "/oh …"`** — the headless path applies the
+>   frontmatter correctly.
+> - **To see what actually ran**, look at the `cah-stamp` line `/clock`
+>   installs after every turn: if it says `Sonnet 5` right after `/oh`, the
+>   override did not fire. The model's own self-report is not evidence.
+
+### 2. Per-model sub-agents (<!--gen:count:model-commands-->48<!--/gen-->)
 
 The same matrix as the commands — but as **delegated sub-agents** instead
 of inline commands. Use them to hand a self-contained task to a fresh
@@ -94,19 +124,21 @@ Rows are sorted by tier (strongest first). Bold rows are **top** shortcuts
 that always point at the freshest version of each family — use them when
 you don't care about pinning an exact version.
 
-**Opus uses "releases behind top" numbering, not a version number.** `o1*`
-is whichever Opus was top before the current one, `o2*` the one before
-that, and so on — so `o1x` today means Opus 4.8, but after the next Opus
-release `o1x` will mean today's `ox` (the model, not the number, shifts).
-Other families (Sonnet, Haiku) still encode the actual version number
-(`s45*`, `h45*`).
+**Opus and Fable use "releases behind top" numbering, not a version
+number.** `o1*` is whichever Opus was top before the current one, `o2*`
+the one before that, and so on — so `o1x` today means Opus 4.8, but after
+the next Opus release `o1x` will mean today's `ox` (the model, not the
+number, shifts). Fable follows the same convention: `f1*` is whichever
+Fable was top before the current one. Other families (Sonnet, Haiku)
+still encode the actual version number (`s45*`, `h45*`).
 
 **Slash-commands**
 
 <!--gen:table:model-commands (run `npm run gen:docs` after editing lib/manifest.js) -->
 | Model | model id | low | medium | high | xhigh | max |
 |---|---|---|---|---|---|---|
-| **Fable** (top, 1M) | `claude-fable-5` | `/fl` | `/fm` | `/fh` | `/fx` | `/fxx` |
+| **Fable** (top, 1M) | `claude-fable-5-1` | `/fl` | `/fm` | `/fh` | `/fx` | `/fxx` |
+| Fable 5 (1M) | `claude-fable-5` | `/f1l` | `/f1m` | `/f1h` | `/f1x` | `/f1xx` |
 | **Opus** (top, 1M) | `claude-opus-5` | `/ol` | `/om` | `/oh` | `/ox` | `/oxx` |
 | Opus 4.8 (1M) | `claude-opus-4-8` | `/o1l` | `/o1m` | `/o1h` | `/o1x` | `/o1xx` |
 | Opus 4.7 (1M) | `claude-opus-4-7` | `/o2l` | `/o2m` | `/o2h` | `/o2x` | `/o2xx` |
@@ -123,7 +155,7 @@ slash-command body; `oh` (no prefix) is the agent invoked by the `Agent`
 tool with `subagent_type: "oh"`. The two live in separate lookup tables
 inside Claude Code, so identical names do not collide.
 
-<!--gen:count:model-commands-->43<!--/gen--> commands, <!--gen:count:model-commands-->43<!--/gen--> agents — one line per row-cell in
+<!--gen:count:model-commands-->48<!--/gen--> commands, <!--gen:count:model-commands-->48<!--/gen--> agents — one line per row-cell in
 [`lib/manifest.js`](lib/manifest.js).
 
 ### 3. Optional Codex custom agents (<!--gen:count:codex-agents-->30<!--/gen-->)
@@ -315,8 +347,8 @@ they aren't in the main skill registry.
 
 | Artifact | Count | Destination |
 |---|---|---|
-| Slash-commands | <!--gen:count:model-commands-->43<!--/gen--> | `<scope>/.claude/commands/<name>.md` |
-| Sub-agents | <!--gen:count:model-commands-->43<!--/gen--> | `<scope>/.claude/agents/<name>.md` |
+| Slash-commands | <!--gen:count:model-commands-->48<!--/gen--> | `<scope>/.claude/commands/<name>.md` (only with `--commands`) |
+| Sub-agents | <!--gen:count:model-commands-->48<!--/gen--> | `<scope>/.claude/agents/<name>.md` |
 | Skills | 11 | `<scope>/.claude/skills/<name>/` |
 | Codex custom agents | <!--gen:count:codex-agents-->30<!--/gen--> | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
 | Agent-tree skills | 2 | `<scope>/.claude/skills/<name>/` (only with `--agent-tree`) |
@@ -373,9 +405,11 @@ All wrapper scripts forward flags, e.g. `./install.sh --only skills` or
 Via npx (no install):
 
 ```bash
-npx cah install                          # global (default): ~/.claude/{commands,agents,skills,cah-bin}
+npx cah install                          # global (default): ~/.claude/{agents,skills,cah-bin}
 npx cah install --local                  # local: <cwd>/.claude/... (must already exist); bins still go global
 npx cah install --cwd /path/to/project   # local at a specific path; bins still go global
+npx cah install --commands               # optional: install only the per-model slash-commands
+                                          #   (opt-in — see the regression note in "What it installs")
 npx cah install --codex-agents           # optional: install only Codex agents into ~/.codex/agents
 npx cah install --agent-tree             # optional: install only the agent/agent-new skills
 
@@ -409,10 +443,12 @@ npx cah install --only commands,clock               # mix class + skill name
 # uninstall is explicit-only — it never auto-pulls deps (so you can drop
 # clock without losing the bins that checkpoint-watch needs).
 npx cah reinstall --only clock                      # uninstall + install of just the clock skill
+npx cah reinstall --commands                        # reinstall only the per-model slash-commands
 npx cah reinstall --codex-agents                    # reinstall only Codex agents
 npx cah reinstall --agent-tree                      # reinstall only the agent/agent-new skills
 npx cah uninstall                                   # symmetric remove (sentinel-gated)
 npx cah uninstall --only agents                     # remove only Claude agents
+npx cah uninstall --commands                        # remove only the per-model slash-commands
 npx cah uninstall --codex-agents                    # remove only Codex agents
 npx cah uninstall --agent-tree                      # remove only the agent/agent-new skills
 npx cah uninstall --only clock                      # remove only the clock skill, keep bins
@@ -497,14 +533,14 @@ cc-arch-hands/
 ├── bin/cah-status-probe.js      # diagnostic statusLine bin used by `cah probe statusline`
 ├── lib/
 │   ├── cli.js                   # dispatch, arg parsing (node:util parseArgs), --only resolver
-│   ├── manifest.js              # AllModelCommands (36 entries), AllSkills (11), SkillDeps
+│   ├── manifest.js              # AllModelCommands (48 entries), AllSkills (11), SkillDeps
 │   ├── sentinel.js              # new + legacy markers, ownership classifier
 │   ├── scope.js                 # global vs local target dir resolution
 │   ├── templates.js             # bundled / disk template abstraction
 │   ├── fsutil.js                # readFileMaybe + orphan-prune helpers
 │   ├── transcript-stats.js      # shared: stats, formatStatusLine, makeBar, reset formatters
-│   ├── commands.js              # render + install + remove (35 .md files)
-│   ├── agents.js                # render + install + remove (35 .md files)
+│   ├── commands.js              # render + install + remove (48 .md files)
+│   ├── agents.js                # render + install + remove (48 .md files)
 │   ├── skills.js                # mirror templates/skills/<n>/ tree, optional subset
 │   ├── binstall.js              # copy companion bins into ~/.claude/cah-bin/ (// cah-bin:v1)
 │   └── probe.js                 # enable/disable cah-status-probe via settings.json edits

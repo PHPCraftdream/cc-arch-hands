@@ -92,8 +92,8 @@ describe('resolveScope', () => {
 
 describe('parseOnly', () => {
   it('empty returns all classes in order, no individual skills', () => {
-    assert.deepEqual(parseOnly(''), { classes: ['commands', 'agents', 'skills', 'bins'], skills: [] });
-    assert.deepEqual(parseOnly(undefined), { classes: ['commands', 'agents', 'skills', 'bins'], skills: [] });
+    assert.deepEqual(parseOnly(''), { classes: ['agents', 'skills', 'bins'], skills: [] });
+    assert.deepEqual(parseOnly(undefined), { classes: ['agents', 'skills', 'bins'], skills: [] });
   });
 
   it('single class', () => {
@@ -276,7 +276,7 @@ describe('run install/uninstall --codex-agents', () => {
         // codex-agents is an opt-in selector — valid via --only but excluded from
         // the default (empty --only) install set.
         assert.deepEqual(parseOnly('codex-agents'), { classes: ['codex-agents'], skills: [] });
-        assert.deepEqual(parseOnly(''), { classes: ['commands', 'agents', 'skills', 'bins'], skills: [] });
+        assert.deepEqual(parseOnly(''), { classes: ['agents', 'skills', 'bins'], skills: [] });
       });
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -328,6 +328,65 @@ describe('run install/uninstall --codex-agents', () => {
   });
 });
 
+describe('run install/uninstall --commands', () => {
+  it('default install does not write the per-model slash-commands', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
+    try {
+      withHome(home, () => {
+        assert.equal(run(['install']), 0);
+        assert.ok(!existsSync(join(home, '.claude', 'commands')));
+        // Sub-agents (same registry, other half) still install by default —
+        // only the frontmatter-reliant slash-command half is opt-in.
+        assert.ok(existsSync(join(home, '.claude', 'agents')));
+        // commands is an opt-in selector — valid via --only but excluded from
+        // the default (empty --only) install set.
+        assert.deepEqual(parseOnly('commands'), { classes: ['commands'], skills: [] });
+        assert.deepEqual(parseOnly(''), { classes: ['agents', 'skills', 'bins'], skills: [] });
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('writes the per-model slash-commands under <HOME>/.claude/commands and removes them', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
+    try {
+      withHome(home, () => {
+        assert.equal(run(['install', '--commands']), 0);
+        assert.ok(existsSync(join(home, '.claude', 'commands', 'oh.md')));
+
+        const out = captureStdout(() => run(['list', '--json']));
+        const rows = out.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+        const commandRows = rows.filter((r) => r.kind === 'command');
+        assert.equal(commandRows.length, 48);
+        assert.ok(commandRows.every((r) => r.state === 'mine'));
+
+        assert.equal(run(['uninstall', '--commands']), 0);
+        assert.ok(!existsSync(join(home, '.claude', 'commands', 'oh.md')));
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('selects commands via --only commands (no flag needed)', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
+    try {
+      withHome(home, () => {
+        assert.equal(run(['install', '--only', 'commands']), 0);
+        assert.ok(existsSync(join(home, '.claude', 'commands', 'oh.md')));
+        // rest of the default set must NOT be pulled in by a commands-only selection
+        assert.ok(!existsSync(join(home, '.claude', 'agents')));
+
+        assert.equal(run(['uninstall', '--only', 'commands']), 0);
+        assert.ok(!existsSync(join(home, '.claude', 'commands', 'oh.md')));
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('run install/uninstall --agent-tree', () => {
   it('default install does not write the agent-tree skills', () => {
     const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
@@ -339,7 +398,7 @@ describe('run install/uninstall --agent-tree', () => {
         // agent-tree is an opt-in selector — valid via --only but excluded from
         // the default (empty --only) install set.
         assert.deepEqual(parseOnly('agent-tree'), { classes: ['agent-tree'], skills: [] });
-        assert.deepEqual(parseOnly(''), { classes: ['commands', 'agents', 'skills', 'bins'], skills: [] });
+        assert.deepEqual(parseOnly(''), { classes: ['agents', 'skills', 'bins'], skills: [] });
       });
     } finally {
       rmSync(home, { recursive: true, force: true });

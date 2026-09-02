@@ -5,6 +5,48 @@ All notable changes to `cc-arch-hands` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING: per-model slash-commands (`/oh`, `/fh`, ...) are now opt-in.**
+  A bare `cah install`/`cah reinstall` no longer writes `~/.claude/commands/`
+  — install them explicitly with `--commands`, or `--only commands`. The
+  per-model **sub-agents** (`@oh`, `@fh`, ...) are unaffected and still
+  install by default: they're generated from the same `AllModelCommands`
+  registry, but reached through a different Claude Code dispatch path.
+  Reason: the slash-command path is the one hit by the interactive-TUI
+  frontmatter regression below, so shipping it by default currently means
+  shipping a control surface that silently doesn't do what it says. `commands`
+  joins `codex-agents`/`agent-tree` as the third opt-in class, sharing the
+  same `--<flag>` / `--only <class>` mechanism (`lib/cli.js`'s
+  `OPT_IN_FLAG_CLASSES`). Existing installs are unaffected by `cah install`
+  alone — re-run with `--commands` (or `--only commands`) to keep them, or
+  `cah uninstall --commands` to remove already-installed ones.
+
+### Notes
+
+- **Known Claude Code regression affecting the per-model slash-commands.**
+  Since Claude Code v2.1.220 the `model:`/`effort:` frontmatter override is
+  silently ignored on the interactive TUI path (the turn runs on the
+  session's current model/effort; the model still self-reports the
+  requested one). Tracked upstream in
+  [anthropics/claude-code#81318](https://github.com/anthropics/claude-code/issues/81318);
+  it worked on v2.1.197 and is intermittent rather than total. This is what
+  moved `commands` to opt-in above; nothing else in `cah` changed — the
+  generated files are correct — but README documents the working
+  alternatives: the per-model **sub-agents** (the `Agent`-tool dispatch path
+  honors the frontmatter), `/model` for a session-wide switch,
+  `CLAUDE_CODE_EFFORT_LEVEL` for effort, and the headless `claude -p` path
+  for scripts. The `cah-stamp` line `/clock` installs shows the model that
+  actually served each turn, which is the reliable way to tell whether an
+  override fired.
+- **Fable follows the Opus "releases behind top" naming.** `f*` commands
+  and agents now point at `claude-fable-5-1` (the current top Fable); new
+  `f1*` commands/agents (`f1l`, `f1m`, `f1h`, `f1x`, `f1xx`) pin the
+  previous top, `claude-fable-5` — the same convention `o1*` uses for Opus.
+  48 commands / 48 agents (was 43).
+
 ## [0.8.0] - 2026-09-01
 
 ### Added
