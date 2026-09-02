@@ -13,3 +13,6 @@ docs/checkpoints/
 
 # local review / scratch notes
 REVIEW-*.md
+
+# /wrush task worktrees — always created here, in-tree
+/worktrees/

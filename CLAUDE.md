@@ -67,6 +67,7 @@ The codebase has two layers: a thin CLI (`lib/cli.js`) that does arg parsing and
 | `lib/binstall.js` | `writeBins` / `removeBins` + `BinFiles` registry — copies companion bins into `~/.claude/cah-bin/` with `// cah-bin:v1` sentinel |
 | `lib/probe.js` | `enableProbe` / `disableProbe` / `readProbeLog` / `probeStatus` — atomic settings.json swap to wire `cah-status-probe` as the statusLine bin, with a sidecar backup file |
 | `test/*.test.js` | Full test suite (`node:test` + `node:assert/strict`) — installer, cli, binstall, checkpoint-hint, clock, stamp, transcript-stats, probe, gen-docs |
+| `test/agent-tree.*.test.js` | Runtime + backend suites for the installed agent-tree engine (`node:test`, spawn the real `templates/skills/agent-new/assets/agent-tree.js` against a stub backend in a temp sandbox): admission/budget reservation, cost journal + `cost acknowledge`, settlement, post-call bookkeeping, lock reclaim / `suspected-orphan`, backend timeout kill, replay migration, retire races, session/task/relay flows |
 | `scripts/gen-docs.js` | Regenerates README.md's model-commands table, Codex-agents table, and item counts from `lib/manifest.js` — run `npm run gen:docs` after editing the manifest; `npm run gen:docs:check` (also wired into `npm test` via `test/gen-docs.test.js`) fails if README.md has drifted |
 
 ## Conventions

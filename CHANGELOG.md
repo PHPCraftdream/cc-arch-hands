@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`cost acknowledge <journal-id> (--cost N | --unknown-accepted)`**
+  (agent-tree) — the first operator recovery path for a journal entry whose
+  cost is unknown: an append-only settle-override record that un-taints
+  the scope's budget gate.
+- **`cost unresolved [address] [--json]`** (agent-tree) — lists unknown-cost
+  journal entries without requiring a direct read of
+  `_meta/cost-journal.jsonl`.
+
 ### Changed
 
 - **BREAKING: per-model slash-commands (`/oh`, `/fh`, ...) are now opt-in.**
@@ -23,6 +33,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `OPT_IN_FLAG_CLASSES`). Existing installs are unaffected by `cah install`
   alone — re-run with `--commands` (or `--only commands`) to keep them, or
   `cah uninstall --commands` to remove already-installed ones.
+
+### Fixed
+
+Three rounds of external review against the `agent-tree` engine
+(`templates/skills/agent-new/assets/agent-tree.js`) since 0.8.0, closing
+race conditions and fail-open gaps a single-process test run doesn't
+exercise:
+
+- **Budget gate is now fail-closed, not fail-open.** `reserveBudget()`,
+  `publishJournalLocked()`, and the settlement-outbox replay all now check
+  whether their journal writes actually landed and refuse the call before
+  any backend spend if they didn't — previously an unwritable journal
+  (e.g. a read-only file) let paid calls run with no reservation ever
+  recorded against the cap.
+- **Legacy-ledger budget estimate no longer double-counts history as a
+  single call.** `budgetCallEstimateUsd()` excludes `import` settle
+  records and estimates from the average of the last 8 trusted calls
+  instead of the historical maximum, fixing spurious budget refusals on
+  any tree migrated from before the cost journal existed.
+- **Settlement journal writes are now idempotent**, closing a
+  check-then-append race where two concurrent outbox replayers could both
+  append an identical settlement line.
+- **Lock reclaim is now a real single-owner protocol.** `acquireLock` /
+  `withMutexAt` / `acquireLifecycleMutex` serialize stale-lock reclaim
+  behind an exclusive-create guard file instead of a content-verify-then-
+  unlink window two concurrent reclaimers could both pass against the same
+  corpse.
+- **A backend call that survives a Windows timeout kill (or loses its
+  supervising worker mid-call) no longer frees the session lock as cleanly
+  done.** The lock is flagged `suspected-orphan` instead — surfaced in
+  `locks list`, cleared only by `locks release --force` — closing a
+  two-processes-on-one-session race. This protection, previously
+  `send`-only, now also covers `new` (birth) and `session new`; the
+  Windows tree-kill itself now verifies `taskkill`'s exit status instead
+  of assuming success.
+- `EPERM` from a liveness probe (a live-but-inaccessible owner, e.g. a
+  privileged system process) is no longer misread as "dead" and reclaimed.
+- `session new` whose post-call bookkeeping fails twice under contention no
+  longer reports a normal success footer for an identity that was never
+  recorded — it now exits 9 with an explicit DEGRADED marker.
+- `up` relaying `ASK_SIBLING` to a retired/closed/busy/over-budget sibling
+  no longer discards the parent's already-paid-for answer.
+- `cost acknowledge` no longer creates a phantom `_meta/<address>/` cell for
+  a journal entry from a birth that never actually completed.
+- Smaller fixes: torn cost-journal tail normalization, atomic
+  migration-marker publish, typed post-call bookkeeping errors with one
+  bounded retry, `--cwd`/`--agents-root` relative-path resolution, and a
+  `task open` slug-clash race.
 
 ### Notes
 
