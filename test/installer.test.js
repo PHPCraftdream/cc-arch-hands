@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, mkdtempSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 
 import {
   SentinelModelCommand, SentinelModelAgent, SentinelCodexAgent, SentinelSkill, SentinelAgentTree,
@@ -784,6 +785,38 @@ describe('writeAgentTree', () => {
     const assetsRoot = join(dir, '.claude', 'skills', 'agent-new', 'assets');
     assert.ok(readFileSync(join(assetsRoot, 'agent-tree.js'), 'utf8').length > 0);
     assert.ok(readFileSync(join(assetsRoot, 'backends', 'claude.js'), 'utf8').length > 0);
+
+    // agent-tree.js was split into these 12 modules under assets/lib/ — the
+    // skill-tree walker must recurse into that subdirectory too, or the
+    // installed agent-tree.js ships with imports pointing at nothing.
+    const AGENT_TREE_LIB_FILES = [
+      'state.js', 'locks-core.js', 'locks-display.js', 'meta.js', 'journal.js',
+      'git.js', 'tasks.js', 'backend-call.js', 'wake.js', 'birth.js',
+      'session-lifecycle.js', 'display.js',
+    ];
+    for (const f of AGENT_TREE_LIB_FILES) {
+      assert.ok(readFileSync(join(assetsRoot, 'lib', f), 'utf8').length > 0, `missing installed assets/lib/${f}`);
+    }
+  });
+
+  it('installed engine boots against a fresh sandbox with no import errors (smoke)', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    writeAgentTree(embeddedTemplates(), scope);
+
+    const assetsRoot = join(dir, '.claude', 'skills', 'agent-new', 'assets');
+    const engine = join(assetsRoot, 'agent-tree.js');
+    // A read-only command against an empty tree never touches the backend,
+    // but Node still statically resolves agent-tree.js's whole ESM import
+    // graph before running any command logic — which transitively reaches
+    // all 12 assets/lib/ modules. So this catches ANY missing/broken
+    // import in the INSTALLED copy, not just a missing state.js.
+    const result = spawnSync(process.execPath, [
+      engine, 'tree', '--agents-root', join(dir, 'sandbox-agents-root'),
+    ], { encoding: 'utf8', cwd: dir, windowsHide: true });
+
+    assert.equal(result.status, 0, `installed engine failed: ${result.stderr}`);
+    assert.match(result.stdout, /no agents yet/);
   });
 
   it('re-run is idempotent and does not double-stamp', () => {
