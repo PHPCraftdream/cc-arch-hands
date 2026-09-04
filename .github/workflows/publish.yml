@@ -26,16 +26,29 @@ jobs:
         with:
           node-version: 22
           registry-url: https://registry.npmjs.org
-      # Derive the package version from the release tag (e.g. v1.2.3 -> 1.2.3)
-      # so a release publishes the right version without a manual package.json bump.
-      - name: Set version from tag
+      # Releases are deliberately immutable: the tag, package.json, and the
+      # version embedded in the installed cah bins must already agree.
+      - name: Validate release version
         run: |
           if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]; then
             echo "Refusing to publish: tag '${GITHUB_REF_NAME}' is not a semver vMAJOR.MINOR.PATCH[-prerelease] tag." >&2
             exit 1
           fi
           VERSION="${GITHUB_REF_NAME#v}"
-          npm version "$VERSION" --no-git-tag-version --allow-same-version
-      - run: npm publish --provenance --access public
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          CURRENT_VERSION="$(node --input-type=module -e "import { CURRENT_VERSION } from './lib/update-check.js'; console.log(CURRENT_VERSION)")"
+          if [[ "$VERSION" != "$PACKAGE_VERSION" || "$VERSION" != "$CURRENT_VERSION" ]]; then
+            echo "Refusing to publish: tag=$VERSION package=$PACKAGE_VERSION CURRENT_VERSION=$CURRENT_VERSION" >&2
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+      - name: Publish package
+        run: |
+          if [[ "$VERSION" == *-* ]]; then
+            # Never move a prerelease onto npm's default latest dist-tag.
+            npm publish --provenance --access public --tag next
+          else
+            npm publish --provenance --access public
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

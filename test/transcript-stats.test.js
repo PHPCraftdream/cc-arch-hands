@@ -14,6 +14,10 @@ import {
   formatFiveHourReset,
   formatWeeklyReset,
   readRateLimitsCache,
+  persistRateLimitsCache,
+  rateLimitsContextPath,
+  contextWindowLimit,
+  validContextWindowSize,
   makeBar,
   toDisplayName,
 } from '../lib/transcript-stats.js';
@@ -290,6 +294,25 @@ describe('modelLimit', () => {
   it('null/empty → 200_000 fallback', () => {
     assert.equal(modelLimit(null), 200_000);
     assert.equal(modelLimit(''), 200_000);
+  });
+
+  it('honors CLAUDE_CODE_DISABLE_1M_CONTEXT only for model-name fallback', () => {
+    const old = process.env.CLAUDE_CODE_DISABLE_1M_CONTEXT;
+    try {
+      process.env.CLAUDE_CODE_DISABLE_1M_CONTEXT = '1';
+      assert.equal(modelLimit('claude-opus-5'), 200_000);
+      assert.equal(contextWindowLimit('claude-opus-5', 1_000_000), 1_000_000);
+    } finally {
+      if (old === undefined) delete process.env.CLAUDE_CODE_DISABLE_1M_CONTEXT;
+      else process.env.CLAUDE_CODE_DISABLE_1M_CONTEXT = old;
+    }
+  });
+
+  it('accepts only finite positive actual context sizes', () => {
+    assert.equal(validContextWindowSize(1_000_000), 1_000_000);
+    assert.equal(validContextWindowSize(0), null);
+    assert.equal(validContextWindowSize(Infinity), null);
+    assert.equal(contextWindowLimit('claude-opus-5', -1), 1_000_000);
   });
 });
 
@@ -614,6 +637,7 @@ describe('readRateLimitsCache', () => {
       fiveHour: { used: 10, resetsAt: '2024-06-01T14:30:00Z' },
       sevenDay: { used: 50, resetsAt: '2024-06-05T03:00:00Z' },
       effort: null,
+      contextWindowSize: null,
     });
   });
 
@@ -629,6 +653,41 @@ describe('readRateLimitsCache', () => {
     }));
     const got = readRateLimitsCache(path, t);
     assert.equal(got.effort, 'max');
+  });
+
+  it('returns global rates while rejecting another session context', () => {
+    const dir = isolatedDir();
+    const path = join(dir, 'rl.json');
+    const t = 1_700_000_000_000;
+    writeFileSync(path, JSON.stringify({
+      sessionId: 'session-a',
+      contextWindowSize: 1_000_000,
+      fiveHour: { used: 10, resetsAt: null },
+      capturedAt: t,
+    }));
+    assert.equal(readRateLimitsCache(path, t, 'session-a').contextWindowSize, 1_000_000);
+    const other = readRateLimitsCache(path, t, 'session-b');
+    assert.equal(other.contextWindowSize, null);
+    assert.equal(other.fiveHour.used, 10);
+  });
+
+  it('persists session contexts in hashed sidecars without cross-session loss', () => {
+    const dir = isolatedDir();
+    const path = join(dir, 'rate-limits.json');
+    const t = 1_700_000_000_000;
+    const sessionA = `../${'a'.repeat(400)}`;
+    const sessionB = `../${'b'.repeat(400)}`;
+    persistRateLimitsCache(path, { used: 10, resetsAt: null }, { used: 50, resetsAt: null }, null, 1_000_000, sessionA, t);
+    persistRateLimitsCache(path, null, null, null, 200_000, sessionB, t + 1);
+
+    const a = readRateLimitsCache(path, t + 1, sessionA);
+    const b = readRateLimitsCache(path, t + 1, sessionB);
+    assert.equal(a.contextWindowSize, 1_000_000);
+    assert.equal(b.contextWindowSize, 200_000);
+    assert.equal(b.fiveHour.used, 10);
+    assert.match(rateLimitsContextPath(path, sessionA), /\.context-[a-f0-9]{64}\.json$/);
+    assert.notEqual(rateLimitsContextPath(path, sessionA), rateLimitsContextPath(path, sessionB));
+    assert.doesNotMatch(rateLimitsContextPath(path, sessionA), /\.\.\/|a{20}/);
   });
 });
 

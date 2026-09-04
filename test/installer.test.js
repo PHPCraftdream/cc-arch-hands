@@ -75,7 +75,7 @@ describe('Fable model contract', () => {
 
       const agent = readFileSync(join(dir, '.claude', 'agents', `${name}.md`), 'utf8');
       assert.match(agent, new RegExp(`^---\\nname: ${name}\\ndescription: ${model} effort=${effort} \\(`));
-      assert.ok(agent.includes(`\nmodel: ${model}\n---\n`), `${name} agent model frontmatter drifted`);
+      assert.ok(agent.includes(`\nmodel: ${model}\neffort: ${effort}\n---\n`), `${name} agent frontmatter drifted`);
       assert.ok(agent.includes(`reasoning effort: ${effort}.`), `${name} agent effort drifted`);
     }
   });
@@ -252,12 +252,54 @@ describe('removeModelCommands', () => {
     writeFileSync(foreignPath, foreignBody);
 
     const { removed, skipped } = removeModelCommands(scope);
-    assert.equal(removed, 2);
+       assert.equal(removed, 2);
     assert.deepEqual(skipped, [foreignPath]);
 
     assert.throws(() => statSync(minePath), { code: 'ENOENT' });
     assert.throws(() => statSync(legacyPath), { code: 'ENOENT' });
     assert.equal(readFileSync(foreignPath, 'utf8'), foreignBody);
+  });
+
+  it('sweeps sentinel-owned orphan commands while preserving foreign files', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const cmdDir = join(dir, '.claude', 'commands');
+    mkdirSync(cmdDir, { recursive: true });
+    const orphan = join(cmdDir, 'old-command.md');
+    const foreign = join(cmdDir, 'foreign-command.md');
+    writeFileSync(orphan, `${SentinelModelCommand}\n`);
+    writeFileSync(foreign, 'foreign\n');
+    const result = removeModelCommands(scope);
+    assert.equal(result.pruned, 1);
+    assert.throws(() => statSync(orphan), { code: 'ENOENT' });
+    assert.equal(readFileSync(foreign, 'utf8'), 'foreign\n');
+  });
+});
+
+describe('Haiku no-effort aliases', () => {
+  it('keeps only the stable no-effort aliases and does not alter Codex hl', () => {
+    assert.deepEqual(
+      AllModelCommands.filter((entry) => entry.model.includes('haiku')).map((entry) => [entry.name, entry.effort]),
+      [['h', null], ['h45', null]],
+    );
+    assert.equal(AllCodexAgents.find((entry) => entry.name === 'hl').model, 'gpt-5.6-luna');
+    for (const legacy of ['hl', 'hm', 'hh', 'h45l', 'h45m', 'h45h']) {
+      assert.equal(AllModelCommands.some((entry) => entry.name === legacy), false, `${legacy} is a misleading legacy alias`);
+    }
+  });
+
+  it('omits effort frontmatter for no-effort Haiku files', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    writeModelCommands(null, scope);
+    writeModelAgents(null, scope);
+    const command = readFileSync(join(dir, '.claude', 'commands', 'h.md'), 'utf8');
+    const agent = readFileSync(join(dir, '.claude', 'agents', 'h.md'), 'utf8');
+    assert.match(command, /description: claude-haiku-4-5\nmodel: claude-haiku-4-5\n---/);
+    assert.doesNotMatch(command, /effort:/);
+    assert.match(agent, /description: claude-haiku-4-5 \(Haiku \(top, 200k\)\)/);
+    assert.match(agent, /model: claude-haiku-4-5\n---/);
+    assert.doesNotMatch(agent, /effort:/);
   });
 });
 
@@ -415,6 +457,21 @@ describe('removeModelAgents', () => {
     assert.throws(() => statSync(legacyCrush), { code: 'ENOENT' });
     assert.equal(readFileSync(foreignA, 'utf8'), 'someone else');
   });
+
+  it('sweeps sentinel-owned orphan agents while preserving foreign files', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const agentsDir = join(dir, '.claude', 'agents');
+    mkdirSync(agentsDir, { recursive: true });
+    const orphan = join(agentsDir, 'old-agent.md');
+    const foreign = join(agentsDir, 'foreign-agent.md');
+    writeFileSync(orphan, `${SentinelModelAgent}\n`);
+    writeFileSync(foreign, 'foreign\n');
+    const result = removeModelAgents(scope);
+    assert.equal(result.pruned, 1);
+    assert.throws(() => statSync(orphan), { code: 'ENOENT' });
+    assert.equal(readFileSync(foreign, 'utf8'), 'foreign\n');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -510,6 +567,21 @@ describe('removeCodexAgents', () => {
     assert.deepEqual(skipped, [foreignPath]);
     assert.throws(() => statSync(minePath), { code: 'ENOENT' });
     assert.equal(readFileSync(foreignPath, 'utf8'), foreignBody);
+  });
+
+  it('sweeps sentinel-owned orphan Codex agents while preserving foreign files', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const agentsDir = join(dir, '.codex', 'agents');
+    mkdirSync(agentsDir, { recursive: true });
+    const orphan = join(agentsDir, 'old-agent.toml');
+    const foreign = join(agentsDir, 'foreign-agent.toml');
+    writeFileSync(orphan, `${SentinelCodexAgent}\n`);
+    writeFileSync(foreign, 'foreign\n');
+    const result = removeCodexAgents(scope);
+    assert.equal(result.pruned, 1);
+    assert.throws(() => statSync(orphan), { code: 'ENOENT' });
+    assert.equal(readFileSync(foreign, 'utf8'), 'foreign\n');
   });
 });
 

@@ -1,13 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, existsSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, existsSync, readFileSync, rmSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-import { run, resolveScope, parseOnly, resolveDeps } from '../lib/cli.js';
+import { run, resolveScope, parseOnly, resolveDeps, classifyPath } from '../lib/cli.js';
 import { Scope } from '../lib/scope.js';
-import { SentinelBin } from '../lib/sentinel.js';
+import { SentinelBin, SetForModelCommand } from '../lib/sentinel.js';
 
 // os.homedir() reads $HOME / %USERPROFILE% on each call, so we can sandbox the
 // always-global bin directory to a temp dir for the duration of a test.
@@ -298,6 +298,22 @@ describe('run install/uninstall --only bins', () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  it('bare uninstall preserves shared bins; explicit bins removal warns', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
+    try {
+      withHome(home, () => {
+        run(['install', '--only', 'bins']);
+        assert.equal(run(['uninstall']), 0);
+        assert.ok(existsSync(join(home, '.claude', 'cah-bin', 'bin', 'cah-status.js')));
+        const out = captureStdout(() => assert.equal(run(['uninstall', '--only', 'bins']), 0));
+        assert.match(out, /warning: removing shared companion bins/);
+        assert.ok(!existsSync(join(home, '.claude', 'cah-bin', 'bin', 'cah-status.js')));
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
 
 
@@ -393,7 +409,7 @@ describe('run install/uninstall --commands', () => {
         const out = captureStdout(() => run(['list', '--json']));
         const rows = out.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
         const commandRows = rows.filter((r) => r.kind === 'command');
-        assert.equal(commandRows.length, 48);
+        assert.equal(commandRows.length, 44);
         assert.ok(commandRows.every((r) => r.state === 'mine'));
 
         assert.equal(run(['uninstall', '--commands']), 0);
@@ -560,6 +576,82 @@ describe('reinstall --templates', () => {
       assert.equal(rc, 2, 'uninstall must not silently accept the install-only --templates flag');
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('preflights a missing template path before uninstall', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-rein-preflight-'));
+    try {
+      assert.equal(run(['install', '--cwd', dir, '--only', 'skills']), 0);
+      const existing = join(dir, '.claude', 'skills', 'clock', 'SKILL.md');
+      assert.ok(existsSync(existing));
+      assert.equal(run(['reinstall', '--cwd', dir, '--only', 'skills', '--templates', join(dir, 'missing')]), 1);
+      assert.ok(existsSync(existing), 'failed template preflight must not uninstall existing files');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('preflights a missing --templates value before uninstall', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-rein-value-'));
+    try {
+      assert.equal(run(['install', '--cwd', dir, '--only', 'skills']), 0);
+      const existing = join(dir, '.claude', 'skills', 'clock', 'SKILL.md');
+      assert.equal(run(['reinstall', '--cwd', dir, '--only', 'skills', '--templates']), 2);
+      assert.ok(existsSync(existing), 'argument parse failure must not uninstall existing files');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('preflights missing selected template trees before uninstall', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-rein-tree-'));
+    const templates = mkdtempSync(join(tmpdir(), 'cah-empty-templates-'));
+    try {
+      assert.equal(run(['install', '--cwd', dir, '--only', 'clock']), 0);
+      const existing = join(dir, '.claude', 'skills', 'clock', 'SKILL.md');
+      assert.equal(run(['reinstall', '--cwd', dir, '--only', 'clock', '--templates', templates]), 1);
+      assert.ok(existsSync(existing), 'missing template tree must not uninstall existing files');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(templates, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('strict local and path conflicts', () => {
+  it('Codex-only --local still requires an existing .claude directory', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-strict-codex-'));
+    try {
+      assert.equal(run(['install', '--local', '--cwd', dir, '--only', 'codex-agents']), 1);
+      assert.ok(!existsSync(join(dir, '.codex')));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('classifies a directory at a file path as foreign, not missing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-path-conflict-'));
+    const path = join(dir, 'conflict');
+    try {
+      mkdirSync(path);
+      assert.equal(classifyPath(path, SetForModelCommand), 'foreign');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('doctor exits 2 for a directory conflict at an expected file path', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-doctor-conflict-'));
+    try {
+      withHome(home, () => {
+        mkdirSync(join(home, '.claude', 'agents', 'oh.md'), { recursive: true });
+        let rc;
+        captureStdout(() => { rc = run(['doctor']); });
+        assert.equal(rc, 2);
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
     }
   });
 });

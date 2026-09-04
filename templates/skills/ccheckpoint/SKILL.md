@@ -1,44 +1,115 @@
 ---
 name: ccheckpoint
-description: "Same as /checkpoint, plus an automatic local commit of the checkpoint file it writes. Use when you want the snapshot to survive as a real commit instead of an uncommitted file. Pairs with /resume the same way /checkpoint does."
+description: "Same as /checkpoint, plus an automatic local commit of the checkpoint file it writes."
 ---
 
 # ccheckpoint
 
-`/checkpoint` that also commits itself. Same snapshot, same target directory, same format — the only difference is what happens once the file lands on disk.
+Run `/checkpoint` with the same argument, then commit only the checkpoint file
+through a temporary isolated git index. The checkpoint itself is still valid if
+the commit is skipped or fails.
 
 ## Usage
 
 ```
-/ccheckpoint               # auto-named with timestamp: 2026-06-19-1432.md
-/ccheckpoint pre-refactor  # named: pre-refactor.md (overwrites if exists)
+/ccheckpoint
+/ccheckpoint pre-refactor
 ```
-
-Same naming rules as `/checkpoint`: a name is a first-class identifier (`/resume pre-refactor` finds it either way), slug-style (lowercase, hyphens, no spaces), re-running with the same name overwrites the file — and, here, adds a new commit on top of the old one.
 
 ## Behavior
 
-1. **Run `/checkpoint` with the same argument.** Invoke the `checkpoint` skill directly (`Skill('checkpoint', <same argument you were given, or none>)`) rather than re-deriving its steps by hand — that keeps this skill exactly in sync with whatever `/checkpoint` actually collects and writes, forever, with no duplicated logic to drift out of date. Let it resolve the path, collect state, and write the file exactly as it normally would; take note of the absolute path it reports.
-2. **Commit that one file — through a temporary, isolated git index, never the real one.** A plain `git add <path>` followed by `git commit` would also commit anything the user already had staged before running this skill (`git add` never un-stages pre-existing entries) — exactly what "only the checkpoint file, never anything else that happens to be dirty" (see Important, below) promises will not happen.
-   - If the resolved path is NOT inside a git repository (`/checkpoint`'s own fallback to `~/.claude/checkpoints/` when no `.git` is found in the cwd or any parent) — skip the commit, say so in one line, stop. There is nothing to commit into.
-   - Otherwise, run this exact sequence as ONE shell invocation (so the temporary index variable never leaks into any later command):
-     ```bash
-     git_index_file="$(mktemp)"
-     GIT_INDEX_FILE="$git_index_file" git read-tree HEAD &&
-     GIT_INDEX_FILE="$git_index_file" git add -- "<absolute path to the checkpoint file>" &&
-     GIT_INDEX_FILE="$git_index_file" git commit -m "checkpoint: <name-or-timestamp>"
-     status=$?
-     rm -f "$git_index_file"
-     git reset -- "<absolute path to the checkpoint file>"
-     ```
-     `git read-tree HEAD` seeds the temporary index with the CURRENT `HEAD` tree first — without it, the temp index starts empty and the resulting commit would look like it deleted every other file in the repo. `git add -- "<path>"` (the `--`, and the path quoted, guard against a path that could otherwise be misread as a flag) then stages ONLY the checkpoint file into that temporary index, and `git commit` builds its tree from it. The real `.git/index` — and anything the user has staged there — is never read, touched, or cleared while any of that runs. The final `git reset -- "<path>"` (no `GIT_INDEX_FILE`, so it acts on the REAL index) is not optional: without it, the real index still has no entry at all for a file that HEAD now contains, which `git status` reads as that file being staged for deletion — real, reproduced (a plain `git status` afterward showed `D <path>` plus the file as untracked, and the NEXT unrelated commit would have actually deleted it). `git reset` scoped to one pathspec only syncs that path's real-index entry against the new HEAD; it does not touch, clear, or re-stage anything else the user had staged.
-   - If `git commit` reports nothing to commit (this exact content already matches the last commit — happens when re-running against an unchanged named checkpoint), say so plainly; that is not an error.
-   - If any step in the sequence fails for another reason (a hook rejects the commit, the file is gitignored, etc.), report the failure plainly. The checkpoint file itself is still written and valid regardless of whether the commit succeeded.
-3. **Report** the absolute path AND the commit outcome: the short SHA on success, or the specific reason it was skipped/failed.
+1. Invoke `Skill('checkpoint', <the same argument, or none>)` and take note of
+   the absolute path it reports.
+2. If the path is outside a git repository, skip the commit and report that
+   reason. Otherwise run this exact sequence as one shell invocation. It first
+   checks whether the target path has any staged delta versus `HEAD`; if so, it
+   stops before creating a temporary index and preserves the real index exactly:
+
+   ```bash
+   checkpoint_path="<absolute path to checkpoint>"
+   git diff --cached --quiet -- "$checkpoint_path"
+   preflight_status=$?
+   if [ "$preflight_status" -eq 1 ]; then
+     echo "commit skipped: checkpoint path already has staged changes"
+     exit 0
+   elif [ "$preflight_status" -ne 0 ]; then
+     echo "commit skipped: staged-state preflight failed"
+     exit "$preflight_status"
+   fi
+
+   git_index_file="$(mktemp)"
+   status=$?
+   if [ "$status" -ne 0 ]; then
+     echo "commit failed: could not allocate temporary index"
+     exit "$status"
+   fi
+
+   # mktemp creates a zero-byte file, but git read-tree requires the index
+   # path not to exist yet (or to contain a valid index).
+   rm -f "$git_index_file"
+   status=$?
+   if [ "$status" -ne 0 ]; then
+     echo "commit failed: could not prepare temporary index"
+     exit "$status"
+   fi
+
+   cleanup() { rm -f "$git_index_file"; }
+   trap cleanup EXIT HUP INT TERM
+
+   GIT_INDEX_FILE="$git_index_file" git read-tree HEAD
+   status=$?
+   if [ "$status" -ne 0 ]; then
+     echo "commit failed: could not seed temporary index; real index preserved"
+     exit "$status"
+   fi
+
+   GIT_INDEX_FILE="$git_index_file" git add -- "$checkpoint_path"
+   status=$?
+   if [ "$status" -ne 0 ]; then
+     echo "commit failed: could not stage checkpoint in temporary index; real index preserved"
+     exit "$status"
+   fi
+
+   GIT_INDEX_FILE="$git_index_file" git diff --cached --quiet -- "$checkpoint_path"
+   temp_diff_status=$?
+   if [ "$temp_diff_status" -eq 0 ]; then
+     echo "commit unchanged: checkpoint already matches HEAD"
+     exit 0
+   elif [ "$temp_diff_status" -ne 1 ]; then
+     echo "commit failed: could not compare temporary index; real index preserved"
+     exit "$temp_diff_status"
+   fi
+
+   GIT_INDEX_FILE="$git_index_file" git commit -m "checkpoint: <name-or-timestamp>"
+   status=$?
+   if [ "$status" -ne 0 ]; then
+     echo "commit failed; real index preserved"
+     exit "$status"
+   fi
+
+   # HEAD advanced. Synchronize only this previously-unstaged path in the
+   # real index so it does not appear as a staged deletion/revert.
+   git reset -- "$checkpoint_path"
+   status=$?
+   exit "$status"
+   ```
+
+   `git read-tree HEAD` keeps the temporary commit's tree complete. The
+   temporary `git add` stages only the checkpoint. The temp-index diff detects
+   a legitimate unchanged/no-op before attempting `git commit`, so a nonzero
+   commit result means a hook or another real failure. The single real-index
+   `git reset --` is reached only after a successful temporary commit; it
+   synchronizes only this path to the new `HEAD`. Every failure exits with its
+   original nonzero status, cleanup still runs, and the real index is never
+   reset. If the checkpoint was unstaged, it remains unstaged after success.
+3. Report the absolute path and the commit outcome (short SHA, unchanged/no-op,
+   or the specific failure reason).
 
 ## Important
 
-- This is the one difference from `/checkpoint`, which explicitly leaves the file uncommitted ("Do NOT add the file to git automatically — leave that to the user"). Use `/checkpoint` instead of this skill when you want that default kept.
-- Stage and commit ONLY the checkpoint file — never anything else that happens to be dirty in the working tree at the time, even if the user has other uncommitted changes sitting there.
-- Never push. This skill commits locally only; pushing is a separate, explicit action the user asks for by name.
-- Everything `/checkpoint`'s own Important section says still applies here unchanged (honesty about unknowns, no secrets/tokens/large dumps, read-mostly — it does not alter the TaskList or goal) — this skill only adds the commit step on top.
+- Never stage or commit any other dirty file.
+- Never push. This skill commits locally only.
+- If the commit hook fails, report the failure but do not undo or alter the
+  user's real index.
+- Everything in `/checkpoint`'s Important section still applies: be honest,
+  omit secrets and large dumps, and do not alter the TaskList or goal.

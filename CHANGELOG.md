@@ -66,7 +66,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and agents now point at `claude-fable-5-1` (the current top Fable); new
   `f1*` commands/agents (`f1l`, `f1m`, `f1h`, `f1x`, `f1xx`) pin the
   previous top, `claude-fable-5` — the same convention `o1*` uses for Opus.
-  48 commands / 48 agents (was 43).
+  44 commands / 44 agents after replacing Haiku's misleading effort matrix
+  with stable no-effort `/h` and `/h45` aliases; the Codex `hl` agent is
+  unchanged.
+
+- Claude agents now include their `effort:` value in frontmatter. Haiku files
+  intentionally omit that field because Haiku has no Claude Code effort
+  control.
+- Reinstall validates scope, selection, custom template paths, and selected
+  template trees before its uninstall phase. Sentinel-owned orphan commands
+  and agents are swept during uninstall while foreign files remain untouched.
+- Bare `cah uninstall` keeps the shared global companion bins. Remove them
+  explicitly with `cah uninstall --only bins`; the command prints a warning
+  because local settings in every scope may reference those bins.
 
 ## [0.7.2] - 2026-08-05
 

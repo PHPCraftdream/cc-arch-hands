@@ -14,10 +14,14 @@
 // Never crashes, never produces empty stdout (the harness would blank
 // the bar), always exits 0.
 
-import { readFileSync, mkdirSync, writeFileSync, renameSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { formatStatusLine } from '../lib/transcript-stats.js';
+import {
+  formatStatusLine,
+  validContextWindowSize,
+  persistRateLimitsCache,
+} from '../lib/transcript-stats.js';
 import { CURRENT_VERSION, getLatestVersion, isNewerVersion } from '../lib/update-check.js';
 
 const FALLBACK = '—';
@@ -28,10 +32,9 @@ const UPDATE_CHECK_CACHE =
   process.env.CAH_UPDATE_CHECK_CACHE ||
   join(homedir(), '.claude', 'cah-bin', 'cache', 'update-check.json');
 
-// Pro/Max rate_limits (five_hour, seven_day) live ONLY in the statusLine
-// envelope. Persist the last seen values so the Stop / PostToolUse hook bin
-// (cah-stamp) — which receives a different envelope without rate_limits —
-// can include them in the chat audit trail.
+// Pro/Max rate_limits (five_hour, seven_day) live only in the statusLine
+// envelope. Persist account-global rates plus the current session's context
+// window so Stop / PostToolUse can recover the data missing from its envelope.
 // CAH_RATE_LIMITS_CACHE env override lets tests/CI redirect the write path.
 const RATE_LIMITS_CACHE =
   process.env.CAH_RATE_LIMITS_CACHE ||
@@ -49,21 +52,6 @@ function extractRateSlot(slot) {
   }
   if (used === null && resetsAt === null) return null;
   return { used, resetsAt };
-}
-
-function persistSessionState(fiveHour, sevenDay, effort) {
-  if (!fiveHour && !sevenDay && !effort) return;
-  try {
-    mkdirSync(dirname(RATE_LIMITS_CACHE), { recursive: true });
-    const tmp = RATE_LIMITS_CACHE + '.tmp';
-    writeFileSync(
-      tmp,
-      JSON.stringify({ fiveHour, sevenDay, effort, capturedAt: Date.now() }) + '\n',
-    );
-    renameSync(tmp, RATE_LIMITS_CACHE);
-  } catch {
-    // Fail-silent: the statusLine bin must never break the bar over a cache miss.
-  }
 }
 
 function buildLine(data) {
@@ -98,9 +86,9 @@ function buildLine(data) {
     // ignore
   }
 
-  // effort.level lives only in the statusLine envelope. Persist it next to
-  // rate_limits so cah-stamp (Stop / PostToolUse hook, different envelope
-  // without effort) can echo it into the chat audit trail.
+  // effort.level lives only in the statusLine envelope. cah-stamp intentionally
+  // does not render cached effort because its hook payload has no turn-bound
+  // effort value.
   let effort = null;
   try {
     const e = data && data.effort;
@@ -110,7 +98,25 @@ function buildLine(data) {
   } catch {
     // ignore
   }
-  persistSessionState(fiveHour, sevenDay, effort);
+  let contextWindowSize = null;
+  try {
+    contextWindowSize = validContextWindowSize(data && data.context_window && data.context_window.context_window_size);
+  } catch {
+    // ignore
+  }
+  const sessionId = data && typeof data.session_id === 'string' ? data.session_id : null;
+  try {
+    persistRateLimitsCache(
+      RATE_LIMITS_CACHE,
+      fiveHour,
+      sevenDay,
+      effort,
+      contextWindowSize,
+      sessionId,
+    );
+  } catch {
+    // Fail-silent: cache failures must never break the status bar.
+  }
 
   // Reuse the shared formatter with time omitted (it's tolerant of null time).
   const line = formatStatusLine({

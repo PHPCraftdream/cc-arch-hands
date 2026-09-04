@@ -59,11 +59,12 @@ function groupByLabel(entries) {
 
 function renderModelCommandsTable(entries) {
   const groups = groupByLabel(entries);
-  const header = '| Model | model id | low | medium | high | xhigh | max |\n|---|---|---|---|---|---|---|';
+  const header = '| Model | model id | no effort | low | medium | high | xhigh | max |\n|---|---|---|---|---|---|---|---|';
   const rows = groups.map((g) => {
-    const byEffort = Object.fromEntries(g.entries.map((e) => [e.effort, e.name]));
+    const byEffort = Object.fromEntries(g.entries.filter((e) => e.effort != null).map((e) => [e.effort, e.name]));
+    const noEffort = g.entries.find((e) => e.effort == null);
     const cells = CLAUDE_EFFORTS.map((eff) => (byEffort[eff] ? `\`/${byEffort[eff]}\`` : '—'));
-    return `| ${boldIfTop(g.label)} | \`${g.model}\` | ${cells.join(' | ')} |`;
+    return `| ${boldIfTop(g.label)} | \`${g.model}\` | ${noEffort ? `\`/${noEffort.name}\`` : '—'} | ${cells.join(' | ')} |`;
   });
   return [header, ...rows].join('\n');
 }
@@ -100,15 +101,36 @@ function substituteTables(content) {
 }
 
 function substituteCounts(content) {
-  return content.replace(/<!--gen:count:(\S+)-->\d+<!--\/gen-->/g, (whole, key) => {
+  return content.replace(/<!--gen:count:(\S+?)-->[\s\S]*?<!--\/gen-->/g, (whole, key) => {
     if (!(key in COUNTS)) throw new Error(`gen-docs: unknown count key "${key}" in README.md`);
     return `<!--gen:count:${key}-->${COUNTS[key]}<!--/gen-->`;
   });
 }
 
+function validateMarkers(content) {
+  for (const key of Object.keys(TABLES)) {
+    const open = new RegExp(`<!--gen:table:${key}(?:\\s[^>]*)?-->`, 'g');
+    const close = new RegExp(`<!--/gen:table:${key}-->`, 'g');
+    if ([...content.matchAll(open)].length !== 1 || [...content.matchAll(close)].length !== 1) {
+      throw new Error(`gen-docs: expected exactly one complete table marker pair for "${key}"`);
+    }
+  }
+  const countMarkers = [...content.matchAll(/<!--gen:count:(\S+?)-->[\s\S]*?<!--\/gen-->/g)];
+  if (countMarkers.length === 0) throw new Error('gen-docs: README.md contains no generated count markers');
+  const seenCounts = new Set();
+  for (const [, key] of countMarkers) {
+    if (!(key in COUNTS)) throw new Error(`gen-docs: unknown count key "${key}" in README.md`);
+    seenCounts.add(key);
+  }
+  for (const key of Object.keys(COUNTS)) {
+    if (!seenCounts.has(key)) throw new Error(`gen-docs: missing generated count marker for "${key}"`);
+  }
+}
+
 function main() {
   const check = process.argv.includes('--check');
   const original = readFileSync(README_PATH, 'utf8');
+  validateMarkers(original);
   const updated = substituteCounts(substituteTables(original));
 
   if (updated === original) {

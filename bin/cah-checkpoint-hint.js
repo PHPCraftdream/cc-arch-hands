@@ -10,7 +10,7 @@
 import { mkdirSync, writeFileSync, existsSync, readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { readTranscriptStats, modelLimit } from '../lib/transcript-stats.js';
+import { readTranscriptStats, contextWindowLimit, readRateLimitsCache, validContextWindowSize } from '../lib/transcript-stats.js';
 
 const THRESHOLD = 0.9;
 const THRESHOLD_PCT = Math.round(THRESHOLD * 100);
@@ -25,6 +25,9 @@ const MESSAGE = JSON.stringify({
 // removed otherwise, so we sweep stale ones (older than the TTL) on each run.
 const MARKER_PREFIX = 'cah-hint-shown-';
 const MARKER_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const RATE_LIMITS_CACHE =
+  process.env.CAH_RATE_LIMITS_CACHE ||
+  join(homedir(), '.claude', 'cah-bin', 'cache', 'rate-limits.json');
 
 function pruneStaleMarkers(markerDir, nowMs) {
   let entries;
@@ -90,7 +93,21 @@ function main() {
   }
   if (usedTokens === null) return;
 
-  const limit = modelLimit(modelId);
+  let envelopeLimit = null;
+  try {
+    const cw = payload.context_window;
+    if (cw && typeof cw === 'object') envelopeLimit = validContextWindowSize(cw.context_window_size);
+  } catch {
+    // ignore malformed hook envelope
+  }
+  let cachedLimit = null;
+  try {
+    const cached = readRateLimitsCache(RATE_LIMITS_CACHE, Date.now(), sessionId);
+    cachedLimit = cached && cached.contextWindowSize;
+  } catch {
+    // fail-silent — use the model fallback
+  }
+  const limit = contextWindowLimit(modelId, envelopeLimit || cachedLimit);
   const ratio = usedTokens / limit;
   if (ratio < THRESHOLD) return;
 

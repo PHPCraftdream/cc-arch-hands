@@ -19,12 +19,12 @@ lockstep — plus the three companion bins that some skills use as hooks or
 statusLine commands, copied into `~/.claude/cah-bin/` at install time.
 
 The artifacts:
-- **per-model sub-agents** (<!--gen:count:model-commands-->48<!--/gen-->) under `~/.claude/agents/`,
+- **per-model sub-agents** (<!--gen:count:model-commands-->44<!--/gen-->) under `~/.claude/agents/`,
 - **skills** (11) under `~/.claude/skills/`,
 - **companion bins** under `~/.claude/cah-bin/` (since 0.4.0).
 
 Optional artifacts are installed only when requested:
-- **per-model slash-commands** (<!--gen:count:model-commands-->48<!--/gen-->) under `~/.claude/commands/`, via `--commands`. Opt-in — see the [known Claude Code regression](#1-per-model-slash-commands-48) below; the sub-agent half above is unaffected and stays in the default install.
+- **per-model slash-commands** (<!--gen:count:model-commands-->44<!--/gen-->) under `~/.claude/commands/`, via `--commands`. Opt-in — see the [known Claude Code regression](#1-per-model-slash-commands-44) below; the sub-agent half above is unaffected and stays in the default install.
 - **Codex custom agents** (<!--gen:count:codex-agents-->30<!--/gen-->) under `~/.codex/agents/`, via `--codex-agents`.
 
 > **Since 0.4.0:** `cah install` copies the companion bins into
@@ -39,7 +39,7 @@ The companion bins:
 - **`cah`** (and its alias `cc-arch-hands`) — the installer CLI itself.
 - **`cah-checkpoint-hint`** — Stop hook bin invoked by `/checkpoint-watch`. Emits one `[hint] Context at 90%…` per session when context fills past 90%.
 - **`cah-status`** — statusLine command invoked by `/clock`. Renders `<model> [effort] · X.XX% (Nk/Mk)` with a usage bar and, for Pro/Max accounts, the 5-hour and weekly quota use with reset info (`5h N% →48м · wk N% →сб 27.06 16:19`). The bracketed effort code matches the slash-command suffix convention — `[l]/[m]/[h]/[x]/[xx]` for low/medium/high/xhigh/max; omitted for models without effort support (Haiku). Refreshes every 60 s (`refreshInterval` on the entry) and on every turn boundary.
-- **`cah-stamp`** — Stop hook bin invoked by `/clock` on both `Stop` AND `PostToolUse`. Emits an `HH:MM:SS · model [effort] · X.XX% · 5h N% · wk N%` line as a `systemMessage` (no bars, compact text). Two safeguards prevent scrollback spam: **per-message dedup** (every assistant entry of the same turn shares an API `requestId` — if we already stamped this turn, the next hook of the same turn is suppressed) and a **time-throttle safety net** (default 10 s, configurable via `CAH_STAMP_MIN_INTERVAL_MS`).
+- **`cah-stamp`** — Stop hook bin invoked by `/clock` on both `Stop` AND `PostToolUse`. Emits an `HH:MM:SS · model · X.XX% · 5h N% · wk N%` line as a `systemMessage` (no effort suffix or bars; compact text). Two safeguards prevent scrollback spam: **per-message dedup** (every assistant entry of the same turn shares an API `requestId` — if we already stamped this turn, the next hook of the same turn is suppressed) and a **session-scoped time-throttle safety net** (default 10 s, configurable via `CAH_STAMP_MIN_INTERVAL_MS`). A newer-version notice is Stop-only, even when PostToolUse already deduped the turn.
 - **`cah-status-probe`** — diagnostic statusLine bin armed by `cah probe statusline start`. Captures the raw stdin envelope to a JSONL log so you can inspect exactly which fields Claude Code delivers on your account (added in 0.4.1).
 
 All three hook bins share `lib/transcript-stats.js` for transcript
@@ -49,7 +49,7 @@ Claude Code's own `used_percentage` formula. Without this, raw
 `input_tokens` after the first turn is ~1 token (everything else is
 served from the prompt cache) and a naive percentage would always read 0%.
 
-### 1. Per-model slash-commands (<!--gen:count:model-commands-->48<!--/gen-->)
+### 1. Per-model slash-commands (<!--gen:count:model-commands-->44<!--/gen-->)
 
 Not part of the default install (see the regression note below). Install
 explicitly with `--commands`, or select it as a class via `--only commands`
@@ -61,18 +61,20 @@ npx cah reinstall --commands
 npx cah uninstall --commands
 ```
 
-A short slash-command for every `{model, effort}` pair, so you can switch
-the model **and** reasoning effort for a single turn just by how you start
-the message. The command name encodes both — model letter + version +
-effort suffix:
+A short slash-command for every supported `{model, effort}` pair, plus
+no-effort aliases for Haiku. The command name normally encodes model letter +
+version + effort suffix:
 
 ```
 /oh   run this turn on Opus (top) at high effort
 /o2x  run this turn on Opus 4.7 (2 releases behind top) at xhigh effort
 /sm   Sonnet (top), medium effort
 /fxx  Fable 5.1, max effort
-/hl   Haiku, low effort
+/h    Haiku (top), no effort control
 ```
+
+Haiku also has `/h45` as the literal-version alias. Both Haiku aliases have
+no effort suffix because Claude Code does not expose effort control for Haiku.
 
 Suffixes: `l` low · `m` medium · `h` high · `x` xhigh · `xx` max.
 Whatever you type after the command becomes the prompt for that turn.
@@ -96,10 +98,10 @@ Whatever you type after the command becomes the prompt for that turn.
 >   installs after every turn: if it says `Sonnet 5` right after `/oh`, the
 >   override did not fire. The model's own self-report is not evidence.
 
-### 2. Per-model sub-agents (<!--gen:count:model-commands-->48<!--/gen-->)
+### 2. Per-model sub-agents (<!--gen:count:model-commands-->44<!--/gen-->)
 
-The same matrix as the commands — but as **delegated sub-agents** instead
-of inline commands. Use them to hand a self-contained task to a fresh
+The same supported effort matrix as the commands, plus Haiku's no-effort
+aliases — but as **delegated sub-agents** instead of inline commands. Use them to hand a self-contained task to a fresh
 context window on a chosen model/effort; the agent runs autonomously and
 returns only the result. Each agent body carries two hardcoded safety
 clauses: a **git-safety** rule (no mutating git commands in a shared
@@ -129,24 +131,24 @@ the one before that, and so on — so `o1x` today means Opus 4.8, but after
 the next Opus release `o1x` will mean today's `ox` (the model, not the
 number, shifts). Fable follows the same convention: `f1*` is whichever
 Fable was top before the current one. Other families (Sonnet, Haiku)
-still encode the actual version number (`s45*`, `h45*`).
+still encode the actual version number where the alias has one (`s45*`, `h45`).
 
 **Slash-commands**
 
 <!--gen:table:model-commands (run `npm run gen:docs` after editing lib/manifest.js) -->
-| Model | model id | low | medium | high | xhigh | max |
-|---|---|---|---|---|---|---|
-| **Fable** (top, 1M) | `claude-fable-5-1` | `/fl` | `/fm` | `/fh` | `/fx` | `/fxx` |
-| Fable 5 (1M) | `claude-fable-5` | `/f1l` | `/f1m` | `/f1h` | `/f1x` | `/f1xx` |
-| **Opus** (top, 1M) | `claude-opus-5` | `/ol` | `/om` | `/oh` | `/ox` | `/oxx` |
-| Opus 4.8 (1M) | `claude-opus-4-8` | `/o1l` | `/o1m` | `/o1h` | `/o1x` | `/o1xx` |
-| Opus 4.7 (1M) | `claude-opus-4-7` | `/o2l` | `/o2m` | `/o2h` | `/o2x` | `/o2xx` |
-| Opus 4.6 (1M) | `claude-opus-4-6` | `/o3l` | `/o3m` | `/o3h` | `/o3x` | `/o3xx` |
-| **Sonnet** (top, 1M) | `claude-sonnet-5` | `/sl` | `/sm` | `/sh` | `/sx` | `/sxx` |
-| Sonnet 4.6 (200k) | `claude-sonnet-4-6` | `/s4l` | `/s4m` | `/s4h` | — | `/s4xx` |
-| Sonnet 4.5 (200k) | `claude-sonnet-4-5` | `/s45l` | `/s45m` | `/s45h` | — | — |
-| **Haiku** (top, 200k) | `claude-haiku-4-5` | `/hl` | `/hm` | `/hh` | — | — |
-| Haiku 4.5 (200k) | `claude-haiku-4-5` | `/h45l` | `/h45m` | `/h45h` | — | — |
+| Model | model id | no effort | low | medium | high | xhigh | max |
+|---|---|---|---|---|---|---|---|
+| **Fable** (top, 1M) | `claude-fable-5-1` | — | `/fl` | `/fm` | `/fh` | `/fx` | `/fxx` |
+| Fable 5 (1M) | `claude-fable-5` | — | `/f1l` | `/f1m` | `/f1h` | `/f1x` | `/f1xx` |
+| **Opus** (top, 1M) | `claude-opus-5` | — | `/ol` | `/om` | `/oh` | `/ox` | `/oxx` |
+| Opus 4.8 (1M) | `claude-opus-4-8` | — | `/o1l` | `/o1m` | `/o1h` | `/o1x` | `/o1xx` |
+| Opus 4.7 (1M) | `claude-opus-4-7` | — | `/o2l` | `/o2m` | `/o2h` | `/o2x` | `/o2xx` |
+| Opus 4.6 (1M) | `claude-opus-4-6` | — | `/o3l` | `/o3m` | `/o3h` | `/o3x` | `/o3xx` |
+| **Sonnet** (top, 1M) | `claude-sonnet-5` | — | `/sl` | `/sm` | `/sh` | `/sx` | `/sxx` |
+| Sonnet 4.6 (200k) | `claude-sonnet-4-6` | — | `/s4l` | `/s4m` | `/s4h` | — | `/s4xx` |
+| Sonnet 4.5 (200k) | `claude-sonnet-4-5` | — | `/s45l` | `/s45m` | `/s45h` | — | — |
+| **Haiku** (top, 200k) | `claude-haiku-4-5` | `/h` | — | — | — | — | — |
+| Haiku 4.5 (200k) | `claude-haiku-4-5` | `/h45` | — | — | — | — | — |
 <!--/gen:table:model-commands-->
 
 **Sub-agents** share the same names as the commands above. `/oh` is the
@@ -154,7 +156,7 @@ slash-command body; `oh` (no prefix) is the agent invoked by the `Agent`
 tool with `subagent_type: "oh"`. The two live in separate lookup tables
 inside Claude Code, so identical names do not collide.
 
-<!--gen:count:model-commands-->48<!--/gen--> commands, <!--gen:count:model-commands-->48<!--/gen--> agents — one line per row-cell in
+<!--gen:count:model-commands-->44<!--/gen--> commands, <!--gen:count:model-commands-->44<!--/gen--> agents — one line per row-cell in
 [`lib/manifest.js`](lib/manifest.js).
 
 ### 3. Optional Codex custom agents (<!--gen:count:codex-agents-->30<!--/gen-->)
@@ -214,7 +216,7 @@ Reusable capability packs Claude Code loads on demand. Each is invoked as
 
 | Skill | Purpose |
 |---|---|
-| `/clock` | Per-scope Claude Code statusLine showing `<model> [effort] · X% (Nk/Mk)` at the bottom of the terminal, plus a Stop+PostToolUse hook that emits an `HH:MM:SS · <model> [effort] · X%` line as a `systemMessage` once per assistant turn (per-message dedup) for a timestamped chat audit trail. statusLine refreshes every 60 s and on every turn boundary. Does not consume LLM context. Usage: `/clock` (global), `/clock --here` (project-local), `/clock --off`, `/clock --status`. |
+| `/clock` | Per-scope Claude Code statusLine showing `<model> [effort] · X% (Nk/Mk)` at the bottom of the terminal, plus a Stop+PostToolUse hook that emits an `HH:MM:SS · <model> · X%` line as a `systemMessage` once per assistant turn (per-message dedup) for a timestamped chat audit trail. statusLine refreshes every 60 s and on every turn boundary. Does not consume LLM context. Usage: `/clock` (global), `/clock --here` (project-local), `/clock --off`, `/clock --status`. |
 
 #### Workspace HUD in detail
 
@@ -226,7 +228,7 @@ Reusable capability packs Claude Code loads on demand. Each is invoked as
   quota use. It runs as a separate process and never enters LLM context.
 - **chat turn-stamp** (`cah-stamp` on Stop AND PostToolUse): once per assistant turn,
   the hook reads the session transcript JSONL to find the latest `usage.input_tokens`,
-  `model`, and per-turn API `requestId`, then emits an `HH:MM:SS · model [effort] · X%`
+  `model`, and per-turn API `requestId`, then emits an `HH:MM:SS · model · X%`
   line as a `systemMessage` that lands in the chat scrollback. Per-message dedup
   (via `requestId`) guarantees one stamp per assistant message — even a long turn with
   many tool calls produces exactly one stamp. The `systemMessage` is user-facing only
@@ -280,15 +282,17 @@ What goes into a checkpoint:
 Empty sections stay empty with a one-line reason — the skill never
 invents content to look complete. Checkpoints are not added to git
 automatically; that decision stays with you — unless you use
-`/ccheckpoint` instead of `/checkpoint`, which is identical except it
-also runs `git add`+`git commit` (that one file only, never a push) on
-the checkpoint it just wrote.
+`/ccheckpoint` instead of `/checkpoint`, which commits only that checkpoint
+through an isolated temporary index (never the real index and never a push).
 
 `cah` also installs `/checkpoint-watch` globally, but invoking it in a project
 writes a Stop hook into *that project's* `.claude/settings.json` (never the
 global one). On each turn the hook reads the session transcript, takes the
-latest assistant message's `usage.input_tokens`, and compares it to the model's
-context limit (1M for Opus/Fable, 200K for Sonnet/Haiku). When usage first
+latest assistant message's `usage.input_tokens`, and compares it to the actual
+valid `context_window.context_window_size` from the hook envelope or matching
+status cache when available. If neither is available, it falls back to the
+model limit (1M for Opus/Fable/Sonnet 5, 200K for Sonnet/Haiku), honoring
+`CLAUDE_CODE_DISABLE_1M_CONTEXT`. When usage first
 crosses 90% it emits a single `systemMessage` — a plain-ASCII `[hint]` line
 suggesting `/checkpoint` — and records a per-session marker so it never fires
 twice. The 90% threshold is a soft suggestion, not a forced action: the agent
@@ -313,8 +317,8 @@ What `/resume` does:
 
 | Artifact | Count | Destination |
 |---|---|---|
-| Slash-commands | <!--gen:count:model-commands-->48<!--/gen--> | `<scope>/.claude/commands/<name>.md` (only with `--commands`) |
-| Sub-agents | <!--gen:count:model-commands-->48<!--/gen--> | `<scope>/.claude/agents/<name>.md` |
+| Slash-commands | <!--gen:count:model-commands-->44<!--/gen--> | `<scope>/.claude/commands/<name>.md` (only with `--commands`) |
+| Sub-agents | <!--gen:count:model-commands-->44<!--/gen--> | `<scope>/.claude/agents/<name>.md` |
 | Skills | 11 | `<scope>/.claude/skills/<name>/` |
 | Codex custom agents | <!--gen:count:codex-agents-->30<!--/gen--> | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
 
@@ -331,7 +335,7 @@ No install needed — run directly with `npx`:
 
 ```bash
 npx cc-arch-hands install                # install globally into ~/.claude/
-npx cc-arch-hands uninstall              # remove everything we own
+npx cc-arch-hands uninstall              # remove our Claude files; keep shared bins
 npx cc-arch-hands list                   # show what's installed
 npx cc-arch-hands doctor                 # health check
 ```
@@ -409,7 +413,8 @@ npx cah install --only commands,clock               # mix class + skill name
 npx cah reinstall --only clock                      # uninstall + install of just the clock skill
 npx cah reinstall --commands                        # reinstall only the per-model slash-commands
 npx cah reinstall --codex-agents                    # reinstall only Codex agents
-npx cah uninstall                                   # symmetric remove (sentinel-gated)
+npx cah uninstall                                   # remove Claude files; keeps shared bins
+npx cah uninstall --only bins                       # remove shared bins globally (warning shown)
 npx cah uninstall --only agents                     # remove only Claude agents
 npx cah uninstall --commands                        # remove only the per-model slash-commands
 npx cah uninstall --codex-agents                    # remove only Codex agents
@@ -495,14 +500,14 @@ cc-arch-hands/
 ├── bin/cah-status-probe.js      # diagnostic statusLine bin used by `cah probe statusline`
 ├── lib/
 │   ├── cli.js                   # dispatch, arg parsing (node:util parseArgs), --only resolver
-│   ├── manifest.js              # AllModelCommands (48 entries), AllSkills (11), SkillDeps
+│   ├── manifest.js              # AllModelCommands (44 entries), AllSkills (11), SkillDeps
 │   ├── sentinel.js              # new + legacy markers, ownership classifier
 │   ├── scope.js                 # global vs local target dir resolution
 │   ├── templates.js             # bundled / disk template abstraction
 │   ├── fsutil.js                # readFileMaybe + orphan-prune helpers
 │   ├── transcript-stats.js      # shared: stats, formatStatusLine, makeBar, reset formatters
-│   ├── commands.js              # render + install + remove (48 .md files)
-│   ├── agents.js                # render + install + remove (48 .md files)
+│   ├── commands.js              # render + install + remove (44 .md files)
+│   ├── agents.js                # render + install + remove (44 .md files)
 │   ├── skills.js                # mirror templates/skills/<n>/ tree, optional subset
 │   ├── binstall.js              # copy companion bins into ~/.claude/cah-bin/ (// cah-bin:v1)
 │   └── probe.js                 # enable/disable cah-status-probe via settings.json edits

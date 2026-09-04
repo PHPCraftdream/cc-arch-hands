@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { readRateLimitsCache, rateLimitsContextPath } from '../lib/transcript-stats.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BIN = join(__dirname, '..', 'bin', 'cah-status.js');
@@ -134,10 +135,35 @@ describe('cah-status bin', () => {
     assert.equal(typeof cached.capturedAt, 'number');
   });
 
-  it('no rate_limits → no 5h/wk parts and no cache file', () => {
+  it('no rate_limits → no 5h/wk parts but caches the valid context window', () => {
     const { stdout, cachePath } = run(makePayload());
     assert.ok(!stdout.includes('5h'), `should not contain 5h: ${stdout}`);
     assert.ok(!stdout.includes(' wk '), `should not contain wk: ${stdout}`);
-    assert.ok(!existsSync(cachePath), 'cache file should not be written when rate_limits absent');
+    assert.ok(existsSync(cachePath), 'valid envelope context should be cached');
+    assert.equal(
+      JSON.parse(readFileSync(rateLimitsContextPath(cachePath, 'test-session'), 'utf8')).contextWindowSize,
+      1_000_000,
+    );
+  });
+
+  it('two sessions retain distinct context windows while sharing global rates', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-status-sessions-'));
+    const cachePath = join(dir, 'rate-limits.json');
+    const rates = {
+      five_hour: { used_percentage: 23, resets_at: new Date(Date.now() + 3_600_000).toISOString() },
+      seven_day: { used_percentage: 67, resets_at: new Date(Date.now() + 86_400_000).toISOString() },
+    };
+    run(makePayload({ session_id: 'session-a', rate_limits: rates }), { CAH_RATE_LIMITS_CACHE: cachePath });
+    run(makePayload({ session_id: 'session-b', rate_limits: null, context_window: {
+      context_window_size: 200_000,
+      total_input_tokens: 100_000,
+    } }), { CAH_RATE_LIMITS_CACHE: cachePath });
+
+    const a = readRateLimitsCache(cachePath, Date.now(), 'session-a');
+    const b = readRateLimitsCache(cachePath, Date.now(), 'session-b');
+    assert.equal(a.contextWindowSize, 1_000_000);
+    assert.equal(b.contextWindowSize, 200_000);
+    assert.equal(a.fiveHour.used, 23);
+    assert.equal(b.sevenDay.used, 67);
   });
 });

@@ -1,10 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync, utimesSync, mkdirSync } from 'node:fs';
+import { join, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BIN = join(__dirname, '..', 'bin', 'cah-stamp.js');
@@ -44,6 +45,22 @@ function runStamp(stdinData, env) {
 
 function isolatedDir() {
   return mkdtempSync(join(tmpdir(), 'cah-stamp-'));
+}
+
+function sessionHash(sessionId) {
+  const identity = typeof sessionId === 'string' ? `string:${sessionId}` : 'missing:';
+  return createHash('sha256').update(identity, 'utf8').digest('hex');
+}
+
+function stampSidecarPath(base, sessionId) {
+  return `${base}.session-${sessionHash(sessionId)}.json`;
+}
+
+function stampSidecars(base) {
+  const prefix = basename(base) + '.session-';
+  return readdirSync(dirname(base))
+    .filter((name) => name.startsWith(prefix) && name.endsWith('.json'))
+    .map((name) => join(dirname(base), name));
 }
 
 function writeTranscript(dir, model, usedTokens) {
@@ -264,8 +281,12 @@ describe('cah-stamp bin', () => {
       { session_id: 's', transcript_path: tp },
       { CAH_STAMP_THROTTLE_PATH: throttle, CAH_STAMP_MIN_INTERVAL_MS: '1' },
     );
-    // Pretend the last stamp happened well in the past by rewriting the file.
-    writeFileSync(throttle, JSON.stringify({ lastStampedAt: Date.now() - 60_000 }));
+    // Pretend the last stamp happened well in the past by rewriting its
+    // session-partitioned sidecar.
+    const sidecar = stampSidecarPath(throttle, 's');
+    const state = JSON.parse(readFileSync(sidecar, 'utf8'));
+    state.lastStampedAt = Date.now() - 60_000;
+    writeFileSync(sidecar, JSON.stringify(state));
     const second = runStamp(
       { session_id: 's', transcript_path: tp },
       { CAH_STAMP_THROTTLE_PATH: throttle, CAH_STAMP_MIN_INTERVAL_MS: '10000' },
@@ -289,9 +310,10 @@ describe('cah-stamp bin', () => {
     );
     assert.ok(first.stdout.trim().length > 0, 'first stamp should emit');
     // Pretend MIN_INTERVAL elapsed, so only the requestId dedup can block this.
-    const file = JSON.parse(readFileSync(throttle, 'utf8'));
-    file.lastStampedAt = Date.now() - 60_000;
-    writeFileSync(throttle, JSON.stringify(file));
+    const sidecar = stampSidecarPath(throttle, 's');
+    const state = JSON.parse(readFileSync(sidecar, 'utf8'));
+    state.lastStampedAt = Date.now() - 60_000;
+    writeFileSync(sidecar, JSON.stringify(state));
     const second = runStamp(
       { session_id: 's', transcript_path: tp },
       { CAH_STAMP_THROTTLE_PATH: throttle, CAH_STAMP_MIN_INTERVAL_MS: '1' },
@@ -314,9 +336,10 @@ describe('cah-stamp bin', () => {
     );
     assert.ok(first.stdout.trim().length > 0);
     // Pretend MIN_INTERVAL elapsed, and the next turn has a fresh requestId.
-    const file = JSON.parse(readFileSync(throttle, 'utf8'));
-    file.lastStampedAt = Date.now() - 60_000;
-    writeFileSync(throttle, JSON.stringify(file));
+    const sidecar = stampSidecarPath(throttle, 's');
+    const state = JSON.parse(readFileSync(sidecar, 'utf8'));
+    state.lastStampedAt = Date.now() - 60_000;
+    writeFileSync(sidecar, JSON.stringify(state));
     writeFileSync(tp, JSON.stringify({
       type: 'assistant',
       requestId: 'req_turn_B',
@@ -327,6 +350,80 @@ describe('cah-stamp bin', () => {
       { CAH_STAMP_THROTTLE_PATH: throttle, CAH_STAMP_MIN_INTERVAL_MS: '1' },
     );
     assert.ok(second.stdout.trim().length > 0, 'new requestId → new stamp');
+  });
+
+  it('partitions throttle state into collision-safe hashed session sidecars', () => {
+    const dir = isolatedDir();
+    const tp = writeTranscript(dir, 'claude-opus-4-7', 46_000);
+    const throttle = join(dir, 'last-stamp.json');
+    const sessionA = `../${'a'.repeat(400)}`;
+    const sessionB = `../${'b'.repeat(400)}`;
+    const first = runStamp(
+      { session_id: sessionA, transcript_path: tp },
+      { CAH_STAMP_THROTTLE_PATH: throttle, CAH_STAMP_MIN_INTERVAL_MS: '60000' },
+    );
+    assert.ok(first.stdout.trim());
+    const second = runStamp(
+      { session_id: sessionB, transcript_path: tp },
+      { CAH_STAMP_THROTTLE_PATH: throttle, CAH_STAMP_MIN_INTERVAL_MS: '60000' },
+    );
+    assert.ok(second.stdout.trim(), 'one session must not throttle another');
+    const aPath = stampSidecarPath(throttle, sessionA);
+    const bPath = stampSidecarPath(throttle, sessionB);
+    assert.notEqual(aPath, bPath, 'long/unusual session IDs must not collide');
+    assert.ok(existsSync(aPath));
+    assert.ok(existsSync(bPath));
+    assert.equal(stampSidecars(throttle).length, 2);
+    assert.equal(existsSync(throttle), false, 'new writes must not use a shared sessions map');
+  });
+
+  it('bounds sidecar cleanup and truncates untrusted request IDs', () => {
+    const dir = isolatedDir();
+    const tp = join(dir, 'transcript.jsonl');
+    writeFileSync(tp, JSON.stringify({
+      type: 'assistant',
+      requestId: 'x'.repeat(1000),
+      message: { role: 'assistant', model: 'claude-opus-4-7', usage: { input_tokens: 46_000 } },
+    }) + '\n');
+    const throttle = join(dir, 'last-stamp.json');
+    const oldTime = Date.now() / 1000 - 60 * 60;
+    for (let i = 0; i < 100; i++) {
+      const fakeHash = i.toString(16).padStart(64, '0');
+      const path = `${throttle}.session-${fakeHash}.json`;
+      writeFileSync(path, JSON.stringify({ lastStampedAt: Date.now() - i }));
+      utimesSync(path, oldTime, oldTime);
+    }
+
+    const sessionId = 'new-session';
+    const result = runStamp(
+      { session_id: sessionId, transcript_path: tp },
+      { CAH_STAMP_THROTTLE_PATH: throttle, CAH_STAMP_MIN_INTERVAL_MS: '1' },
+    );
+    assert.ok(result.stdout.trim());
+    assert.ok(stampSidecars(throttle).length <= 64);
+    const state = JSON.parse(readFileSync(stampSidecarPath(throttle, sessionId), 'utf8'));
+    assert.equal(state.lastStampedRequestId.length, 512);
+  });
+
+  it('honors a valid hook-envelope context window over model fallback', () => {
+    const dir = isolatedDir();
+    const tp = writeTranscript(dir, 'claude-opus-4-7', 46_000);
+    const result = runStamp({
+      session_id: 'envelope-context',
+      transcript_path: tp,
+      context_window: { context_window_size: 100_000 },
+    });
+    assert.match(JSON.parse(result.stdout.trim()).systemMessage, /46% \(46k\/100k\)/);
+  });
+
+  it('honors the 200k fallback when 1M context is disabled', () => {
+    const dir = isolatedDir();
+    const tp = writeTranscript(dir, 'claude-opus-4-7', 250_000);
+    const result = runStamp(
+      { session_id: 'disabled-1m', transcript_path: tp },
+      { CLAUDE_CODE_DISABLE_1M_CONTEXT: '1' },
+    );
+    assert.match(JSON.parse(result.stdout.trim()).systemMessage, /125% \(250k\/200k\)/);
   });
 
   it('ignores stale rate_limits state file (>1h old)', () => {
@@ -388,6 +485,55 @@ describe('cah-stamp bin', () => {
       );
       const parsed = JSON.parse(stdout.trim());
       assert.ok(!parsed.systemMessage.includes('99.0.0'));
+    });
+
+    it('hashes untrusted update-marker session IDs and keeps marker cleanup bounded', () => {
+      const dir = isolatedDir();
+      const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
+      const updateCache = freshUpdateCache(dir, '99.0.0');
+      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const markerDir = join(hintHome, '.claude');
+      mkdirSync(markerDir, { recursive: true });
+      const oldTime = Date.now() / 1000 - 60 * 60;
+      for (let i = 0; i < 70; i++) {
+        const marker = join(markerDir, `cah-update-shown-${i.toString(16).padStart(64, '0')}`);
+        writeFileSync(marker, '');
+        utimesSync(marker, oldTime, oldTime);
+      }
+      const sessionId = `../escape/${'x'.repeat(400)}`;
+      const result = runStamp(
+        { session_id: sessionId, transcript_path: tp, hook_event_name: 'Stop' },
+        { CAH_UPDATE_CHECK_CACHE: updateCache, CAH_STAMP_HINT_HOME: hintHome },
+      );
+      assert.match(JSON.parse(result.stdout.trim()).systemMessage, /99\.0\.0/);
+      const markers = readdirSync(markerDir).filter((name) => name.startsWith('cah-update-shown-'));
+      assert.ok(markers.length <= 64);
+      assert.ok(markers.every((name) => /^cah-update-shown-[a-f0-9]{64}$/.test(name)));
+      assert.equal(existsSync(join(hintHome, 'escape')), false);
+    });
+
+    it('Stop delivers the notice after PostToolUse already deduped the same turn', () => {
+      const dir = isolatedDir();
+      const tp = join(dir, 'transcript.jsonl');
+      writeFileSync(tp, JSON.stringify({
+        type: 'assistant',
+        requestId: 'req-stop-after-tool',
+        message: { role: 'assistant', model: 'claude-opus-4-7', usage: { input_tokens: 1000 } },
+      }) + '\n');
+      const updateCache = freshUpdateCache(dir, '99.0.0');
+      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const throttle = join(dir, 'last-stamp.json');
+      const env = { CAH_UPDATE_CHECK_CACHE: updateCache, CAH_STAMP_HINT_HOME: hintHome, CAH_STAMP_THROTTLE_PATH: throttle };
+      const post = runStamp({ session_id: 'stop-after-tool', transcript_path: tp, hook_event_name: 'PostToolUse' }, env);
+      assert.ok(post.stdout.trim());
+      const claimPath = stampSidecarPath(throttle, 'stop-after-tool');
+      const priorClaim = readFileSync(claimPath, 'utf8');
+      const stop = runStamp({ session_id: 'stop-after-tool', transcript_path: tp, hook_event_name: 'Stop' }, env);
+      const message = JSON.parse(stop.stdout.trim()).systemMessage;
+      assert.match(message, /99\.0\.0/);
+      assert.doesNotMatch(message, /\d{2}:\d{2}:\d{2}/, 'notice-only output must not repeat timestamp');
+      assert.doesNotMatch(message, /Opus|\(1k\//, 'notice-only output must not repeat model/context stamp');
+      assert.equal(readFileSync(claimPath, 'utf8'), priorClaim, 'notice-only Stop must not alter stamp claim');
     });
 
     it('no newer version cached → no notice', () => {
