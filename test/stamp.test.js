@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync, utimesSync, mkdirSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -41,6 +41,21 @@ function runStamp(stdinData, env) {
     },
   });
   return { stdout: res.stdout, status: res.status, throttlePath: throttleOverride };
+}
+
+function runStampAsync(stdinData, env) {
+  const input = typeof stdinData === 'string' ? stdinData : JSON.stringify(stdinData);
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [BIN], {
+      env: { ...process.env, ...(env || {}) },
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+    let stdout = '';
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.on('close', (status) => resolve({ stdout, status }));
+    child.stdin.end(input);
+  });
 }
 
 function isolatedDir() {
@@ -285,6 +300,7 @@ describe('cah-stamp bin', () => {
     // session-partitioned sidecar.
     const sidecar = stampSidecarPath(throttle, 's');
     const state = JSON.parse(readFileSync(sidecar, 'utf8'));
+    assert.equal(state.deliveryState, 'delivered');
     state.lastStampedAt = Date.now() - 60_000;
     writeFileSync(sidecar, JSON.stringify(state));
     const second = runStamp(
@@ -309,16 +325,74 @@ describe('cah-stamp bin', () => {
       { CAH_STAMP_THROTTLE_PATH: throttle, CAH_STAMP_MIN_INTERVAL_MS: '1' },
     );
     assert.ok(first.stdout.trim().length > 0, 'first stamp should emit');
-    // Pretend MIN_INTERVAL elapsed, so only the requestId dedup can block this.
+    // Keep the delivered claim just inside its seven-day dedup window, far
+    // beyond the ordinary time throttle.
     const sidecar = stampSidecarPath(throttle, 's');
     const state = JSON.parse(readFileSync(sidecar, 'utf8'));
-    state.lastStampedAt = Date.now() - 60_000;
+    assert.equal(state.deliveryState, 'delivered');
+    state.lastStampedAt = Date.now() - 6 * 24 * 60 * 60 * 1000;
     writeFileSync(sidecar, JSON.stringify(state));
     const second = runStamp(
       { session_id: 's', transcript_path: tp },
       { CAH_STAMP_THROTTLE_PATH: throttle, CAH_STAMP_MIN_INTERVAL_MS: '1' },
     );
     assert.equal(second.stdout, '', 'second stamp for the same requestId must be suppressed');
+  });
+
+  it('fresh pending claim suppresses a concurrent retry', () => {
+    const dir = isolatedDir();
+    const tp = join(dir, 'transcript.jsonl');
+    writeFileSync(tp, JSON.stringify({
+      type: 'assistant',
+      requestId: 'req-pending',
+      message: { role: 'assistant', model: 'claude-opus-4-7', usage: { input_tokens: 46_000 } },
+    }) + '\n');
+    const throttle = join(dir, 'last-stamp.json');
+    writeFileSync(stampSidecarPath(throttle, 'pending-session'), JSON.stringify({
+      version: 2,
+      lastStampedAt: Date.now(),
+      lastStampedRequestId: 'req-pending',
+      lastStampedTranscript: null,
+      deliveryState: 'pending',
+    }));
+    const result = runStamp(
+      { session_id: 'pending-session', transcript_path: tp },
+      {
+        CAH_STAMP_THROTTLE_PATH: throttle,
+        CAH_STAMP_MIN_INTERVAL_MS: '1',
+        CAH_STAMP_PENDING_TTL_MS: '60000',
+      },
+    );
+    assert.equal(result.stdout, '');
+  });
+
+  it('stale pending claim retries delivery instead of suppressing for 7 days', () => {
+    const dir = isolatedDir();
+    const tp = join(dir, 'transcript.jsonl');
+    writeFileSync(tp, JSON.stringify({
+      type: 'assistant',
+      requestId: 'req-crashed',
+      message: { role: 'assistant', model: 'claude-opus-4-7', usage: { input_tokens: 46_000 } },
+    }) + '\n');
+    const throttle = join(dir, 'last-stamp.json');
+    const sidecar = stampSidecarPath(throttle, 'crashed-session');
+    writeFileSync(sidecar, JSON.stringify({
+      version: 2,
+      lastStampedAt: Date.now() - 1000,
+      lastStampedRequestId: 'req-crashed',
+      lastStampedTranscript: null,
+      deliveryState: 'pending',
+    }));
+    const result = runStamp(
+      { session_id: 'crashed-session', transcript_path: tp },
+      {
+        CAH_STAMP_THROTTLE_PATH: throttle,
+        CAH_STAMP_MIN_INTERVAL_MS: '60000',
+        CAH_STAMP_PENDING_TTL_MS: '100',
+      },
+    );
+    assert.ok(result.stdout.trim(), 'stale pending delivery must be retried');
+    assert.equal(JSON.parse(readFileSync(sidecar, 'utf8')).deliveryState, 'delivered');
   });
 
   it('per-message dedup: different requestId → new stamp emits (past throttle)', () => {
@@ -403,6 +477,43 @@ describe('cah-stamp bin', () => {
     assert.ok(stampSidecars(throttle).length <= 64);
     const state = JSON.parse(readFileSync(stampSidecarPath(throttle, sessionId), 'utf8'));
     assert.equal(state.lastStampedRequestId.length, 512);
+  });
+
+  it('24 concurrent same-session/request calls emit at most one stamp', async () => {
+    const dir = isolatedDir();
+    const tp = join(dir, 'transcript.jsonl');
+    writeFileSync(tp, JSON.stringify({
+      type: 'assistant',
+      requestId: 'parallel-request',
+      message: { role: 'assistant', model: 'claude-opus-4-7', usage: { input_tokens: 46_000 } },
+    }) + '\n');
+    const throttle = join(dir, 'last-stamp.json');
+    const env = {
+      CAH_STAMP_THROTTLE_PATH: throttle,
+      CAH_STAMP_MIN_INTERVAL_MS: '1',
+      CAH_RATE_LIMITS_CACHE: join(dir, 'missing-rate-limits.json'),
+      CAH_UPDATE_CHECK_CACHE: join(dir, 'missing-update-cache.json'),
+    };
+    const payload = { session_id: 'parallel-stamp', transcript_path: tp };
+    const results = await Promise.all(Array.from({ length: 24 }, () => runStampAsync(payload, env)));
+    assert.equal(results.filter((result) => result.stdout.trim()).length, 1);
+    assert.ok(results.every((result) => result.status === 0));
+  });
+
+  it('recovers an abandoned stale stamp lock', () => {
+    const dir = isolatedDir();
+    const tp = writeTranscript(dir, 'claude-opus-4-7', 46_000);
+    const throttle = join(dir, 'last-stamp.json');
+    const lock = `${stampSidecarPath(throttle, 'stale-lock-session')}.lock`;
+    writeFileSync(lock, '');
+    const old = Date.now() / 1000 - 60 * 60;
+    utimesSync(lock, old, old);
+    const result = runStamp(
+      { session_id: 'stale-lock-session', transcript_path: tp },
+      { CAH_STAMP_THROTTLE_PATH: throttle },
+    );
+    assert.ok(result.stdout.trim());
+    assert.equal(existsSync(lock), false);
   });
 
   it('honors a valid hook-envelope context window over model fallback', () => {
@@ -547,6 +658,25 @@ describe('cah-stamp bin', () => {
       );
       const parsed = JSON.parse(stdout.trim());
       assert.ok(!parsed.systemMessage.includes('🔵'));
+    });
+
+    it('24 concurrent Stop calls emit at most one update notice', async () => {
+      const dir = isolatedDir();
+      const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
+      const updateCache = freshUpdateCache(dir, '99.0.0');
+      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const throttle = join(dir, 'last-stamp.json');
+      const env = {
+        CAH_UPDATE_CHECK_CACHE: updateCache,
+        CAH_STAMP_HINT_HOME: hintHome,
+        CAH_STAMP_THROTTLE_PATH: throttle,
+        CAH_STAMP_MIN_INTERVAL_MS: '1',
+        CAH_RATE_LIMITS_CACHE: join(dir, 'missing-rate-limits.json'),
+      };
+      const payload = { session_id: 'parallel-update', transcript_path: tp, hook_event_name: 'Stop' };
+      const results = await Promise.all(Array.from({ length: 24 }, () => runStampAsync(payload, env)));
+      assert.equal(results.filter((result) => result.stdout.includes('99.0.0')).length, 1);
+      assert.ok(results.every((result) => result.status === 0));
     });
   });
 });

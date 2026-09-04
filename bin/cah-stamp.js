@@ -9,7 +9,7 @@
 // It is deliberately fail-silent: any error, missing input, or filesystem
 // hiccup results in `exit 0` with no stdout, so it can never break the session.
 
-import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync, readdirSync, statSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, writeSync, mkdirSync, renameSync, openSync, closeSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -44,6 +44,9 @@ const MAX_REQUEST_ID_LENGTH = 512;
 const FALLBACK_SESSION_KEY = '__no_session__';
 const STAMP_STATE_PREFIX = '.session-';
 const STAMP_STATE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+// Request claims are bounded too: a process killed after persisting its
+// state cannot suppress a future retry forever. Anonymous turns use a short
+// fingerprint claim only to cover the handoff between concurrent hooks.
 let stampWriteCounter = 0;
 
 // Shared with cah-status: whichever bin runs first populates this cache, so
@@ -58,6 +61,15 @@ const UPDATE_CHECK_CACHE =
 const UPDATE_MARKER_PREFIX = 'cah-update-shown-';
 const UPDATE_MARKER_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const UPDATE_MARKER_MAX_SESSIONS = 64;
+const UPDATE_MARKER_NAME_RE = /^cah-update-shown-[a-f0-9]{64}$/;
+const STAMP_LOCK_TTL_MS = positiveEnvMs('CAH_STAMP_LOCK_TTL_MS', 30_000);
+const STAMP_PENDING_TTL_MS = positiveEnvMs('CAH_STAMP_PENDING_TTL_MS', 30_000);
+const ANONYMOUS_CLAIM_TTL_MS = 1000;
+
+function positiveEnvMs(name, fallback) {
+  const value = Number.parseInt(process.env[name] || '', 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
 
 function pruneStaleMarkers(markerDir, nowMs) {
   let entries;
@@ -68,7 +80,7 @@ function pruneStaleMarkers(markerDir, nowMs) {
   }
   const candidates = [];
   for (const name of entries) {
-    if (!name.startsWith(UPDATE_MARKER_PREFIX)) continue;
+    if (!UPDATE_MARKER_NAME_RE.test(name)) continue;
     const p = join(markerDir, name);
     try {
       const stat = statSync(p);
@@ -92,6 +104,30 @@ function sessionHash(sessionId) {
   return createHash('sha256').update(identity, 'utf8').digest('hex');
 }
 
+function claimUpdateMarker(markerDir, sessionId, nowMs) {
+  const marker = join(markerDir, `${UPDATE_MARKER_PREFIX}${sessionHash(sessionId)}`);
+  try {
+    mkdirSync(markerDir, { recursive: true });
+    const fd = openSync(marker, 'wx');
+    closeSync(fd);
+    return true;
+  } catch (error) {
+    if (error && error.code === 'EEXIST') {
+      try {
+        if (nowMs - statSync(marker).mtimeMs > UPDATE_MARKER_TTL_MS) {
+          unlinkSync(marker);
+          const fd = openSync(marker, 'wx');
+          closeSync(fd);
+          return true;
+        }
+      } catch {
+        // Another process may have claimed/reaped it. Fail silent.
+      }
+    }
+    return false;
+  }
+}
+
 // Builds the one-shot "new version available" notice, or '' if none is due:
 // only on a real Stop event (never PostToolUse, which fires per tool call),
 // only once per session, and only when the cached registry check found a
@@ -103,9 +139,7 @@ function buildUpdateNotice(payload, nowMs) {
 
   const home = process.env.CAH_STAMP_HINT_HOME || homedir();
   const markerDir = join(home, '.claude');
-  const marker = join(markerDir, `${UPDATE_MARKER_PREFIX}${sessionHash(sessionId)}`);
   pruneStaleMarkers(markerDir, nowMs);
-  if (existsSync(marker)) return '';
 
   let latest = null;
   try {
@@ -116,8 +150,7 @@ function buildUpdateNotice(payload, nowMs) {
   if (!isNewerVersion(CURRENT_VERSION, latest)) return '';
 
   try {
-    mkdirSync(markerDir, { recursive: true });
-    writeFileSync(marker, '');
+    if (!claimUpdateMarker(markerDir, sessionId, nowMs)) return '';
     pruneStaleMarkers(markerDir, nowMs);
   } catch {
     // best-effort — worst case the notice repeats next turn
@@ -139,12 +172,18 @@ function sessionStatePath(path, sessionId) {
 }
 
 function stampRecord(value) {
-  if (!value || typeof value !== 'object') return { ts: null, requestId: null };
+  if (!value || typeof value !== 'object') {
+    return { ts: null, requestId: null, fingerprint: null, deliveryState: 'delivered' };
+  }
   return {
     ts: typeof value.lastStampedAt === 'number' ? value.lastStampedAt : null,
     requestId: typeof value.lastStampedRequestId === 'string'
       ? value.lastStampedRequestId.slice(0, MAX_REQUEST_ID_LENGTH)
       : null,
+    fingerprint: typeof value.lastStampedTranscript === 'string'
+      ? value.lastStampedTranscript.slice(0, MAX_REQUEST_ID_LENGTH)
+      : null,
+    deliveryState: value.deliveryState === 'pending' ? 'pending' : 'delivered',
   };
 }
 
@@ -164,7 +203,7 @@ function readLastStamp(path, sessionId) {
     // Compatibility fallback for the pre-session-partition flat state.
     return stampRecord(obj);
   } catch {
-    return { ts: null, requestId: null };
+    return { ts: null, requestId: null, fingerprint: null, deliveryState: 'delivered' };
   }
 }
 
@@ -197,7 +236,7 @@ function pruneStampSidecars(path, nowMs) {
   }
 }
 
-function writeLastStamp(path, sessionId, ts, requestId) {
+function writeLastStamp(path, sessionId, ts, requestId, fingerprint, deliveryState) {
   const sidecar = sessionStatePath(path, sessionId);
   let tmp = null;
   try {
@@ -207,21 +246,70 @@ function writeLastStamp(path, sessionId, ts, requestId) {
     writeFileSync(
       tmp,
       JSON.stringify({
-        version: 1,
+        version: 2,
         lastStampedAt: ts,
         lastStampedRequestId: typeof requestId === 'string'
           ? requestId.slice(0, MAX_REQUEST_ID_LENGTH)
           : null,
+        lastStampedTranscript: typeof fingerprint === 'string'
+          ? fingerprint.slice(0, MAX_REQUEST_ID_LENGTH)
+          : null,
+        deliveryState: deliveryState === 'pending' ? 'pending' : 'delivered',
       }) + '\n',
     );
     renameSync(tmp, sidecar);
     tmp = null;
     pruneStampSidecars(path, ts);
+    return true;
   } catch {
     if (tmp) {
       try { unlinkSync(tmp); } catch { /* best effort */ }
     }
     // fail-silent — throttling is best-effort
+    return false;
+  }
+}
+
+function stampLockPath(path, sessionId) {
+  return `${sessionStatePath(path, sessionId)}.lock`;
+}
+
+function acquireStampLock(path, sessionId, nowMs) {
+  const lockPath = stampLockPath(path, sessionId);
+  try { mkdirSync(dirname(lockPath), { recursive: true }); } catch { return null; }
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = openSync(lockPath, 'wx');
+      closeSync(fd);
+      return lockPath;
+    } catch (error) {
+      if (!error || error.code !== 'EEXIST') return null;
+      try {
+        if (nowMs - statSync(lockPath).mtimeMs > STAMP_LOCK_TTL_MS) {
+          unlinkSync(lockPath);
+          continue;
+        }
+      } catch {
+        // The owner may be releasing the lock. A later hook can retry.
+      }
+      return null;
+    }
+  }
+  return null;
+}
+
+function releaseStampLock(lockPath) {
+  if (!lockPath) return;
+  try { unlinkSync(lockPath); } catch { /* best effort */ }
+}
+
+function transcriptFingerprint(path) {
+  try {
+    const stat = statSync(path);
+    return `${stat.size}:${stat.mtimeMs}`;
+  } catch {
+    return null;
   }
 }
 
@@ -254,6 +342,10 @@ function main() {
   // A Stop can be the second hook for a turn already stamped by PostToolUse;
   // in that case the notice must be delivered without replaying the stamp.
   const nowMs = Date.now();
+  const lockPath = acquireStampLock(STAMP_THROTTLE_PATH, payload.session_id, nowMs);
+  if (!lockPath) return;
+  try {
+  const fingerprint = transcriptFingerprint(transcriptPath);
   let updateNotice = '';
   try {
     updateNotice = buildUpdateNotice(payload, nowMs);
@@ -261,7 +353,13 @@ function main() {
     // fail-silent — the stamp itself must still ship without the notice
   }
   const last = readLastStamp(STAMP_THROTTLE_PATH, payload.session_id);
-  const timeSuppressed = last.ts !== null && nowMs - last.ts < STAMP_MIN_INTERVAL_MS;
+  const lastAgeMs = last.ts !== null && nowMs >= last.ts ? nowMs - last.ts : null;
+  const pendingFresh = last.deliveryState === 'pending'
+    && lastAgeMs !== null
+    && lastAgeMs <= STAMP_PENDING_TTL_MS;
+  const timeSuppressed = last.deliveryState === 'delivered'
+    && lastAgeMs !== null
+    && lastAgeMs < STAMP_MIN_INTERVAL_MS;
 
   // HH:MM:SS so cadence bugs (e.g. throttle not honoured, dual-hook spam)
   // are diagnosable from the chat scrollback alone.
@@ -284,8 +382,22 @@ function main() {
   // Per-message dedup: every assistant entry of the same turn shares the same
   // requestId (text + each tool_use block). If either this or the time guard
   // suppresses the stamp, a due update notice is the only allowed output.
-  const requestSuppressed = requestId !== null && requestId === last.requestId;
-  if (timeSuppressed || requestSuppressed) {
+  const requestSuppressed = requestId !== null
+    && requestId === last.requestId
+    && lastAgeMs !== null
+    && (pendingFresh || (
+      last.deliveryState === 'delivered'
+      && lastAgeMs <= STAMP_STATE_TTL_MS
+    ));
+  const anonymousTurnSuppressed = requestId === null
+    && fingerprint !== null
+    && fingerprint === last.fingerprint
+    && lastAgeMs !== null
+    && (pendingFresh || (
+      last.deliveryState === 'delivered'
+      && lastAgeMs <= ANONYMOUS_CLAIM_TTL_MS
+    ));
+  if (timeSuppressed || requestSuppressed || anonymousTurnSuppressed) {
     if (updateNotice) {
       process.stdout.write(JSON.stringify({ continue: true, systemMessage: updateNotice }) + '\n');
     }
@@ -342,10 +454,29 @@ function main() {
     sevenDay,
     bars: false, // chat audit trail stays compact — bars belong on the statusLine
   });
-  writeLastStamp(STAMP_THROTTLE_PATH, payload.session_id, nowMs, requestId);
-
   const out = JSON.stringify({ continue: true, systemMessage: line + updateNotice });
-  process.stdout.write(out + '\n');
+  if (!writeLastStamp(
+    STAMP_THROTTLE_PATH,
+    payload.session_id,
+    nowMs,
+    requestId,
+    fingerprint,
+    'pending',
+  )) return;
+  // Mark delivered only after the small hook response reaches stdout
+  // synchronously. A write failure leaves the short-lived pending claim.
+  writeSync(1, out + '\n');
+  writeLastStamp(
+    STAMP_THROTTLE_PATH,
+    payload.session_id,
+    nowMs,
+    requestId,
+    fingerprint,
+    'delivered',
+  );
+  } finally {
+    releaseStampLock(lockPath);
+  }
 }
 
 try {

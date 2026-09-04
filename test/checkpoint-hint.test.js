@@ -1,10 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, existsSync, mkdirSync, utimesSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync, existsSync, mkdirSync, utimesSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BIN = join(__dirname, '..', 'bin', 'cah-checkpoint-hint.js');
@@ -18,6 +19,20 @@ function runHint(stdin, home) {
     env: { ...process.env, CAH_HINT_HOME: home },
   });
   return { stdout: res.stdout, status: res.status };
+}
+
+function runHintAsync(stdin, home, extraEnv = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [BIN], {
+      env: { ...process.env, CAH_HINT_HOME: home, ...extraEnv },
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+    let stdout = '';
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.on('close', (status) => resolve({ stdout, status }));
+    child.stdin.end(stdin);
+  });
 }
 
 function isolatedHome() {
@@ -43,7 +58,8 @@ function writeTranscript(home, model, usedTokens) {
 }
 
 function markerExists(home, sessionId) {
-  return existsSync(join(home, '.claude', `cah-hint-shown-${sessionId}`));
+  const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+  return existsSync(join(home, '.claude', `cah-hint-shown-${hash}`));
 }
 
 const EXPECTED =
@@ -79,7 +95,8 @@ describe('cah-checkpoint-hint bin', () => {
     const sessionId = 'dup-session';
     // Pre-create the marker.
     mkdirSync(join(home, '.claude'), { recursive: true });
-    writeFileSync(join(home, '.claude', `cah-hint-shown-${sessionId}`), '');
+    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    writeFileSync(join(home, '.claude', `cah-hint-shown-${hash}`), '');
     const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
     const { stdout, status } = runHint(
       JSON.stringify({ session_id: sessionId, transcript_path: tp }),
@@ -94,12 +111,12 @@ describe('cah-checkpoint-hint bin', () => {
     const claudeDir = join(home, '.claude');
     mkdirSync(claudeDir, { recursive: true });
 
-    const stale = join(claudeDir, 'cah-hint-shown-old');
+    const stale = join(claudeDir, `cah-hint-shown-${'a'.repeat(64)}`);
     writeFileSync(stale, '');
     const old = Date.now() / 1000 - 30 * 24 * 60 * 60; // ~30 days ago
     utimesSync(stale, old, old);
 
-    const fresh = join(claudeDir, 'cah-hint-shown-recent');
+    const fresh = join(claudeDir, `cah-hint-shown-${'b'.repeat(64)}`);
     writeFileSync(fresh, '');
 
     const tp = writeTranscript(home, 'claude-opus-4-8', 10_000); // below threshold
@@ -196,5 +213,30 @@ describe('cah-checkpoint-hint bin', () => {
       home,
     );
     assert.equal(stdout, EXPECTED);
+  });
+
+  it('hashes traversal-shaped session IDs into a fixed marker filename', () => {
+    const home = isolatedHome();
+    const sessionId = `../escape/${'x'.repeat(400)}`;
+    const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+    const result = runHint(JSON.stringify({ session_id: sessionId, transcript_path: tp }), home);
+    assert.equal(result.stdout, EXPECTED);
+    const names = readdirSync(join(home, '.claude'));
+    assert.deepEqual(names.filter((name) => name.startsWith('cah-hint-shown-')), [
+      `cah-hint-shown-${createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex')}`,
+    ]);
+    assert.equal(existsSync(join(home, 'escape')), false);
+  });
+
+  it('24 concurrent claims emit at most one hint', async () => {
+    const home = isolatedHome();
+    const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+    const input = JSON.stringify({ session_id: 'parallel-hint', transcript_path: tp });
+    const results = await Promise.all(Array.from({ length: 24 }, () =>
+      runHintAsync(input, home, {
+        CAH_RATE_LIMITS_CACHE: join(home, 'missing-rate-limits.json'),
+      })));
+    assert.equal(results.filter((result) => result.stdout === EXPECTED).length, 1);
+    assert.ok(results.every((result) => result.status === 0));
   });
 });

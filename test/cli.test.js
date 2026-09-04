@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, existsSync, readFileSync, rmSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, existsSync, readFileSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -234,6 +235,49 @@ describe('run', () => {
     // End-to-end sanity: dispatch is wired and the command exits cleanly.
     const dir = mkdtempSync(join(tmpdir(), 'cah-reinstall-'));
     assert.equal(run(['reinstall', '--cwd', dir, '--only', 'commands']), 0);
+  });
+});
+
+describe('Windows wrappers', () => {
+  const wrappers = [
+    ['install.bat', 'install'],
+    ['reinstall.bat', 'reinstall'],
+    ['uninstall.bat', 'uninstall'],
+  ];
+
+  it('use the package entry point without changing caller cwd and preserve %errorlevel%', () => {
+    for (const [file, subcommand] of wrappers) {
+      const body = readFileSync(fileURLToPath(new URL(`../${file}`, import.meta.url)), 'utf8');
+      assert.doesNotMatch(body, /^\s*cd(?:\s|\/)/im, `${file} must not change cwd`);
+      assert.ok(body.includes(`node "%~dp0bin\\cah.js" ${subcommand} %*`), `${file} must use absolute entry point`);
+      assert.match(body, /exit \/b %errorlevel%/i, `${file} must preserve exit code`);
+    }
+  });
+
+  it('executes install in the caller cwd on Windows', { skip: process.platform !== 'win32' }, () => {
+    const caller = mkdtempSync(join(tmpdir(), 'cah-wrapper-cwd-'));
+    try {
+      mkdirSync(join(caller, '.claude'));
+      const wrapper = fileURLToPath(new URL('../install.bat', import.meta.url));
+      const result = spawnSync(wrapper, ['--local', '--only', 'commands'], {
+        cwd: caller,
+        encoding: 'utf8',
+        shell: true,
+      });
+      assert.equal(result.error, undefined, result.error?.message);
+      assert.equal(result.status, 0, result.stderr);
+      assert.ok(existsSync(join(caller, '.claude', 'commands', 'oh.md')),
+        'wrapper must install into caller .claude');
+
+      const failed = spawnSync(wrapper, ['--not-a-real-option'], {
+        cwd: caller,
+        encoding: 'utf8',
+        shell: true,
+      });
+      assert.equal(failed.status, 2, failed.stderr);
+    } finally {
+      rmSync(caller, { recursive: true, force: true });
+    }
   });
 });
 
@@ -612,6 +656,59 @@ describe('reinstall --templates', () => {
       const existing = join(dir, '.claude', 'skills', 'clock', 'SKILL.md');
       assert.equal(run(['reinstall', '--cwd', dir, '--only', 'clock', '--templates', templates]), 1);
       assert.ok(existsSync(existing), 'missing template tree must not uninstall existing files');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(templates, { recursive: true, force: true });
+    }
+  });
+
+  it('install rejects a custom tree without an exact root SKILL.md', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-custom-install-'));
+    const templates = mkdtempSync(join(tmpdir(), 'cah-malformed-install-'));
+    try {
+      assert.equal(run(['install', '--cwd', dir, '--only', 'babysit']), 0);
+      const existing = join(dir, '.claude', 'skills', 'babysit', 'SKILL.md');
+      const before = readFileSync(existing, 'utf8');
+
+      const skillRoot = join(templates, 'skills', 'babysit');
+      mkdirSync(join(skillRoot, 'foo'), { recursive: true });
+      writeFileSync(join(skillRoot, 'skill.md'), '# lowercase only\n');
+      writeFileSync(join(skillRoot, 'foo', 'SKILL.md'), '# nested only\n');
+
+      let rc;
+      const error = captureStderr(() => { rc = run([
+        'install', '--cwd', dir, '--only', 'babysit', '--templates', templates,
+      ]); });
+      assert.equal(rc, 1);
+      assert.match(error, /exactly one root SKILL\.md/);
+      assert.equal(readFileSync(existing, 'utf8'), before);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(templates, { recursive: true, force: true });
+    }
+  });
+
+  it('reinstall rejects a malformed custom tree before uninstall', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-custom-reinstall-'));
+    const templates = mkdtempSync(join(tmpdir(), 'cah-malformed-reinstall-'));
+    try {
+      assert.equal(run(['install', '--cwd', dir, '--only', 'babysit']), 0);
+      const existing = join(dir, '.claude', 'skills', 'babysit', 'SKILL.md');
+      const before = readFileSync(existing, 'utf8');
+
+      const skillRoot = join(templates, 'skills', 'babysit');
+      mkdirSync(join(skillRoot, 'foo'), { recursive: true });
+      writeFileSync(join(skillRoot, 'skill.md'), '# lowercase only\n');
+      writeFileSync(join(skillRoot, 'foo', 'SKILL.md'), '# nested only\n');
+
+      let rc;
+      const error = captureStderr(() => { rc = run([
+        'reinstall', '--cwd', dir, '--only', 'babysit', '--templates', templates,
+      ]); });
+      assert.equal(rc, 1);
+      assert.match(error, /exactly one root SKILL\.md/);
+      assert.equal(readFileSync(existing, 'utf8'), before,
+        'malformed reinstall must leave managed content installed');
     } finally {
       rmSync(dir, { recursive: true, force: true });
       rmSync(templates, { recursive: true, force: true });

@@ -1,3 +1,3 @@
 @echo off
-cd /d "%~dp0"
-node bin\cah.js reinstall %*
+node "%~dp0bin\cah.js" reinstall %*
+exit /b %errorlevel%

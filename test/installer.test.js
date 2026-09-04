@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, mkdtempSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -727,6 +727,63 @@ describe('writeSkills', () => {
       AllSkills.length = 0;
       AllSkills.push(...origSkills);
     }
+  });
+
+  it('rejects duplicate relPaths before writing any skill files', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const name = AllSkills[0];
+    const tpl = {
+      skillTree: () => [
+        { relPath: SKILL_MANIFEST_LEAF, bytes: Buffer.from('# first\n') },
+        { relPath: SKILL_MANIFEST_LEAF, bytes: Buffer.from('# duplicate\n') },
+      ],
+    };
+
+    assert.throws(
+      () => writeSkills(tpl, scope, { subset: [name] }),
+      /duplicate template relPath SKILL\.md/,
+    );
+    assert.ok(!existsSync(join(dir, '.claude', 'skills', name, SKILL_MANIFEST_LEAF)));
+  });
+
+  it('accepts a valid multi-file skill tree with an exact root manifest', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const name = AllSkills[0];
+    const tplRoot = tmpDir();
+    const skillRoot = join(tplRoot, 'skills', name);
+    mkdirSync(join(skillRoot, 'assets'), { recursive: true });
+    writeFileSync(join(skillRoot, SKILL_MANIFEST_LEAF), '# multi-file skill\n');
+    writeFileSync(join(skillRoot, 'assets', 'guide.txt'), 'companion data\n');
+
+    const { written, skipped } = writeSkills(
+      diskTemplates(tplRoot), scope, { subset: [name] },
+    );
+    assert.equal(written, 1);
+    assert.deepEqual(skipped, []);
+    assert.ok(readFileSync(join(dir, '.claude', 'skills', name, SKILL_MANIFEST_LEAF), 'utf8')
+      .includes(SentinelSkill));
+    assert.equal(
+      readFileSync(join(dir, '.claude', 'skills', name, 'assets', 'guide.txt'), 'utf8'),
+      'companion data\n',
+    );
+  });
+
+  it('rejects lowercase or nested manifest paths even when they are the only manifests', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const name = AllSkills[0];
+    for (const files of [
+      [{ relPath: 'skill.md', bytes: Buffer.from('lowercase\n') }],
+      [{ relPath: 'foo/SKILL.md', bytes: Buffer.from('nested\n') }],
+    ]) {
+      assert.throws(
+        () => writeSkills({ skillTree: () => files }, scope, { subset: [name] }),
+        /exactly one root SKILL\.md/,
+      );
+    }
+    assert.ok(!existsSync(join(dir, '.claude', 'skills', name, SKILL_MANIFEST_LEAF)));
   });
 });
 

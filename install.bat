@@ -1,3 +1,3 @@
 @echo off
-cd /d "%~dp0"
-node bin\cah.js install %*
+node "%~dp0bin\cah.js" install %*
+exit /b %errorlevel%
