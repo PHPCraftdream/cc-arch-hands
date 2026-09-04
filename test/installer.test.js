@@ -1,28 +1,85 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, mkdtempSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { spawnSync } from 'node:child_process';
 
 import {
-  SentinelModelCommand, SentinelModelAgent, SentinelCodexAgent, SentinelSkill, SentinelAgentTree,
+  SentinelModelCommand, SentinelModelAgent, SentinelCodexAgent, SentinelSkill,
   LegacyModelCommand, LegacyModelAgent,
-  SetForModelCommand, SetForModelAgent, SetForCodexAgent, SetForSkill, SetForAgentTree,
+  SetForModelCommand, SetForModelAgent, SetForCodexAgent, SetForSkill,
   Ownership, classifyContent,
 } from '../lib/sentinel.js';
-import { AllModelCommands, AllCodexAgents, AllSkills, AllAgentTreeSkills } from '../lib/manifest.js';
+import { AllModelCommands, AllCodexAgents, AllSkills } from '../lib/manifest.js';
 import { Scope, StrictMissingRootError, SKILL_MANIFEST_LEAF } from '../lib/scope.js';
 import { writeModelCommands, removeModelCommands } from '../lib/commands.js';
 import { writeModelAgents, removeModelAgents } from '../lib/agents.js';
 import { writeCodexAgents, removeCodexAgents } from '../lib/codex-agents.js';
 import { writeSkills, removeSkills } from '../lib/skills.js';
-import { writeAgentTree, removeAgentTree } from '../lib/agent-tree.js';
 import { embeddedTemplates, diskTemplates } from '../lib/templates.js';
+
+const FABLE_ORACLE = [
+  ['fl', 'claude-fable-5-1', 'low'],
+  ['fm', 'claude-fable-5-1', 'medium'],
+  ['fh', 'claude-fable-5-1', 'high'],
+  ['fx', 'claude-fable-5-1', 'xhigh'],
+  ['fxx', 'claude-fable-5-1', 'max'],
+  ['f1l', 'claude-fable-5', 'low'],
+  ['f1m', 'claude-fable-5', 'medium'],
+  ['f1h', 'claude-fable-5', 'high'],
+  ['f1x', 'claude-fable-5', 'xhigh'],
+  ['f1xx', 'claude-fable-5', 'max'],
+];
 
 function tmpDir() {
   return mkdtempSync(join(tmpdir(), 'cah-test-'));
 }
+
+// ---------------------------------------------------------------------------
+// Fable model contract (fixed oracle, independent of manifest values)
+// ---------------------------------------------------------------------------
+
+describe('Fable model contract', () => {
+  it('keeps all ten aliases pinned to their literal model and effort', () => {
+    for (const [name, model, effort] of FABLE_ORACLE) {
+      const matches = AllModelCommands.filter((entry) => entry.name === name);
+      assert.equal(matches.length, 1, `${name} must occur exactly once in the model registry`);
+      const [actual] = matches;
+      assert.deepEqual(
+        { model: actual.model, effort: actual.effort },
+        { model, effort },
+        `${name} mapping drifted`,
+      );
+    }
+  });
+
+  it('renders fixed command and agent frontmatter for top and previous Fable', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    writeModelCommands(null, scope);
+    writeModelAgents(null, scope);
+
+    for (const [name, model, effort] of [
+      ['fh', 'claude-fable-5-1', 'high'],
+      ['f1h', 'claude-fable-5', 'high'],
+    ]) {
+      const command = readFileSync(join(dir, '.claude', 'commands', `${name}.md`), 'utf8');
+      assert.ok(command.startsWith([
+        '---',
+        `description: ${model} effort=${effort}`,
+        `model: ${model}`,
+        `effort: ${effort}`,
+        '---',
+        '',
+      ].join('\n')), `${name} command frontmatter drifted`);
+
+      const agent = readFileSync(join(dir, '.claude', 'agents', `${name}.md`), 'utf8');
+      assert.match(agent, new RegExp(`^---\\nname: ${name}\\ndescription: ${model} effort=${effort} \\(`));
+      assert.ok(agent.includes(`\nmodel: ${model}\n---\n`), `${name} agent model frontmatter drifted`);
+      assert.ok(agent.includes(`reasoning effort: ${effort}.`), `${name} agent effort drifted`);
+    }
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Ownership classification
@@ -546,6 +603,32 @@ describe('writeSkills', () => {
     assert.equal(readFileSync(join(orphanForeignDir, SKILL_MANIFEST_LEAF), 'utf8'), 'not ours');
   });
 
+  it('preserves legacy agent-tree skills for migration by the standalone package', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const skillsDir = join(dir, '.claude', 'skills');
+    const legacySentinel = '<!-- cah-agent-tree:v1 -->';
+
+    for (const name of ['agent', 'agent-new']) {
+      const legacyDir = join(skillsDir, name);
+      mkdirSync(legacyDir, { recursive: true });
+      writeFileSync(join(legacyDir, SKILL_MANIFEST_LEAF), `# ${name}\n${legacySentinel}\n`);
+      writeFileSync(join(legacyDir, 'legacy-asset.txt'), `${name} data\n`);
+    }
+
+    const { pruned } = writeSkills(embeddedTemplates(), scope);
+    assert.equal(pruned, 0, 'legacy agent-tree dirs belong to the standalone package');
+
+    for (const name of ['agent', 'agent-new']) {
+      const legacyDir = join(skillsDir, name);
+      assert.equal(
+        readFileSync(join(legacyDir, SKILL_MANIFEST_LEAF), 'utf8'),
+        `# ${name}\n${legacySentinel}\n`,
+      );
+      assert.equal(readFileSync(join(legacyDir, 'legacy-asset.txt'), 'utf8'), `${name} data\n`);
+    }
+  });
+
   it('source SKILL.md already stamped is copied verbatim', () => {
     const dir = tmpDir();
     const scope = new Scope({ cwd: dir });
@@ -751,172 +834,5 @@ describe('strict scope', () => {
     const desc = new Scope({ strict: true, cwd: '/tmp/x' }).describe();
     assert.ok(desc.includes('local-strict'));
     assert.ok(desc.includes('/tmp/x'));
-  });
-});
-
-// ---------------------------------------------------------------------------
-// writeAgentTree / removeAgentTree (opt-in skills, own sentinel, own registry)
-// ---------------------------------------------------------------------------
-
-describe('writeAgentTree', () => {
-  it('embedded smoke install', () => {
-    const dir = tmpDir();
-    const scope = new Scope({ cwd: dir });
-    const tpl = embeddedTemplates();
-
-    const { written, skipped } = writeAgentTree(tpl, scope);
-    assert.equal(written, AllAgentTreeSkills.length);
-    assert.deepEqual(skipped, []);
-
-    for (const name of AllAgentTreeSkills) {
-      const data = readFileSync(join(dir, '.claude', 'skills', name, SKILL_MANIFEST_LEAF), 'utf8');
-      assert.ok(data.includes(SentinelAgentTree));
-      // never carries the regular skill sentinel — that's what keeps it
-      // invisible to writeSkills'/removeSkills' AllSkills-scoped pruning.
-      assert.ok(!data.includes(SentinelSkill));
-    }
-  });
-
-  it('copies nested asset files (agent-new ships a JS engine + backend)', () => {
-    const dir = tmpDir();
-    const scope = new Scope({ cwd: dir });
-    writeAgentTree(embeddedTemplates(), scope);
-
-    const assetsRoot = join(dir, '.claude', 'skills', 'agent-new', 'assets');
-    assert.ok(readFileSync(join(assetsRoot, 'agent-tree.js'), 'utf8').length > 0);
-    assert.ok(readFileSync(join(assetsRoot, 'backends', 'claude.js'), 'utf8').length > 0);
-
-    // agent-tree.js was split into these 12 modules under assets/lib/ — the
-    // skill-tree walker must recurse into that subdirectory too, or the
-    // installed agent-tree.js ships with imports pointing at nothing.
-    const AGENT_TREE_LIB_FILES = [
-      'state.js', 'locks-core.js', 'locks-display.js', 'meta.js', 'journal.js',
-      'git.js', 'tasks.js', 'backend-call.js', 'wake.js', 'birth.js',
-      'session-lifecycle.js', 'display.js',
-    ];
-    for (const f of AGENT_TREE_LIB_FILES) {
-      assert.ok(readFileSync(join(assetsRoot, 'lib', f), 'utf8').length > 0, `missing installed assets/lib/${f}`);
-    }
-  });
-
-  it('installed engine boots against a fresh sandbox with no import errors (smoke)', () => {
-    const dir = tmpDir();
-    const scope = new Scope({ cwd: dir });
-    writeAgentTree(embeddedTemplates(), scope);
-
-    const assetsRoot = join(dir, '.claude', 'skills', 'agent-new', 'assets');
-    const engine = join(assetsRoot, 'agent-tree.js');
-    // A read-only command against an empty tree never touches the backend,
-    // but Node still statically resolves agent-tree.js's whole ESM import
-    // graph before running any command logic — which transitively reaches
-    // all 12 assets/lib/ modules. So this catches ANY missing/broken
-    // import in the INSTALLED copy, not just a missing state.js.
-    const result = spawnSync(process.execPath, [
-      engine, 'tree', '--agents-root', join(dir, 'sandbox-agents-root'),
-    ], { encoding: 'utf8', cwd: dir, windowsHide: true });
-
-    assert.equal(result.status, 0, `installed engine failed: ${result.stderr}`);
-    assert.match(result.stdout, /no agents yet/);
-  });
-
-  it('re-run is idempotent and does not double-stamp', () => {
-    const dir = tmpDir();
-    const scope = new Scope({ cwd: dir });
-    const tpl = embeddedTemplates();
-
-    writeAgentTree(tpl, scope);
-    const { written, skipped } = writeAgentTree(tpl, scope);
-    assert.equal(written, AllAgentTreeSkills.length);
-    assert.deepEqual(skipped, []);
-
-    for (const name of AllAgentTreeSkills) {
-      const data = readFileSync(join(dir, '.claude', 'skills', name, SKILL_MANIFEST_LEAF), 'utf8');
-      const count = data.split(SentinelAgentTree).length - 1;
-      assert.equal(count, 1, `sentinel must appear exactly once, got ${count}`);
-    }
-  });
-
-  it('foreign skill dir is skipped', () => {
-    const dir = tmpDir();
-    const scope = new Scope({ cwd: dir });
-    const tpl = embeddedTemplates();
-
-    const destSkill = join(dir, '.claude', 'skills', 'agent');
-    mkdirSync(destSkill, { recursive: true });
-    const foreignBody = 'someone else owns this skill';
-    writeFileSync(join(destSkill, SKILL_MANIFEST_LEAF), foreignBody);
-
-    const { written, skipped } = writeAgentTree(tpl, scope);
-    assert.equal(written, AllAgentTreeSkills.length - 1);
-    assert.deepEqual(skipped, ['agent']);
-    assert.equal(readFileSync(join(destSkill, SKILL_MANIFEST_LEAF), 'utf8'), foreignBody);
-  });
-
-  it('a regular writeSkills pass never touches agent-tree directories (different sentinel)', () => {
-    const dir = tmpDir();
-    const scope = new Scope({ cwd: dir });
-    const tpl = embeddedTemplates();
-
-    writeAgentTree(tpl, scope);
-    writeSkills(tpl, scope); // full AllSkills sweep, including its own orphan-pruning
-
-    for (const name of AllAgentTreeSkills) {
-      const data = readFileSync(join(dir, '.claude', 'skills', name, SKILL_MANIFEST_LEAF), 'utf8');
-      assert.ok(data.includes(SentinelAgentTree), `${name} must survive a plain writeSkills pass`);
-    }
-  });
-});
-
-describe('removeAgentTree', () => {
-  it('mine removed', () => {
-    const dir = tmpDir();
-    const scope = new Scope({ cwd: dir });
-    const tpl = embeddedTemplates();
-    writeAgentTree(tpl, scope);
-
-    const { removed, skipped } = removeAgentTree(tpl, scope);
-    assert.equal(removed, AllAgentTreeSkills.length);
-    assert.deepEqual(skipped, []);
-
-    for (const name of AllAgentTreeSkills) {
-      assert.throws(() => statSync(join(dir, '.claude', 'skills', name)), { code: 'ENOENT' });
-    }
-  });
-
-  it('foreign kept and recorded', () => {
-    const dir = tmpDir();
-    const scope = new Scope({ cwd: dir });
-
-    const destDir = join(dir, '.claude', 'skills', 'agent');
-    mkdirSync(destDir, { recursive: true });
-    const foreignBody = 'not ours';
-    writeFileSync(join(destDir, SKILL_MANIFEST_LEAF), foreignBody);
-
-    const { removed, skipped } = removeAgentTree(embeddedTemplates(), scope);
-    assert.equal(removed, 0);
-    assert.deepEqual(skipped, ['agent']);
-    assert.equal(readFileSync(join(destDir, SKILL_MANIFEST_LEAF), 'utf8'), foreignBody);
-  });
-
-  it('missing is no-op', () => {
-    const dir = tmpDir();
-    const scope = new Scope({ cwd: dir });
-
-    const { removed, skipped } = removeAgentTree(embeddedTemplates(), scope);
-    assert.equal(removed, 0);
-    assert.deepEqual(skipped, []);
-  });
-
-  it('a regular removeSkills pass never touches agent-tree directories (different sentinel)', () => {
-    const dir = tmpDir();
-    const scope = new Scope({ cwd: dir });
-    const tpl = embeddedTemplates();
-
-    writeAgentTree(tpl, scope);
-    removeSkills(tpl, scope); // full AllSkills sweep
-
-    for (const name of AllAgentTreeSkills) {
-      assert.ok(existsSync(join(dir, '.claude', 'skills', name, SKILL_MANIFEST_LEAF)), `${name} must survive a plain removeSkills pass`);
-    }
   });
 });

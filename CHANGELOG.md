@@ -7,15 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-04
+
 ### Added
 
-- **`cost acknowledge <journal-id> (--cost N | --unknown-accepted)`**
-  (agent-tree) — the first operator recovery path for a journal entry whose
-  cost is unknown: an append-only settle-override record that un-taints
-  the scope's budget gate.
-- **`cost unresolved [address] [--json]`** (agent-tree) — lists unknown-cost
-  journal entries without requiring a direct read of
-  `_meta/cost-journal.jsonl`.
+- **`/ccheckpoint`**: identical to `/checkpoint`, plus a local `git commit` of
+  the one checkpoint file it just wrote (skipped, not erred, when the target
+  isn't inside a git repo). Never touches anything else that happens to be
+  dirty or staged in the working tree.
 
 ### Changed
 
@@ -28,59 +27,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Reason: the slash-command path is the one hit by the interactive-TUI
   frontmatter regression below, so shipping it by default currently means
   shipping a control surface that silently doesn't do what it says. `commands`
-  joins `codex-agents`/`agent-tree` as the third opt-in class, sharing the
+  joins `codex-agents` as an opt-in class, sharing the
   same `--<flag>` / `--only <class>` mechanism (`lib/cli.js`'s
   `OPT_IN_FLAG_CLASSES`). Existing installs are unaffected by `cah install`
   alone — re-run with `--commands` (or `--only commands`) to keep them, or
   `cah uninstall --commands` to remove already-installed ones.
 
-### Fixed
+- Upgraded `actions/checkout` and `actions/setup-node` from v4 to v7 across
+  CI and npm-publish workflows. Both actions now run on the Node 24 action
+  runtime instead of the deprecated Node 20 runtime.
 
-Three rounds of external review against the `agent-tree` engine
-(`templates/skills/agent-new/assets/agent-tree.js`) since 0.8.0, closing
-race conditions and fail-open gaps a single-process test run doesn't
-exercise:
+### Removed
 
-- **Budget gate is now fail-closed, not fail-open.** `reserveBudget()`,
-  `publishJournalLocked()`, and the settlement-outbox replay all now check
-  whether their journal writes actually landed and refuse the call before
-  any backend spend if they didn't — previously an unwritable journal
-  (e.g. a read-only file) let paid calls run with no reservation ever
-  recorded against the cap.
-- **Legacy-ledger budget estimate no longer double-counts history as a
-  single call.** `budgetCallEstimateUsd()` excludes `import` settle
-  records and estimates from the average of the last 8 trusted calls
-  instead of the historical maximum, fixing spurious budget refusals on
-  any tree migrated from before the cost journal existed.
-- **Settlement journal writes are now idempotent**, closing a
-  check-then-append race where two concurrent outbox replayers could both
-  append an identical settlement line.
-- **Lock reclaim is now a real single-owner protocol.** `acquireLock` /
-  `withMutexAt` / `acquireLifecycleMutex` serialize stale-lock reclaim
-  behind an exclusive-create guard file instead of a content-verify-then-
-  unlink window two concurrent reclaimers could both pass against the same
-  corpse.
-- **A backend call that survives a Windows timeout kill (or loses its
-  supervising worker mid-call) no longer frees the session lock as cleanly
-  done.** The lock is flagged `suspected-orphan` instead — surfaced in
-  `locks list`, cleared only by `locks release --force` — closing a
-  two-processes-on-one-session race. This protection, previously
-  `send`-only, now also covers `new` (birth) and `session new`; the
-  Windows tree-kill itself now verifies `taskkill`'s exit status instead
-  of assuming success.
-- `EPERM` from a liveness probe (a live-but-inaccessible owner, e.g. a
-  privileged system process) is no longer misread as "dead" and reclaimed.
-- `session new` whose post-call bookkeeping fails twice under contention no
-  longer reports a normal success footer for an identity that was never
-  recorded — it now exits 9 with an explicit DEGRADED marker.
-- `up` relaying `ASK_SIBLING` to a retired/closed/busy/over-budget sibling
-  no longer discards the parent's already-paid-for answer.
-- `cost acknowledge` no longer creates a phantom `_meta/<address>/` cell for
-  a journal entry from a birth that never actually completed.
-- Smaller fixes: torn cost-journal tail normalization, atomic
-  migration-marker publish, typed post-call bookkeeping errors with one
-  bounded retry, `--cwd`/`--agents-root` relative-path resolution, and a
-  `task open` slug-clash race.
+- **Persistent `agent`/`agent-new` sub-agent tree moved to the standalone
+  `agent-tree` package.** Existing users can migrate/install it with
+  `npx agent-tree install` (or `node bin/agent-tree.js install` from its
+  checkout); that installer accepts the former `<!-- cah-agent-tree:v1 -->`
+  marker and rewrites the skills with its current ownership marker.
 
 ### Notes
 
@@ -104,123 +67,6 @@ exercise:
   `f1*` commands/agents (`f1l`, `f1m`, `f1h`, `f1x`, `f1xx`) pin the
   previous top, `claude-fable-5` — the same convention `o1*` uses for Opus.
   48 commands / 48 agents (was 43).
-
-## [0.8.0] - 2026-09-01
-
-### Added
-
-- **`agent`/`agent-new` persistent sub-agent tree** (opt-in, `--agent-tree`):
-  a backend-agnostic engine (`templates/skills/agent-new/assets/agent-tree.js`)
-  that births addressable, persistently-memoried sub-agents into a directory
-  tree, each with its own git-backed cell, passport, and dialog log.
-  - **Sessions**: one cell can hold many named conversations
-    (`session new`/`list`/`close`), each with its own backend and
-    `--backend-opt` bag fixed at creation; `compact` is the one place those
-    options can change, since it already mints a fresh identity under the
-    same name.
-  - **Task lifecycle**: `task open` (prepare a brief with zero backend
-    calls), `send --task-file` (dispatch it), `send --task-resume` (append a
-    follow-up round to an open brief), `task done`/`task list`/`task
-    resolve`. A `preamble.md` (per-cell or tree-wide) is mixed into every new
-    brief, with `--task-var key=value` placeholder substitution.
-  - **Backend registry**: any `backends/<name>.js` exporting the documented
-    contract (`backends/README.md`) is auto-discovered; `claude` ships as the
-    default and reference implementation.
-  - **Run ledger** (`runs`): an append-only start/end record of every backend
-    call, distinguishing `ok`/`error`/`rejected`/`launch-failed`/`unknown`
-    outcomes — including calls whose birth failed before a passport existed.
-  - Distinct exit codes for limit refusal (2), retired/closed (6), busy (7),
-    and — a name that exists on the agent but not as a session (8).
-  - `depth_max`/`fanout_max` are enforced atomically against concurrent
-    `new`: a reservation marker settles fanout and address-uniqueness under a
-    short per-parent mutex before any billed call. `budget_usd` is enforced
-    by a per-scope reservation against a durable cost journal (see below) —
-    an atomic check-and-reserve that closes the same stale-snapshot race a
-    naive check-then-call would hit, without serializing every call sharing a
-    capped scope.
-  - **Cost journal** (`_meta/cost-journal.jsonl`, tree-wide): every billed
-    call writes a paired intent (before the call) and settlement (after it
-    returns) record. An intent with no settlement is, by definition, an
-    unknown-cost call — nothing has to remember to increment a counter for a
-    crash mid-call. Distinguishes a call still genuinely in flight (owning
-    process alive, per the same PID+start-time liveness check locks use) from
-    one abandoned by a crash (owning process confirmed dead): only the
-    abandoned case taints the scope's budget trust; a live pending call
-    counts toward budget headroom via a conservative per-call estimate
-    instead. Replaces the old `orphan_unknown_cost_calls` passport counter
-    and tree-wide `root_orphan_ledger.json`, migrating their historical
-    counts in on first touch so existing trees don't silently lose a
-    previously-tripped budget-trust flag. `subtreeCost`/
-    `subtreeHasUnknownCost`, and the orphan warnings in `tree`/`cost`, all
-    read from the journal now.
-  - **`locks` CLI**: `locks list [address] [--json]` shows every open
-    session/budget/cell lock with its owning pid and a 3-state
-    live/reclaimable/unknown status (the same liveness rule real lock
-    reclaim uses, so the display can't disagree with what a real command
-    would do); `locks release <address> <session> --force` force-clears a
-    stuck lock with no ownership check, printing a loud warning naming the
-    residual race risk.
-  - **Lock identity is PID **and** OS-reported process start time**, not PID
-    alone — closes a PID-reuse gap where a dead process's PID could be
-    recycled by an unrelated process before a stale-lock reclaim ran and be
-    mistaken for the original (still-recorded) owner.
-  - A concurrent section that's still busy after its wait ceiling now
-    **refuses** (exit 7, retryable) instead of silently proceeding
-    unguarded — "proceed anyway" accepted a lost-update risk that a
-    since-added salvage path could turn into silently losing a paid call's
-    record entirely.
-- **`/ccheckpoint`**: identical to `/checkpoint`, plus a local `git commit` of
-  the one checkpoint file it just wrote (skipped, not erred, when the target
-  isn't inside a git repo). Never touches anything else that happens to be
-  dirty or staged in the working tree.
-
-### Changed
-
-- Upgraded `actions/checkout` and `actions/setup-node` from v4 to v7 across
-  CI and npm-publish workflows. Both actions now run on the Node 24 action
-  runtime instead of the deprecated Node 20 runtime.
-- **Agent-tree engine: `die()`/refusals are exceptions, not `process.exit()`.**
-  Every early-exit path now throws (an internal `EngineDie`, caught once at
-  the top of the CLI dispatch) instead of calling `process.exit()` directly
-  mid-function — every `try/finally` in the engine (lock release, dialog
-  salvage, passport writes) now actually runs on a refusal, closing a class
-  of "lock never released because the refusal skipped the `finally`" bugs
-  that kept resurfacing across review rounds. External behavior (exit codes,
-  stdout/stderr) is unchanged.
-  - Backed by a new runtime test suite (`test/agent-tree.runtime.*.test.js`)
-    that spawns the real engine binary against a stubbed backend — lifecycle,
-    locks (including real-process-kill scenarios, killed by exact PID),
-    tasks, validation, and cost accounting are now exercised end-to-end
-    instead of only by hand.
-- **Agent-tree CLI flag validation is subcommand-aware.** Commands with
-  subcommands (`config`, `contacts`, `limits`, `session`, `task`) now
-  validate against a flag allowlist scoped to the actual subcommand invoked,
-  closing a gap where an unrelated flag (or a subcommand name shadowed by an
-  inherited `Object.prototype` property) could silently slip through.
-- **Task dispatch is admission-first.** `send --task`/`--task-resume`/
-  `--task-file` now build the brief lazily, inside the same protected window
-  as the backend call itself — a dispatch refused for being busy, retired, or
-  over budget now leaves zero trace under `tasks/`, instead of a phantom
-  brief file for a call that never went out.
-- Session maps read off a passport are defended against prototype-pollution
-  lookups (`Object.create(null)` rehydration on read, on top of the existing
-  name blacklist), and `config set`'s read-modify-write now runs under its
-  own mutex, closing a lost-update race between two concurrent `config set`
-  calls.
-
-### Fixed
-
-- **Round 10/11 hardening**: `session new`/`retire` re-check current state
-  after acquiring their lock, not just on a cold pre-lock snapshot (closes a
-  duplicate-session-name race and a retire-during-busy-session race);
-  `retire` now holds every open session's lock before flipping state, and
-  releases everything it acquired if any session turns out busy; `compact`
-  passes its already-held session lock through to `wake()` instead of
-  re-acquiring it; a `relay`/`up` now preflights the asker's own session
-  before waking the target, so a doomed consult no longer bills the target
-  for an answer the asker can never receive; task-file writes reject
-  ENOENT'd parent directories and blank `--task-var` values instead of
-  writing a malformed brief; ask-target addresses are validated before use.
 
 ## [0.7.2] - 2026-08-05
 

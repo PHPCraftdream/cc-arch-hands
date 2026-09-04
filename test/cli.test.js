@@ -36,6 +36,18 @@ function captureStdout(fn) {
   return out;
 }
 
+function captureStderr(fn) {
+  const orig = process.stderr.write;
+  let out = '';
+  process.stderr.write = (s) => { out += s; return true; };
+  try {
+    fn();
+  } finally {
+    process.stderr.write = orig;
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // resolveScope
 // ---------------------------------------------------------------------------
@@ -128,6 +140,10 @@ describe('parseOnly', () => {
     assert.throws(() => parseOnly('clock,foo'), /unknown name "foo"/);
   });
 
+  it('rejects the extracted agent-tree selector', () => {
+    assert.throws(() => parseOnly('agent-tree'), /unknown name "agent-tree"/);
+  });
+
   it('all-blank resolves to no classes and throws', () => {
     assert.throws(() => parseOnly(' , , '), /no classes/);
   });
@@ -193,6 +209,25 @@ describe('run', () => {
 
   it('version returns 0', () => {
     assert.equal(run(['version']), 0);
+  });
+
+  it('rejects --agent-tree and exposes no extracted feature in version/list', () => {
+    const error = captureStderr(() => assert.equal(run(['install', '--agent-tree']), 2));
+    assert.match(error, /Unknown option .*agent-tree/);
+
+    const home = mkdtempSync(join(tmpdir(), 'cah-extraction-'));
+    try {
+      withHome(home, () => {
+        const version = captureStdout(() => run(['version']));
+        const listing = captureStdout(() => run(['list', '--json']));
+        assert.doesNotMatch(version, /agent-tree/);
+        assert.doesNotMatch(listing, /agent-tree/);
+        const rows = listing.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+        assert.ok(rows.every((row) => !JSON.stringify(row).includes('agent-tree')));
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it('reinstall against a fresh --cwd is uninstall (no-op) then install', () => {
@@ -380,87 +415,6 @@ describe('run install/uninstall --commands', () => {
 
         assert.equal(run(['uninstall', '--only', 'commands']), 0);
         assert.ok(!existsSync(join(home, '.claude', 'commands', 'oh.md')));
-      });
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-});
-
-describe('run install/uninstall --agent-tree', () => {
-  it('default install does not write the agent-tree skills', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    try {
-      withHome(home, () => {
-        assert.equal(run(['install', '--only', 'commands,skills']), 0);
-        assert.ok(!existsSync(join(home, '.claude', 'skills', 'agent-new')));
-        assert.ok(!existsSync(join(home, '.claude', 'skills', 'agent')));
-        // agent-tree is an opt-in selector — valid via --only but excluded from
-        // the default (empty --only) install set.
-        assert.deepEqual(parseOnly('agent-tree'), { classes: ['agent-tree'], skills: [] });
-        assert.deepEqual(parseOnly(''), { classes: ['agents', 'skills', 'bins'], skills: [] });
-      });
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it('writes agent-tree skills under <HOME>/.claude/skills and removes them as a batch', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    try {
-      withHome(home, () => {
-        assert.equal(run(['install', '--agent-tree']), 0);
-        const agentNewDir = join(home, '.claude', 'skills', 'agent-new');
-        const agentDir = join(home, '.claude', 'skills', 'agent');
-        assert.ok(existsSync(join(agentNewDir, 'SKILL.md')));
-        assert.ok(existsSync(join(agentNewDir, 'assets', 'agent-tree.js')));
-        assert.ok(existsSync(join(agentNewDir, 'assets', 'backends', 'claude.js')));
-        assert.ok(existsSync(join(agentDir, 'SKILL.md')));
-
-        const out = captureStdout(() => run(['list', '--json']));
-        const rows = out.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
-        const agentTreeRows = rows.filter((r) => r.kind === 'agent-tree-skill');
-        assert.equal(agentTreeRows.length, 2);
-        assert.ok(agentTreeRows.every((r) => r.state === 'mine'));
-
-        assert.equal(run(['uninstall', '--agent-tree']), 0);
-        assert.ok(!existsSync(agentNewDir));
-        assert.ok(!existsSync(agentDir));
-      });
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it('selects agent-tree via --only agent-tree (no flag needed)', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    try {
-      withHome(home, () => {
-        assert.equal(run(['install', '--only', 'agent-tree']), 0);
-        assert.ok(existsSync(join(home, '.claude', 'skills', 'agent-new', 'SKILL.md')));
-        // rest of claude-side must NOT be touched by an agent-tree-only selection
-        assert.ok(!existsSync(join(home, '.claude', 'commands')));
-
-        assert.equal(run(['uninstall', '--only', 'agent-tree']), 0);
-        assert.ok(!existsSync(join(home, '.claude', 'skills', 'agent-new')));
-      });
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it('a normal skills install/reinstall never prunes the agent-tree skills (separate sentinel)', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    try {
-      withHome(home, () => {
-        assert.equal(run(['install', '--agent-tree']), 0);
-        assert.equal(run(['install', '--only', 'skills']), 0);
-        assert.ok(existsSync(join(home, '.claude', 'skills', 'agent-new', 'SKILL.md')));
-        assert.ok(existsSync(join(home, '.claude', 'skills', 'agent', 'SKILL.md')));
-
-        assert.equal(run(['reinstall', '--only', 'skills']), 0);
-        assert.ok(existsSync(join(home, '.claude', 'skills', 'agent-new', 'SKILL.md')));
-        assert.ok(existsSync(join(home, '.claude', 'skills', 'agent', 'SKILL.md')));
       });
     } finally {
       rmSync(home, { recursive: true, force: true });

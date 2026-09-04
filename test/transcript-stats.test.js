@@ -248,6 +248,10 @@ describe('toDisplayName', () => {
   it('still converts a raw model id', () => {
     assert.equal(toDisplayName('claude-opus-4-8'), 'Opus 4.8');
   });
+
+  it('converts the current top Fable model id', () => {
+    assert.equal(toDisplayName('claude-fable-5-1'), 'Fable 5.1');
+  });
 });
 
 // ---------------------------------------------------------------------------
