@@ -1,8 +1,9 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, mkdtempSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, mkdtempSync, existsSync, symlinkSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { Worker } from 'node:worker_threads';
 
 import {
   SentinelModelCommand, SentinelModelAgent, SentinelCodexAgent, SentinelSkill,
@@ -17,6 +18,7 @@ import { writeModelAgents, removeModelAgents } from '../lib/agents.js';
 import { writeCodexAgents, removeCodexAgents } from '../lib/codex-agents.js';
 import { writeSkills, removeSkills } from '../lib/skills.js';
 import { embeddedTemplates, diskTemplates } from '../lib/templates.js';
+import { writeFileAtomic } from '../lib/fsutil.js';
 
 const FABLE_ORACLE = [
   ['fl', 'claude-fable-5-1', 'low'],
@@ -34,6 +36,157 @@ const FABLE_ORACLE = [
 function tmpDir() {
   return mkdtempSync(join(tmpdir(), 'cah-test-'));
 }
+
+function waitForWorker(worker) {
+  return new Promise((resolve, reject) => {
+    worker.once('error', reject);
+    worker.once('exit', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`atomic-write worker exited with code ${code}`));
+    });
+  });
+}
+
+function waitForPath(path, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve, reject) => {
+    const poll = () => {
+      if (existsSync(path)) {
+        resolve();
+        return;
+      }
+      if (Date.now() >= deadline) {
+        reject(new Error(`timed out waiting for ${path}`));
+        return;
+      }
+      setTimeout(poll, 10);
+    };
+    poll();
+  });
+}
+
+function runSkillWorker(action, dir, interlock, phase) {
+  const skillsUrl = new URL('../lib/skills.js', import.meta.url).href;
+  const templatesUrl = new URL('../lib/templates.js', import.meta.url).href;
+  const scopeUrl = new URL('../lib/scope.js', import.meta.url).href;
+    const source = `
+    const { parentPort, workerData } = require('node:worker_threads');
+    (async () => {
+      process.env.CAH_TEST_ONLY = '1';
+      process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK = workerData.interlock;
+      process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE = workerData.phase;
+      const skills = await import(workerData.skillsUrl);
+      const templates = await import(workerData.templatesUrl);
+      const { Scope } = await import(workerData.scopeUrl);
+      const scope = new Scope({ cwd: workerData.dir });
+      const result = workerData.action === 'write'
+        ? skills.writeSkills(templates.embeddedTemplates(), scope)
+        : skills.removeSkills(templates.embeddedTemplates(), scope);
+      parentPort.postMessage(result);
+    })().catch((error) => {
+      setImmediate(() => { throw error; });
+    });
+  `;
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(source, {
+      eval: true,
+      workerData: { action, dir, interlock, phase, skillsUrl, templatesUrl, scopeUrl },
+    });
+    worker.once('message', resolve);
+    worker.once('error', reject);
+    worker.once('exit', (code) => {
+      if (code !== 0) reject(new Error(`skill worker exited with code ${code}`));
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Atomic file writes
+// ---------------------------------------------------------------------------
+
+describe('writeFileAtomic', () => {
+  it('does not follow or replace a predictable temp symlink', (t) => {
+    const dir = tmpDir();
+    const dest = join(dir, 'target.txt');
+    const victim = join(dir, 'victim.txt');
+    const predictable = `${dest}.cah-tmp`;
+    writeFileSync(victim, 'outside stays intact\n');
+
+    try {
+      symlinkSync(victim, predictable, 'file');
+    } catch (e) {
+      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
+        t.skip('file symlink creation is unavailable in this Windows test environment');
+        return;
+      }
+      throw e;
+    }
+
+    writeFileAtomic(dest, 'complete payload\n');
+    assert.equal(readFileSync(dest, 'utf8'), 'complete payload\n');
+    assert.equal(readFileSync(victim, 'utf8'), 'outside stays intact\n');
+    assert.equal(readFileSync(predictable, 'utf8'), 'outside stays intact\n');
+  });
+
+  it('leaves a foreign predictable temp untouched', () => {
+    const dir = tmpDir();
+    const dest = join(dir, 'target.txt');
+    const predictable = `${dest}.cah-tmp`;
+    writeFileSync(predictable, 'belongs to someone else\n');
+
+    writeFileAtomic(dest, 'ours\n');
+    assert.equal(readFileSync(dest, 'utf8'), 'ours\n');
+    assert.equal(readFileSync(predictable, 'utf8'), 'belongs to someone else\n');
+  });
+
+  it('concurrent writers publish one complete payload and leave no owned temps', async () => {
+    const dir = tmpDir();
+    const dest = join(dir, 'shared.bin');
+    const payloads = ['A', 'B', 'C', 'D'].map((byte) => Buffer.alloc(256 * 1024, byte));
+    const barrier = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+    const moduleUrl = new URL('../lib/fsutil.js', import.meta.url).href;
+    const workerSource = `
+      const { parentPort, workerData } = require('node:worker_threads');
+      (async () => {
+        const { writeFileAtomic } = await import(workerData.moduleUrl);
+        const state = new Int32Array(workerData.barrier);
+        Atomics.add(state, 0, 1);
+        Atomics.notify(state, 0);
+        while (Atomics.load(state, 0) < workerData.total) {
+          const observed = Atomics.load(state, 0);
+          Atomics.wait(state, 0, observed);
+        }
+        writeFileAtomic(workerData.dest, Buffer.from(workerData.payload));
+      })().catch((error) => {
+        process.nextTick(() => { throw error; });
+      });
+    `;
+    const workers = payloads.map((payload) => new Worker(workerSource, {
+      eval: true,
+      workerData: { barrier, dest, moduleUrl, payload, total: payloads.length },
+    }));
+
+    await Promise.all(workers.map(waitForWorker));
+    const result = readFileSync(dest);
+    assert.ok(payloads.some((payload) => payload.equals(result)));
+    assert.deepEqual(
+      readdirSync(dir).filter((name) => name.includes('.cah-tmp-')),
+      [],
+    );
+  });
+
+  it('cleans up its unique temp when publication fails', () => {
+    const dir = tmpDir();
+    const dest = join(dir, 'occupied-directory');
+    mkdirSync(dest);
+
+    assert.throws(() => writeFileAtomic(dest, 'cannot publish here'));
+    assert.deepEqual(
+      readdirSync(dir).filter((name) => name.includes('.cah-tmp-')),
+      [],
+    );
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Fable model contract (fixed oracle, independent of manifest values)
@@ -652,6 +805,108 @@ describe('writeSkills', () => {
     }
   });
 
+  it('foreign selected skill with a user symlink safely skips write and removal', (t) => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const name = AllSkills[0];
+    const destDir = join(dir, '.claude', 'skills', name);
+    const outside = join(dir, 'outside');
+    const link = join(destDir, 'user-link');
+    mkdirSync(destDir, { recursive: true });
+    mkdirSync(outside);
+    writeFileSync(join(destDir, SKILL_MANIFEST_LEAF), 'foreign manifest\n');
+    writeFileSync(join(outside, 'data.txt'), 'outside data\n');
+    try {
+      symlinkSync(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (e) {
+      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
+        t.skip('junction creation is unavailable in this Windows test environment');
+        return;
+      }
+      throw e;
+    }
+    const tpl = {
+      skillTree: () => [
+        { relPath: SKILL_MANIFEST_LEAF, bytes: Buffer.from('# managed template\n') },
+      ],
+    };
+
+    assert.deepEqual(writeSkills(tpl, scope, { subset: [name] }).skipped, [name]);
+    assert.deepEqual(removeSkills(tpl, scope, { subset: [name] }).skipped, [name]);
+    assert.equal(readFileSync(join(destDir, SKILL_MANIFEST_LEAF), 'utf8'), 'foreign manifest\n');
+    assert.equal(readFileSync(join(link, 'data.txt'), 'utf8'), 'outside data\n');
+  });
+
+  it('managed skill preserves a user-extra symlink across write and remove', (t) => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const name = AllSkills[0];
+    const destDir = join(dir, '.claude', 'skills', name);
+    const outside = join(dir, 'outside');
+    const link = join(destDir, 'user-link');
+    mkdirSync(destDir, { recursive: true });
+    mkdirSync(outside);
+    writeFileSync(join(destDir, SKILL_MANIFEST_LEAF), `# old managed\n${SentinelSkill}\n`);
+    writeFileSync(join(outside, 'data.txt'), 'outside data\n');
+    try {
+      symlinkSync(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (e) {
+      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
+        t.skip('junction creation is unavailable in this Windows test environment');
+        return;
+      }
+      throw e;
+    }
+    const tpl = {
+      skillTree: () => [
+        { relPath: SKILL_MANIFEST_LEAF, bytes: Buffer.from('# current managed\n') },
+      ],
+    };
+
+    const written = writeSkills(tpl, scope, { subset: [name] });
+    assert.ok(written.preserved.includes(`${name}/user-link`));
+    assert.equal(readFileSync(join(link, 'data.txt'), 'utf8'), 'outside data\n');
+
+    const removed = removeSkills(tpl, scope, { subset: [name] });
+    assert.deepEqual(removed.preserved, [name]);
+    assert.ok(!existsSync(join(destDir, SKILL_MANIFEST_LEAF)));
+    assert.equal(readFileSync(join(link, 'data.txt'), 'utf8'), 'outside data\n');
+  });
+
+  it('subset install ignores an unrelated foreign skill containing a symlink', (t) => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const [selected, unrelated] = AllSkills;
+    const unrelatedDir = join(dir, '.claude', 'skills', unrelated);
+    const outside = join(dir, 'outside');
+    mkdirSync(unrelatedDir, { recursive: true });
+    mkdirSync(outside);
+    writeFileSync(join(unrelatedDir, SKILL_MANIFEST_LEAF), 'foreign manifest\n');
+    try {
+      symlinkSync(
+        outside,
+        join(unrelatedDir, 'user-link'),
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
+    } catch (e) {
+      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
+        t.skip('junction creation is unavailable in this Windows test environment');
+        return;
+      }
+      throw e;
+    }
+    const tpl = {
+      skillTree: () => [
+        { relPath: SKILL_MANIFEST_LEAF, bytes: Buffer.from('# selected\n') },
+      ],
+    };
+
+    const result = writeSkills(tpl, scope, { subset: [selected] });
+    assert.equal(result.written, 1);
+    assert.ok(existsSync(join(dir, '.claude', 'skills', selected, SKILL_MANIFEST_LEAF)));
+    assert.equal(readFileSync(join(unrelatedDir, SKILL_MANIFEST_LEAF), 'utf8'), 'foreign manifest\n');
+  });
+
   it('prunes orphan skill directories whose names are no longer in the manifest', () => {
     const dir = tmpDir();
     const scope = new Scope({ cwd: dir });
@@ -747,6 +1002,134 @@ describe('writeSkills', () => {
     assert.ok(!existsSync(join(dir, '.claude', 'skills', name, SKILL_MANIFEST_LEAF)));
   });
 
+  it('rejects path escapes before the outside victim can change', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const name = AllSkills[0];
+    const victim = join(dir, 'victim.txt');
+    writeFileSync(victim, 'must survive\n');
+
+    const tpl = {
+      skillTree: () => [
+        { relPath: SKILL_MANIFEST_LEAF, bytes: Buffer.from('# skill\n') },
+        { relPath: '../../../victim.txt', bytes: Buffer.from('pwned\n') },
+      ],
+    };
+
+    assert.throws(() => writeSkills(tpl, scope, { subset: [name] }), /invalid segment|escapes/i);
+    assert.equal(readFileSync(victim, 'utf8'), 'must survive\n');
+    assert.ok(!existsSync(join(dir, '.claude', 'skills', name, SKILL_MANIFEST_LEAF)));
+  });
+
+  it('rejects absolute, device, mixed-separator, alias, and reserved paths', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const name = AllSkills[0];
+    const badPaths = [
+      '/absolute.txt',
+      'C:/absolute.txt',
+      '//server/share/absolute.txt',
+      '//?/C:/device.txt',
+      'nested\\mixed/file.txt',
+      'nested//empty.txt',
+      './dot.txt',
+      'nested/../escape.txt',
+      'alias./file.txt',
+      'alias /file.txt',
+      'CON.txt',
+      'nested/NUL',
+      `nul\0byte.txt`,
+    ];
+
+    for (const relPath of badPaths) {
+      const files = [
+        { relPath: SKILL_MANIFEST_LEAF, bytes: Buffer.from('# skill\n') },
+        { relPath, bytes: Buffer.from('bad\n') },
+      ];
+      assert.throws(
+        () => writeSkills({ skillTree: () => files }, scope, { subset: [name] }),
+        /relative|invalid segment|mixed separators|Windows separators|NUL|alias|device|escapes/i,
+        relPath,
+      );
+    }
+    assert.ok(!existsSync(join(dir, '.claude', 'skills', name, SKILL_MANIFEST_LEAF)));
+  });
+
+  it('rejects malformed template bytes and validates all selected trees first', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const [first, second] = AllSkills;
+    const trees = new Map([
+      [first, [{ relPath: SKILL_MANIFEST_LEAF, bytes: Buffer.from('# first\n') }]],
+      [second, [{ relPath: SKILL_MANIFEST_LEAF, bytes: 'not bytes' }]],
+    ]);
+
+    assert.throws(
+      () => writeSkills({ skillTree: (name) => trees.get(name) }, scope, {
+        subset: [first, second],
+      }),
+      /bytes must be Buffer or Uint8Array/,
+    );
+    assert.ok(!existsSync(join(dir, '.claude', 'skills', first, SKILL_MANIFEST_LEAF)));
+  });
+
+  it('rejects case-insensitive file and directory-prefix collisions', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const name = AllSkills[0];
+    const collisionTrees = [
+      [
+        { relPath: SKILL_MANIFEST_LEAF, bytes: Buffer.from('# skill\n') },
+        { relPath: 'assets/readme.txt', bytes: Buffer.from('one\n') },
+        { relPath: 'ASSETS/README.TXT', bytes: Buffer.from('two\n') },
+      ],
+      [
+        { relPath: SKILL_MANIFEST_LEAF, bytes: Buffer.from('# skill\n') },
+        { relPath: 'assets', bytes: Buffer.from('file\n') },
+        { relPath: 'assets/data.txt', bytes: Buffer.from('child\n') },
+      ],
+    ];
+    for (const files of collisionTrees) {
+      assert.throws(
+        () => writeSkills({ skillTree: () => files }, scope, { subset: [name] }),
+        /colliding template relPath/,
+      );
+    }
+    assert.ok(!existsSync(join(dir, '.claude', 'skills', name, SKILL_MANIFEST_LEAF)));
+  });
+
+  it('does not follow a symlink or junction directory outside the skill root', (t) => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const name = AllSkills[0];
+    const destDir = join(dir, '.claude', 'skills', name);
+    const outside = join(dir, 'outside');
+    mkdirSync(destDir, { recursive: true });
+    mkdirSync(outside);
+
+    try {
+      symlinkSync(outside, join(destDir, 'assets'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (e) {
+      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
+        t.skip('junction creation is unavailable in this Windows test environment');
+        return;
+      }
+      throw e;
+    }
+
+    const tpl = {
+      skillTree: () => [
+        { relPath: SKILL_MANIFEST_LEAF, bytes: Buffer.from('# skill\n') },
+        { relPath: 'assets/payload.txt', bytes: Buffer.from('must not escape\n') },
+      ],
+    };
+    assert.throws(
+      () => writeSkills(tpl, scope, { subset: [name] }),
+      /symlink|junction|reparse|not a directory/i,
+    );
+    assert.ok(!existsSync(join(outside, 'payload.txt')));
+  });
+
   it('accepts a valid multi-file skill tree with an exact root manifest', () => {
     const dir = tmpDir();
     const scope = new Scope({ cwd: dir });
@@ -839,6 +1222,101 @@ describe('removeSkills', () => {
     assert.equal(removed, 0);
     assert.deepEqual(skipped, []);
   });
+
+  it('rejects an unvalidated relPath escape without deleting the victim', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const [first, second] = AllSkills;
+    const firstManifest = join(dir, '.claude', 'skills', first, SKILL_MANIFEST_LEAF);
+    const destDir = join(dir, '.claude', 'skills', second);
+    const manifest = join(destDir, SKILL_MANIFEST_LEAF);
+    const victim = join(dir, 'victim.txt');
+    mkdirSync(join(dir, '.claude', 'skills', first), { recursive: true });
+    mkdirSync(destDir, { recursive: true });
+    writeFileSync(firstManifest, `# first managed\n${SentinelSkill}\n`);
+    writeFileSync(manifest, `# managed\n${SentinelSkill}\n`);
+    writeFileSync(victim, 'must not be deleted\n');
+    const tpl = {
+      skillTree: (name) => name === first
+        ? [{ relPath: SKILL_MANIFEST_LEAF, bytes: Buffer.from('# first\n') }]
+        : [
+          { relPath: SKILL_MANIFEST_LEAF, bytes: Buffer.from('# second\n') },
+          { relPath: '../../../victim.txt', bytes: Buffer.from('victim\n') },
+        ],
+    };
+
+    assert.throws(
+      () => removeSkills(tpl, scope, { subset: [first, second] }),
+      /invalid segment|escapes/i,
+    );
+    assert.equal(readFileSync(victim, 'utf8'), 'must not be deleted\n');
+    assert.ok(existsSync(firstManifest));
+    assert.ok(existsSync(manifest));
+  });
+
+  it('rejects a symlink or junction traversal before removing anything', (t) => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const name = AllSkills[0];
+    const destDir = join(dir, '.claude', 'skills', name);
+    const outside = join(dir, 'outside');
+    const outsideFile = join(outside, 'owned.txt');
+    const manifest = join(destDir, SKILL_MANIFEST_LEAF);
+    mkdirSync(destDir, { recursive: true });
+    mkdirSync(outside);
+    writeFileSync(manifest, `# managed\n${SentinelSkill}\n`);
+    writeFileSync(outsideFile, 'outside stays\n');
+
+    try {
+      symlinkSync(outside, join(destDir, 'assets'), process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (e) {
+      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
+        t.skip('junction creation is unavailable in this Windows test environment');
+        return;
+      }
+      throw e;
+    }
+
+    const tpl = {
+      skillTree: () => [
+        { relPath: SKILL_MANIFEST_LEAF, bytes: Buffer.from('# skill\n') },
+        { relPath: 'assets/owned.txt', bytes: Buffer.from('owned\n') },
+      ],
+    };
+    assert.throws(
+      () => removeSkills(tpl, scope, { subset: [name] }),
+      /symlink|junction|reparse|not a directory/i,
+    );
+    assert.equal(readFileSync(outsideFile, 'utf8'), 'outside stays\n');
+    assert.ok(existsSync(manifest));
+  });
+
+  it('removes valid nested owned files while preserving user data', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const name = AllSkills[0];
+    const destDir = join(dir, '.claude', 'skills', name);
+    const manifest = join(destDir, SKILL_MANIFEST_LEAF);
+    const owned = join(destDir, 'assets', 'owned.txt');
+    const userFile = join(destDir, 'notes.txt');
+    mkdirSync(join(destDir, 'assets'), { recursive: true });
+    writeFileSync(manifest, `# managed\n${SentinelSkill}\n`);
+    writeFileSync(owned, 'owned\n');
+    writeFileSync(userFile, 'keep\n');
+    const tpl = {
+      skillTree: () => [
+        { relPath: SKILL_MANIFEST_LEAF, bytes: Buffer.from('# skill\n') },
+        { relPath: 'assets/owned.txt', bytes: new Uint8Array([1, 2, 3]) },
+      ],
+    };
+
+    const result = removeSkills(tpl, scope, { subset: [name] });
+    assert.equal(result.removed, 0);
+    assert.deepEqual(result.preserved, [name]);
+    assert.ok(!existsSync(manifest));
+    assert.ok(!existsSync(owned));
+    assert.equal(readFileSync(userFile, 'utf8'), 'keep\n');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -902,6 +1380,127 @@ describe('skill data-loss protection', () => {
     assert.equal(pruned, 0);
     assert.ok(preserved.some((p) => p.startsWith('my-custom-copy')));
     assert.equal(readFileSync(join(copyDir, 'extra.md'), 'utf8'), 'user data');
+  });
+
+  it('pruneOrphanDirs preserves an orphan with a user symlink without following it', (t) => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const skillsDir = join(dir, '.claude', 'skills');
+    const orphanDir = join(skillsDir, 'orphan-with-link');
+    const outside = join(dir, 'outside');
+    const link = join(orphanDir, 'user-link');
+    mkdirSync(orphanDir, { recursive: true });
+    mkdirSync(outside);
+    writeFileSync(join(orphanDir, SKILL_MANIFEST_LEAF), `# orphan\n${SentinelSkill}\n`);
+    writeFileSync(join(outside, 'data.txt'), 'outside stays\n');
+    try {
+      symlinkSync(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (e) {
+      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
+        t.skip('junction creation is unavailable in this Windows test environment');
+        return;
+      }
+      throw e;
+    }
+
+    const result = writeSkills(embeddedTemplates(), scope);
+    assert.equal(result.pruned, 0);
+    assert.ok(result.preserved.some((value) => value.startsWith('orphan-with-link')));
+    assert.equal(readFileSync(join(link, 'data.txt'), 'utf8'), 'outside stays\n');
+  });
+
+  it('pruneOrphanDirs preserves an orphan containing an empty user directory', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const orphanDir = join(dir, '.claude', 'skills', 'orphan-with-empty-dir');
+    const emptyDir = join(orphanDir, 'empty-user-dir');
+    mkdirSync(emptyDir, { recursive: true });
+    writeFileSync(join(orphanDir, SKILL_MANIFEST_LEAF), `# orphan\n${SentinelSkill}\n`);
+
+    const result = writeSkills(embeddedTemplates(), scope);
+    assert.equal(result.pruned, 0);
+    assert.ok(result.preserved.some((value) => value.startsWith('orphan-with-empty-dir')));
+    assert.ok(statSync(emptyDir).isDirectory());
+    assert.deepEqual(readdirSync(emptyDir), []);
+  });
+
+  it('pruneOrphanDirs preserves an entry appearing before final rmdir', async () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const skillsDir = join(dir, '.claude', 'skills');
+    const orphanDir = join(skillsDir, 'race-orphan');
+    const interlock = join(dir, 'prune-final-rmdir-interlock');
+    mkdirSync(orphanDir, { recursive: true });
+    writeFileSync(join(orphanDir, SKILL_MANIFEST_LEAF), `# orphan\n${SentinelSkill}\n`);
+
+    const running = runSkillWorker('write', dir, interlock, 'prune-before-rmdir');
+    await waitForPath(`${interlock}.ready`);
+    const userFile = join(orphanDir, 'user-created-during-prune.txt');
+    writeFileSync(userFile, 'must survive\n');
+    writeFileSync(`${interlock}.go`, 'go');
+    const result = await running;
+
+    assert.equal(result.pruned, 0);
+    assert.ok(result.preserved.some((value) => value.startsWith('race-orphan')));
+    assert.equal(readFileSync(userFile, 'utf8'), 'must survive\n');
+  });
+
+  it('pruneOrphanDirs preserves a manifest replaced by a symlink after validation', async (t) => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const skillsDir = join(dir, '.claude', 'skills');
+    const orphanDir = join(skillsDir, 'replacement-orphan');
+    const manifest = join(orphanDir, SKILL_MANIFEST_LEAF);
+    const outside = join(dir, 'outside-manifest.txt');
+    const interlock = join(dir, 'prune-manifest-interlock');
+    mkdirSync(orphanDir, { recursive: true });
+    writeFileSync(manifest, `# orphan\n${SentinelSkill}\n`);
+    writeFileSync(outside, 'foreign target\n');
+
+    try {
+      const probe = join(dir, 'symlink-probe');
+      symlinkSync(outside, probe, 'file');
+      unlinkSync(probe);
+    } catch (e) {
+      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
+        t.skip('file symlink creation is unavailable in this Windows test environment');
+        return;
+      }
+      throw e;
+    }
+
+    const running = runSkillWorker('write', dir, interlock, 'prune-before-manifest-remove');
+    await waitForPath(`${interlock}.ready`);
+    unlinkSync(manifest);
+    symlinkSync(outside, manifest, 'file');
+    writeFileSync(`${interlock}.go`, 'go');
+    const result = await running;
+
+    assert.equal(result.pruned, 0);
+    assert.ok(result.preserved.some((value) => value.startsWith('replacement-orphan')));
+    assert.equal(readFileSync(outside, 'utf8'), 'foreign target\n');
+    assert.equal(readFileSync(manifest, 'utf8'), 'foreign target\n');
+  });
+
+  it('removeSkills preserves an entry appearing before final rmdir', async () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const tpl = embeddedTemplates();
+    writeSkills(tpl, scope);
+    const first = AllSkills[0];
+    const firstDir = join(dir, '.claude', 'skills', first);
+    const interlock = join(dir, 'remove-final-rmdir-interlock');
+
+    const running = runSkillWorker('remove', dir, interlock, 'remove-before-rmdir');
+    await waitForPath(`${interlock}.ready`);
+    const userFile = join(firstDir, 'user-created-during-remove.txt');
+    writeFileSync(userFile, 'must survive\n');
+    writeFileSync(`${interlock}.go`, 'go');
+    const result = await running;
+
+    assert.equal(result.removed, AllSkills.length - 1);
+    assert.deepEqual(result.preserved, [first]);
+    assert.equal(readFileSync(userFile, 'utf8'), 'must survive\n');
   });
 });
 

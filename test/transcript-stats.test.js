@@ -1,6 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import {
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  readSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -148,6 +155,30 @@ describe('readTranscriptStats', () => {
     });
   });
 
+  it('merges one request across multiple small reverse chunks', () => {
+    const dir = isolatedDir();
+    const tp = join(dir, 'transcript.jsonl');
+    const lines = [JSON.stringify({
+      type: 'assistant',
+      requestId: 'req-many-chunks',
+      message: { role: 'assistant', model: { id: 'claude-opus-4-7' } },
+    })];
+    for (let i = 0; i < 20; i++) {
+      lines.push(JSON.stringify({ type: 'user', message: { role: 'user', content: 'x'.repeat(80) } }));
+    }
+    lines.push(JSON.stringify({
+      type: 'assistant',
+      requestId: 'req-many-chunks',
+      message: { role: 'assistant', usage: { input_tokens: 53_000 } },
+    }));
+    writeFileSync(tp, lines.join('\n') + '\n');
+    assert.deepEqual(readTranscriptStats(tp, { chunkBytes: 37, maxBytes: 4096 }), {
+      usedTokens: 53_000,
+      modelId: 'claude-opus-4-7',
+      requestId: 'req-many-chunks',
+    });
+  });
+
   it('does not fill a newest request from a preceding different requestId', () => {
     const dir = isolatedDir();
     const tp = join(dir, 'transcript.jsonl');
@@ -167,6 +198,73 @@ describe('readTranscriptStats', () => {
       usedTokens: 50_000,
       modelId: null,
       requestId: 'req-new',
+    });
+  });
+
+  it('content-only newest request blocks stale usage and model', () => {
+    const dir = isolatedDir();
+    const tp = join(dir, 'transcript.jsonl');
+    writeFileSync(tp, [
+      JSON.stringify({
+        type: 'assistant',
+        requestId: 'req-old',
+        message: { role: 'assistant', model: 'claude-opus-4-7', usage: { input_tokens: 40_000 } },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        requestId: 'req-content-only',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'still generating' }] },
+      }),
+    ].join('\n') + '\n');
+    assert.deepEqual(readTranscriptStats(tp), {
+      usedTokens: null,
+      modelId: null,
+      requestId: 'req-content-only',
+    });
+  });
+
+  it('content-only newest assistant without requestId blocks stale older stats', () => {
+    const dir = isolatedDir();
+    const tp = join(dir, 'transcript.jsonl');
+    writeFileSync(tp, [
+      JSON.stringify({
+        type: 'assistant',
+        requestId: 'req-old',
+        message: { role: 'assistant', model: 'claude-opus-4-7', usage: { input_tokens: 40_000 } },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'anonymous newest turn' }] },
+      }),
+    ].join('\n') + '\n');
+    assert.equal(readTranscriptStats(tp), null);
+  });
+
+  it('ignores fake usage/model under content tool_use input', () => {
+    const dir = isolatedDir();
+    const tp = join(dir, 'transcript.jsonl');
+    writeFileSync(tp, [
+      JSON.stringify({
+        type: 'assistant',
+        requestId: 'req-real',
+        message: { role: 'assistant', model: 'claude-sonnet-4-6', usage: { input_tokens: 44_000 } },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        requestId: 'req-fake-only',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'tool_use', input: {
+            usage: { input_tokens: 999_000 },
+            model: 'claude-opus-4-8',
+          } }],
+        },
+      }),
+    ].join('\n') + '\n');
+    assert.deepEqual(readTranscriptStats(tp), {
+      usedTokens: null,
+      modelId: null,
+      requestId: 'req-fake-only',
     });
   });
 
@@ -209,7 +307,7 @@ describe('readTranscriptStats', () => {
     });
   });
 
-  it('falls back across the tail boundary only to merge the same requestId', () => {
+  it('scans across chunk boundaries only to merge the same requestId', () => {
     const dir = isolatedDir();
     const tp = join(dir, 'transcript.jsonl');
     const lines = [JSON.stringify({
@@ -234,7 +332,7 @@ describe('readTranscriptStats', () => {
         return raw;
       },
     });
-    assert.equal(fullRead, true, 'missing mandatory model must trigger fallback');
+    assert.equal(fullRead, false, 'the scanner must not fall back to a whole-file read');
     assert.deepEqual(result, {
       usedTokens: 52_000,
       modelId: 'claude-opus-4-7',
@@ -263,7 +361,7 @@ describe('readTranscriptStats', () => {
     assert.equal(fullRead, false, 'missing optional requestId must not read the transcript prefix');
   });
 
-  it('depth-bounded recursion: model 8 levels deep → found', () => {
+  it('does not recurse into arbitrary nested JSON for model extraction', () => {
     const dir = isolatedDir();
     const tp = join(dir, 'transcript.jsonl');
     // Build an object with model nested 8 levels deep (depth 0 through 7 → 8th call has depth=8 which is NOT > 8)
@@ -274,8 +372,7 @@ describe('readTranscriptStats', () => {
     const nested8 = { a: { b: { c: { d: { e: { f: { g: { h: { model: 'claude-haiku-4-5' } } } } } } } } };
     writeFileSync(tp, JSON.stringify(nested8) + '\n');
     const result = readTranscriptStats(tp);
-    assert.ok(result !== null);
-    assert.equal(result.modelId, 'claude-haiku-4-5');
+    assert.equal(result, null);
   });
 
   it('depth-bounded recursion: model 9 levels deep → NOT found', () => {
@@ -357,6 +454,38 @@ describe('readTranscriptStats', () => {
     assert.ok(result !== null);
     assert.equal(result.usedTokens, 42_000);
     assert.equal(result.modelId, 'claude-sonnet-4-6');
+  });
+
+  it('keeps reverse reads within the configured byte budget', () => {
+    const dir = isolatedDir();
+    const tp = join(dir, 'transcript.jsonl');
+    const prefix = Array.from({ length: 2000 }, () =>
+      JSON.stringify({ type: 'user', message: { role: 'user', content: 'padding' } }));
+    const raw = prefix.concat(JSON.stringify({
+      type: 'assistant',
+      requestId: 'req-bounded',
+      message: { role: 'assistant', model: 'claude-haiku-4-5', usage: { input_tokens: 12_000 } },
+    })).join('\n') + '\n';
+    writeFileSync(tp, raw);
+    const reads = [];
+    const result = readTranscriptStats(tp, {
+      chunkBytes: 97,
+      maxBytes: 512,
+      readChunk(at, length, fd) {
+        reads.push({ at, length });
+        const buffer = Buffer.alloc(length);
+        const count = readSync(fd, buffer, 0, length, at);
+        return buffer.subarray(0, count);
+      },
+    });
+    assert.deepEqual(result, {
+      usedTokens: 12_000,
+      modelId: 'claude-haiku-4-5',
+      requestId: 'req-bounded',
+    });
+    assert.ok(reads.length > 0);
+    assert.ok(reads.every(({ at, length }) => at >= raw.length - 512));
+    assert.ok(reads.reduce((sum, { length }) => sum + length, 0) <= 512);
   });
 });
 
@@ -804,6 +933,91 @@ describe('readRateLimitsCache', () => {
     const other = readRateLimitsCache(path, t, 'session-b');
     assert.equal(other.contextWindowSize, null);
     assert.equal(other.fiveHour.used, 10);
+  });
+
+  it('publishes the cache without following a legacy predictable temp symlink', (t) => {
+    const dir = isolatedDir();
+    const path = join(dir, 'rate-limits.json');
+    const victim = join(dir, 'victim.txt');
+    const fixedNow = 1_700_000_123_456;
+    const predictable = `${path}.${process.pid}.${fixedNow}.1.tmp`;
+    writeFileSync(victim, 'victim stays intact\n');
+    try {
+      symlinkSync(victim, predictable, 'file');
+    } catch (e) {
+      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
+        t.skip('file symlink creation is unavailable in this Windows test environment');
+        return;
+      }
+      throw e;
+    }
+
+    const realDateNow = Date.now;
+    try {
+      let legacyTimestampPending = true;
+      Date.now = () => {
+        if (legacyTimestampPending) {
+          legacyTimestampPending = false;
+          return fixedNow;
+        }
+        return realDateNow();
+      };
+      persistRateLimitsCache(
+        path,
+        { used: 17, resetsAt: null },
+        null,
+        null,
+        null,
+        'symlink-session',
+        fixedNow,
+      );
+    } finally {
+      Date.now = realDateNow;
+    }
+
+    assert.equal(readFileSync(victim, 'utf8'), 'victim stays intact\n');
+    assert.ok(lstatSync(predictable).isSymbolicLink(), 'foreign temp symlink must remain a symlink');
+    assert.equal(readFileSync(predictable, 'utf8'), 'victim stays intact\n');
+    assert.equal(JSON.parse(readFileSync(path, 'utf8')).fiveHour.used, 17);
+  });
+
+  it('publishes the cache without replacing legacy predictable foreign temps', () => {
+    const dir = isolatedDir();
+    const path = join(dir, 'rate-limits.json');
+    const fixedNow = 1_700_000_234_567;
+    // Cover both possible legacy counters depending on whether the preceding
+    // symlink test was skipped on a platform without symlink privileges.
+    const predictable = [1, 2].map((counter) =>
+      `${path}.${process.pid}.${fixedNow}.${counter}.tmp`);
+    for (const temp of predictable) writeFileSync(temp, `foreign:${temp}\n`);
+
+    const realDateNow = Date.now;
+    try {
+      let legacyTimestampPending = true;
+      Date.now = () => {
+        if (legacyTimestampPending) {
+          legacyTimestampPending = false;
+          return fixedNow;
+        }
+        return realDateNow();
+      };
+      persistRateLimitsCache(
+        path,
+        { used: 23, resetsAt: null },
+        null,
+        null,
+        null,
+        'foreign-temp-session',
+        fixedNow,
+      );
+    } finally {
+      Date.now = realDateNow;
+    }
+
+    for (const temp of predictable) {
+      assert.equal(readFileSync(temp, 'utf8'), `foreign:${temp}\n`);
+    }
+    assert.equal(JSON.parse(readFileSync(path, 'utf8')).fiveHour.used, 23);
   });
 
   it('persists session contexts in hashed sidecars without cross-session loss', () => {

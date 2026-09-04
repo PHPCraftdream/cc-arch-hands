@@ -63,14 +63,114 @@ fails.
      exit 0
    }
 
+   # Claim the real index lock before preflight and keep it through publication.
+   # Checkout/switch and index-mutating Git commands honor this lock. Commands
+   # that use git_index_file below use a private index and therefore do not
+   # deadlock against our real-index lock.
+   real_index=$(git rev-parse --git-path index)
+   status=$?
+   if [ "$status" -ne 0 ] || [ -z "$real_index" ]; then
+     echo "commit skipped: could not locate the real index"
+     [ "$status" -eq 0 ] && status=1
+     exit "$status"
+   fi
+   real_index_lock=$real_index.lock
+   if [ -e "$real_index_lock" ]; then
+     echo "commit skipped: real index is locked"
+     exit 0
+   fi
+
+   git_index_file=$(mktemp)
+   status=$?
+   if [ "$status" -ne 0 ]; then
+     echo "commit failed: could not allocate temporary index"
+     exit "$status"
+   fi
+   rm -f -- "$git_index_file"
+   status=$?
+   if [ "$status" -ne 0 ]; then
+     echo "commit failed: could not prepare temporary index"
+     exit "$status"
+   fi
+   sync_index_file=
+   sync_lock_owned=0
+   cleanup() {
+     [ -z "$git_index_file" ] || rm -f -- "$git_index_file"
+     [ -z "$sync_index_file" ] || rm -f -- "$sync_index_file"
+     if [ "$sync_lock_owned" -eq 1 ]; then
+       rm -f -- "$real_index_lock"
+     fi
+   }
+   trap cleanup EXIT
+   trap 'exit 129' HUP
+   trap 'exit 130' INT
+   trap 'exit 143' TERM
+
+   if ! (set -C; : > "$real_index_lock") 2>/dev/null; then
+     echo "commit skipped: real index is locked"
+     exit 0
+   fi
+   sync_lock_owned=1
+
    # This snapshot is used only to decide whether it is safe to synchronize the
    # real index later. All commit trees are built from an explicitly captured
    # old_head, never from a moving HEAD.
-   old_head=$(git rev-parse HEAD)
+   captured_head_ref=$(git symbolic-ref -q HEAD 2>/dev/null)
+   head_ref_status=$?
+   if [ "$head_ref_status" -gt 1 ]; then
+     echo "commit skipped: could not identify HEAD"
+     exit "$head_ref_status"
+   fi
+   old_head=$(git rev-parse --verify HEAD)
    status=$?
-   if [ "$status" -ne 0 ]; then
+   if [ "$status" -ne 0 ] || [ -z "$old_head" ]; then
      echo "commit skipped: could not read HEAD"
+     [ "$status" -eq 0 ] && status=1
      exit "$status"
+   fi
+   if [ "$head_ref_status" -eq 0 ] && [ -n "$captured_head_ref" ]; then
+     head_identity_kind=symbolic
+     captured_head_identity=$captured_head_ref
+     captured_head_target=$captured_head_ref
+   else
+     head_identity_kind=detached
+     captured_head_identity=$old_head
+     captured_head_target=HEAD
+   fi
+   verify_head_identity() {
+     current_head_ref=$(git symbolic-ref -q HEAD 2>/dev/null)
+     current_ref_status=$?
+     if [ "$head_identity_kind" = symbolic ]; then
+       [ "$current_ref_status" -eq 0 ] || return 1
+       [ "$current_head_ref" = "$captured_head_identity" ] || return 1
+       return 0
+     fi
+     [ "$current_ref_status" -eq 1 ] || return 1
+     current_head_oid=$(git rev-parse --verify HEAD 2>/dev/null) || return 1
+     [ "$current_head_oid" = "$captured_head_identity" ]
+   }
+
+   # The lock is held while checking staged state, creating the commit, and
+   # publishing the replacement index. Recheck operation state after claiming
+   # it so a state transition cannot enter the commit path.
+   state_name=
+   state_path=
+   for state_name in MERGE_HEAD MERGE_MSG MERGE_MODE MERGE_RR CHERRY_PICK_HEAD REVERT_HEAD sequencer rebase-merge rebase-apply BISECT_LOG BISECT_START BISECT_NAMES BISECT_TERMS; do
+     state_path=$(git rev-parse --git-path "$state_name" 2>/dev/null)
+     status=$?
+     if [ "$status" -ne 0 ] || [ -z "$state_path" ]; then
+       echo "commit skipped: could not inspect Git operation state"
+       [ "$status" -eq 0 ] && status=2
+       exit "$status"
+     fi
+     if [ -e "$state_path" ]; then
+       echo "commit skipped: Git operation is in progress"
+       exit 0
+     fi
+   done
+   if ! verify_head_identity; then
+     echo "commit skipped: HEAD changed concurrently"
+     exit 0
    fi
    git diff --cached --quiet "$old_head" -- "$checkpoint_rel"
    preflight_status=$?
@@ -87,33 +187,6 @@ fails.
      echo "commit skipped: could not snapshot checkpoint index state"
      exit "$status"
    fi
-
-   git_index_file=$(mktemp)
-   status=$?
-   if [ "$status" -ne 0 ]; then
-     echo "commit failed: could not allocate temporary index"
-     exit "$status"
-   fi
-   rm -f -- "$git_index_file"
-   status=$?
-   if [ "$status" -ne 0 ]; then
-     echo "commit failed: could not prepare temporary index"
-     exit "$status"
-   fi
-   sync_index_file=
-   real_index_lock=
-   sync_lock_owned=0
-   cleanup() {
-     [ -z "$git_index_file" ] || rm -f -- "$git_index_file"
-     [ -z "$sync_index_file" ] || rm -f -- "$sync_index_file"
-     if [ "$sync_lock_owned" -eq 1 ]; then
-       rm -f -- "$real_index_lock"
-     fi
-   }
-   trap cleanup EXIT
-   trap 'exit 129' HUP
-   trap 'exit 130' INT
-   trap 'exit 143' TERM
 
    commit_message="checkpoint: $checkpoint_stem"
    max_attempts=3
@@ -156,11 +229,15 @@ fails.
        exit "$status"
      fi
 
-     git update-ref HEAD "$new_commit" "$old_head"
+     git update-ref "$captured_head_target" "$new_commit" "$old_head"
      cas_status=$?
      if [ "$cas_status" -eq 0 ]; then
        committed_head=$new_commit
        break
+     fi
+     if ! verify_head_identity; then
+       echo "commit skipped: HEAD switched concurrently; real index preserved"
+       exit 0
      fi
      current_head=$(git rev-parse HEAD 2>/dev/null)
      if [ -n "$current_head" ] && [ "$current_head" != "$old_head" ]; then
@@ -176,22 +253,19 @@ fails.
      exit 0
    fi
 
-   # Claim the real index lock before checking it. A concurrent git add either
-   # completed before this point (and is detected below) or cannot overwrite
-   # the index while this private copy is being prepared. The real index is
-   # changed only after the successful CAS above, and only for this path.
-   real_index=$(git rev-parse --git-path index)
+   # Confirm both the captured ref identity and the successful CAS before
+   # publishing the real index. The lock prevents checkout/switch from changing
+   # HEAD between this check and the lockfile rename.
+   if ! verify_head_identity; then
+     echo "commit succeeded: ${committed_head:0:7}; real index synchronization skipped: HEAD changed concurrently"
+     exit 0
+   fi
+   current_head=$(git rev-parse --verify HEAD 2>/dev/null)
    status=$?
-   if [ "$status" -ne 0 ]; then
-     echo "commit succeeded: ${committed_head:0:7}; real index synchronization skipped"
+   if [ "$status" -ne 0 ] || [ "$current_head" != "$committed_head" ]; then
+     echo "commit succeeded: ${committed_head:0:7}; real index synchronization skipped: HEAD changed concurrently"
      exit 0
    fi
-   real_index_lock=$real_index.lock
-   if ! (set -C; : > "$real_index_lock") 2>/dev/null; then
-     echo "commit succeeded: ${committed_head:0:7}; real index synchronization skipped: index changed concurrently"
-     exit 0
-   fi
-   sync_lock_owned=1
    sync_index_file=$(mktemp)
    status=$?
    if [ "$status" -ne 0 ]; then
@@ -263,18 +337,20 @@ fails.
    repository paths containing spaces, quotes, `$()`, or backticks therefore
    remain ordinary cwd/filesystem data.
 
-   It captures `old_head`, builds a complete tree in an isolated index, creates
-   the commit with `git commit-tree`, and advances `HEAD` with
-   `git update-ref HEAD new old` as an atomic compare-and-swap. On a CAS
-   conflict it rebuilds from the newly observed `HEAD`, up to three attempts;
-   if contention continues it skips without changing the branch. The real
-   index is considered only after a successful CAS. Its lock is claimed while
-   checking the preflight index entry, so a checkpoint staged after preflight
-   is preserved and synchronization is skipped. The replacement index is
-   written completely to `index.lock` and published by the lockfile's atomic
-   rename; ordinary failures and trapped signals remove an owned lock. No
-   real-index reset is used on failure, and `git commit-tree` does not run
-   pre-commit hooks.
+   It captures the symbolic HEAD ref (or detached HEAD identity) and `old_head`,
+   builds a complete tree in an isolated index, creates the commit with
+   `git commit-tree`, and advances only the captured ref with
+   `git update-ref <captured-ref> new old` as an atomic compare-and-swap. On a
+   CAS conflict on that same ref it rebuilds from the newly observed `HEAD`, up
+   to three attempts; a changed HEAD identity skips without changing another
+   branch. Merge, rebase, cherry-pick, revert, sequencer, and bisect states are
+   skipped. The real index lock is claimed before preflight and held through
+   publication, so checkout/switch and concurrent index mutations are
+   serialized; private-index commands do not contend for that lock. The
+   replacement index is written completely to `index.lock` and published by
+   the lockfile's atomic rename; ordinary failures and trapped signals remove
+   an owned lock. No real-index reset is used on failure, and `git commit-tree`
+   does not run pre-commit hooks.
 3. Report the absolute path and the commit outcome (short SHA, unchanged/no-op,
    skip reason, or the specific failure reason).
 

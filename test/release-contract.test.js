@@ -56,8 +56,9 @@ function renderCheckpointCommand(basename) {
 
 function runCheckpointCommit(repo, basename = 'state.md', env = {}) {
   const childEnv = { ...process.env, ...env };
-  return spawnSync(BASH, ['-c', renderCheckpointCommand(basename)], {
+  return spawnSync(BASH, ['-s'], {
     cwd: repo,
+    input: renderCheckpointCommand(basename),
     encoding: 'utf8',
     env: childEnv,
   });
@@ -160,14 +161,16 @@ describe('release and generated-doc contracts', () => {
         : execFileSync('command', ['-v', 'git'], { encoding: 'utf8', shell: true }).trim();
       const bashEnv = join(wrapperDir, 'ccheckpoint-race-env.sh');
       writeFileSync(bashEnv, `git() {
-  if [ "$1" = update-ref ] && [ "$2" = HEAD ] && [ ! -e .cah-race-triggered ]; then
+  if [ "$1" = update-ref ] && [ "$2" = "$CCHECKPOINT_CAPTURED_REF" ] && [ ! -e .cah-race-triggered ]; then
     : > .cah-race-triggered
     printf 'parallel\n' > parallel.txt
-    (
-      unset GIT_INDEX_FILE
-      "$CCHECKPOINT_REAL_GIT" add -- parallel.txt
-      "$CCHECKPOINT_REAL_GIT" commit -qm parallel
-    )
+    parallel_index=$(mktemp)
+    GIT_INDEX_FILE="$parallel_index" "$CCHECKPOINT_REAL_GIT" read-tree "$4"
+    GIT_INDEX_FILE="$parallel_index" "$CCHECKPOINT_REAL_GIT" add -- parallel.txt
+    parallel_tree=$(GIT_INDEX_FILE="$parallel_index" "$CCHECKPOINT_REAL_GIT" write-tree)
+    parallel_commit=$(printf 'parallel\n' | "$CCHECKPOINT_REAL_GIT" commit-tree "$parallel_tree" -p "$4")
+    "$CCHECKPOINT_REAL_GIT" update-ref "$2" "$parallel_commit" "$4"
+    rm -f -- "$parallel_index"
   fi
   "$CCHECKPOINT_REAL_GIT" "$@"
 }
@@ -175,6 +178,7 @@ describe('release and generated-doc contracts', () => {
       const result = runCheckpointCommit(repo, 'state.md', {
         BASH_ENV: toBashPath(bashEnv),
         CCHECKPOINT_REAL_GIT: realGit,
+        CCHECKPOINT_CAPTURED_REF: runGit(repo, ['symbolic-ref', 'HEAD']),
       });
 
       assert.equal(result.status, 0, result.stderr);
@@ -188,6 +192,121 @@ describe('release and generated-doc contracts', () => {
       assert.equal(readFileSync(join(repo, 'parallel.txt'), 'utf8'), 'parallel\n');
     } finally {
       rmSync(wrapperDir, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('ccheckpoint keeps a same-OID branch switch from retargeting the CAS', () => {
+    const repo = makeCheckpointRepo();
+    const wrapperDir = mkdtempSync(join(tmpdir(), 'cah-ccheckpoint-switch-wrapper-'));
+    try {
+      const capturedRef = runGit(repo, ['symbolic-ref', 'HEAD']);
+      const capturedOid = runGit(repo, ['rev-parse', capturedRef]);
+      runGit(repo, ['branch', 'same-oid']);
+      writeFileSync(join(repo, 'docs', 'checkpoints', 'state.md'), 'switch race\n');
+      const bashEnv = join(wrapperDir, 'ccheckpoint-switch-env.sh');
+      writeFileSync(bashEnv, `git() {
+  if [ "$1" = update-ref ] && [ "$2" = "$CCHECKPOINT_CAPTURED_REF" ] && [ ! -e .cah-switch-triggered ]; then
+    : > .cah-switch-triggered
+    "$CCHECKPOINT_REAL_GIT" switch same-oid >/dev/null 2>&1
+  fi
+  "$CCHECKPOINT_REAL_GIT" "$@"
+}
+`);
+      const result = runCheckpointCommit(repo, 'state.md', {
+        BASH_ENV: toBashPath(bashEnv),
+        CCHECKPOINT_REAL_GIT: process.platform === 'win32'
+          ? execFileSync('where.exe', ['git'], { encoding: 'utf8' }).split(/\r?\n/)[0]
+          : execFileSync('command', ['-v', 'git'], { encoding: 'utf8', shell: true }).trim(),
+        CCHECKPOINT_CAPTURED_REF: capturedRef,
+      });
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /commit succeeded: [0-9a-f]{7}/);
+      assert.equal(runGit(repo, ['symbolic-ref', 'HEAD']), capturedRef);
+      assert.equal(runGit(repo, ['rev-parse', 'refs/heads/same-oid']), capturedOid);
+      assert.notEqual(runGit(repo, ['rev-parse', capturedRef]), capturedOid);
+    } finally {
+      rmSync(wrapperDir, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('ccheckpoint does not retry after a different-OID HEAD switch', () => {
+    const repo = makeCheckpointRepo();
+    const wrapperDir = mkdtempSync(join(tmpdir(), 'cah-ccheckpoint-switch-wrapper-'));
+    try {
+      const capturedRef = runGit(repo, ['symbolic-ref', 'HEAD']);
+      runGit(repo, ['switch', '-c', 'different-oid']);
+      writeFileSync(join(repo, 'unrelated.txt'), 'different branch\n');
+      runGit(repo, ['add', '--', 'unrelated.txt']);
+      runGit(repo, ['commit', '-qm', 'different branch']);
+      const differentHead = runGit(repo, ['rev-parse', 'HEAD']);
+      runGit(repo, ['switch', capturedRef.replace('refs/heads/', '')]);
+      const capturedOid = runGit(repo, ['rev-parse', capturedRef]);
+      writeFileSync(join(repo, 'docs', 'checkpoints', 'state.md'), 'different switch race\n');
+      const bashEnv = join(wrapperDir, 'ccheckpoint-switch-env.sh');
+      writeFileSync(bashEnv, `git() {
+  if [ "$1" = update-ref ] && [ "$2" = "$CCHECKPOINT_CAPTURED_REF" ] && [ ! -e .cah-switch-triggered ]; then
+    : > .cah-switch-triggered
+    "$CCHECKPOINT_REAL_GIT" symbolic-ref HEAD refs/heads/different-oid
+  fi
+  "$CCHECKPOINT_REAL_GIT" "$@"
+}
+`);
+      const result = runCheckpointCommit(repo, 'state.md', {
+        BASH_ENV: toBashPath(bashEnv),
+        CCHECKPOINT_REAL_GIT: process.platform === 'win32'
+          ? execFileSync('where.exe', ['git'], { encoding: 'utf8' }).split(/\r?\n/)[0]
+          : execFileSync('command', ['-v', 'git'], { encoding: 'utf8', shell: true }).trim(),
+        CCHECKPOINT_CAPTURED_REF: capturedRef,
+      });
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /real index synchronization skipped: HEAD changed concurrently/);
+      assert.doesNotMatch(result.stdout, /retry limit reached/);
+      assert.equal(runGit(repo, ['rev-parse', 'HEAD']), differentHead);
+      assert.notEqual(runGit(repo, ['rev-parse', capturedRef]), capturedOid);
+    } finally {
+      rmSync(wrapperDir, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('ccheckpoint skips merge and rebase states', () => {
+    for (const [state, isDirectory] of [['MERGE_HEAD', false], ['rebase-merge', true]]) {
+      const repo = makeCheckpointRepo();
+      try {
+        const statePath = runGit(repo, ['rev-parse', '--path-format=absolute', '--git-path', state]);
+        if (isDirectory) mkdirSync(statePath, { recursive: true });
+        else writeFileSync(statePath, `${runGit(repo, ['rev-parse', 'HEAD'])}\n`);
+        writeFileSync(join(repo, 'docs', 'checkpoints', 'state.md'), `${state} update\n`);
+        const beforeHead = runGit(repo, ['rev-parse', 'HEAD']);
+        const result = runCheckpointCommit(repo);
+
+        assert.equal(result.status, 0, result.stderr);
+        assert.match(result.stdout, /Git operation is in progress/);
+        assert.equal(runGit(repo, ['rev-parse', 'HEAD']), beforeHead);
+      } finally {
+        rmSync(repo, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it('ccheckpoint skips before commit when the existing index.lock is present', () => {
+    const repo = makeCheckpointRepo();
+    try {
+      const indexPath = runGit(repo, ['rev-parse', '--path-format=absolute', '--git-path', 'index']);
+      writeFileSync(`${indexPath}.lock`, 'held\n');
+      writeFileSync(join(repo, 'docs', 'checkpoints', 'state.md'), 'locked update\n');
+      const beforeHead = runGit(repo, ['rev-parse', 'HEAD']);
+      const result = runCheckpointCommit(repo);
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /real index is locked/);
+      assert.equal(runGit(repo, ['rev-parse', 'HEAD']), beforeHead);
+      assert.equal(existsSync(`${indexPath}.lock`), true);
+    } finally {
       rmSync(repo, { recursive: true, force: true });
     }
   });

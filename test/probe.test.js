@@ -1,6 +1,15 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
+import {
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  mkdirSync,
+  unlinkSync,
+  symlinkSync,
+  lstatSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -26,6 +35,19 @@ function harness() {
   };
 }
 
+function makeSymlinkOrSkip(t, linkPath, targetPath) {
+  try {
+    symlinkSync(targetPath, linkPath, 'file');
+    return true;
+  } catch (e) {
+    if (process.platform === 'win32' && (e.code === 'EPERM' || e.code === 'EACCES')) {
+      t.skip('symbolic links are unavailable on this Windows runner');
+      return false;
+    }
+    throw e;
+  }
+}
+
 describe('enableProbe', () => {
   it('creates settings.json with probe entry when file is missing', () => {
     const h = harness();
@@ -48,6 +70,36 @@ describe('enableProbe', () => {
     const s = JSON.parse(readFileSync(h.settingsPath, 'utf8'));
     assert.equal(s.other, 'keep', 'unrelated keys must survive');
     assert.equal(s.statusLine['cah-sentinel'], PROBE_SENTINEL);
+  });
+
+  it('does not overwrite a pre-existing foreign .tmp file', () => {
+    const h = harness();
+    const tempPath = `${h.settingsPath}.tmp`;
+    const foreignTemp = '{"foreign":true}\n';
+    writeFileSync(tempPath, foreignTemp);
+
+    enableProbe(h);
+
+    assert.equal(readFileSync(tempPath, 'utf8'), foreignTemp);
+    const settings = JSON.parse(readFileSync(h.settingsPath, 'utf8'));
+    assert.equal(settings.statusLine['cah-sentinel'], PROBE_SENTINEL);
+  });
+
+  it('does not follow a pre-existing .tmp symlink while publishing JSON', (t) => {
+    const h = harness();
+    const tempPath = `${h.settingsPath}.tmp`;
+    const victimPath = `${h.settingsPath}.victim`;
+    const victim = '{"victim":"untouched"}\n';
+    writeFileSync(victimPath, victim);
+    if (!makeSymlinkOrSkip(t, tempPath, victimPath)) return;
+
+    enableProbe(h);
+
+    assert.equal(lstatSync(tempPath).isSymbolicLink(), true);
+    assert.equal(readFileSync(tempPath, 'utf8'), victim);
+    assert.equal(readFileSync(victimPath, 'utf8'), victim);
+    const settings = JSON.parse(readFileSync(h.settingsPath, 'utf8'));
+    assert.equal(settings.statusLine['cah-sentinel'], PROBE_SENTINEL);
   });
 
   it('refuses to re-arm when probe already active (would erase backup)', () => {

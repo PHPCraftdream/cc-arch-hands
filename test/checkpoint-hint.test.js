@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, existsSync, mkdirSync, utimesSync, readdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, utimesSync, readdirSync, unlinkSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -37,6 +37,15 @@ function runHintAsync(stdin, home, extraEnv = {}) {
 
 function isolatedHome() {
   return mkdtempSync(join(tmpdir(), 'cah-hint-'));
+}
+
+async function waitForPath(path, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(path)) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.fail(`timed out waiting for ${path}`);
 }
 
 // Write a JSONL transcript with one line carrying model + usage.input_tokens.
@@ -215,6 +224,31 @@ describe('cah-checkpoint-hint bin', () => {
     assert.equal(stdout, EXPECTED);
   });
 
+  it('missing model does not use the 200K fallback without an explicit limit', () => {
+    const home = isolatedHome();
+    const tp = writeTranscript(home, null, 184_000);
+    const result = runHint(
+      JSON.stringify({ session_id: 's-missing-model', transcript_path: tp }),
+      home,
+    );
+    assert.equal(result.stdout, '');
+    assert.equal(markerExists(home, 's-missing-model'), false);
+  });
+
+  it('missing model emits when the hook envelope supplies a valid limit', () => {
+    const home = isolatedHome();
+    const tp = writeTranscript(home, null, 95_000);
+    const result = runHint(
+      JSON.stringify({
+        session_id: 's-envelope-limit',
+        transcript_path: tp,
+        context_window: { context_window_size: 100_000 },
+      }),
+      home,
+    );
+    assert.equal(result.stdout, EXPECTED);
+  });
+
   it('hashes traversal-shaped session IDs into a fixed marker filename', () => {
     const home = isolatedHome();
     const sessionId = `../escape/${'x'.repeat(400)}`;
@@ -238,5 +272,189 @@ describe('cah-checkpoint-hint bin', () => {
       })));
     assert.equal(results.filter((result) => result.stdout === EXPECTED).length, 1);
     assert.ok(results.every((result) => result.status === 0));
+  });
+
+  it('24 concurrent claims recover one expired marker without double delivery', async () => {
+    const home = isolatedHome();
+    const sessionId = 'parallel-expired-hint';
+    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const marker = join(home, '.claude', `cah-hint-shown-${hash}`);
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    writeFileSync(marker, 'old');
+    const old = Date.now() / 1000 - 30 * 24 * 60 * 60;
+    utimesSync(marker, old, old);
+    const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+    const input = JSON.stringify({ session_id: sessionId, transcript_path: tp });
+    const results = await Promise.all(Array.from({ length: 24 }, () => runHintAsync(input, home)));
+    assert.equal(results.filter((result) => result.stdout === EXPECTED).length, 1);
+    assert.ok(results.every((result) => result.status === 0));
+  });
+
+  it('recovers a claim left by a crashed process before delivery', () => {
+    const home = isolatedHome();
+    const sessionId = 'recovery-hint-session';
+    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const markerDir = join(home, '.claude');
+    mkdirSync(markerDir, { recursive: true });
+    const claim = join(markerDir, `.cah-marker-claim-cah-hint-shown-${hash}`);
+    writeFileSync(claim, JSON.stringify({ pid: 99999999, nonce: 'dead-owner', claimedAt: Date.now() - 60_000 }));
+    const old = Date.now() / 1000 - 60;
+    utimesSync(claim, old, old);
+    const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+    const result = runHint(JSON.stringify({ session_id: sessionId, transcript_path: tp }), home);
+    assert.equal(result.stdout, EXPECTED);
+    assert.equal(markerExists(home, sessionId), true);
+  });
+
+  it('does not reclaim a successor claim installed after the dead-owner check', async () => {
+    const home = isolatedHome();
+    const sessionId = 'hint-reclaim-toctou';
+    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const markerDir = join(home, '.claude');
+    mkdirSync(markerDir, { recursive: true });
+    const claim = join(markerDir, `.cah-marker-claim-cah-hint-shown-${hash}`);
+    writeFileSync(claim, JSON.stringify({ pid: 99999999, nonce: 'dead-owner' }));
+    const interlock = join(home, 'hint-reclaim-interlock');
+    const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+    const running = runHintAsync(
+      JSON.stringify({ session_id: sessionId, transcript_path: tp }),
+      home,
+      {
+        CAH_TEST_ONLY: '1',
+        CAH_TEST_ONLY_OWNER_INTERLOCK: interlock,
+        CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'claim-reclaim',
+      },
+    );
+    await waitForPath(`${interlock}.ready`);
+    unlinkSync(claim);
+    const successor = { pid: process.pid, nonce: 'live-successor' };
+    writeFileSync(claim, JSON.stringify(successor));
+    writeFileSync(`${interlock}.go`, 'go');
+    const result = await running;
+    assert.equal(result.stdout, '');
+    assert.deepEqual(JSON.parse(readFileSync(claim, 'utf8')), successor);
+    assert.equal(markerExists(home, sessionId), false);
+  });
+
+  it('fences a three-party claim race while displaced owner B is restored', async () => {
+    const home = isolatedHome();
+    const sessionId = 'hint-three-party';
+    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const markerDir = join(home, '.claude');
+    mkdirSync(markerDir, { recursive: true });
+    const claim = join(markerDir, `.cah-marker-claim-cah-hint-shown-${hash}`);
+    writeFileSync(claim, JSON.stringify({ pid: 99999999, nonce: 'stale-a' }));
+    const interlock = join(home, 'hint-three-party-interlock');
+    const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+    const input = JSON.stringify({ session_id: sessionId, transcript_path: tp });
+    const reclaimer = runHintAsync(input, home, {
+      CAH_TEST_ONLY: '1',
+      CAH_TEST_ONLY_OWNER_INTERLOCK: interlock,
+      CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'claim-reclaim-three-party',
+    });
+    await waitForPath(`${interlock}.before.ready`);
+    unlinkSync(claim);
+    const ownerB = { pid: process.pid, nonce: 'live-b' };
+    writeFileSync(claim, JSON.stringify(ownerB));
+    writeFileSync(`${interlock}.before.go`, 'go');
+    await waitForPath(`${interlock}.vacancy.ready`);
+    const contenderC = runHint(input, home);
+    assert.equal(contenderC.stdout, '', 'C must not acquire while B is fenced in a tombstone');
+    writeFileSync(`${interlock}.vacancy.go`, 'go');
+    const result = await reclaimer;
+    assert.equal(result.stdout, '');
+    assert.deepEqual(JSON.parse(readFileSync(claim, 'utf8')), ownerB);
+    assert.equal(markerExists(home, sessionId), false);
+  });
+
+  it('recovers an abandoned claim fence without losing its displaced owner', () => {
+    const home = isolatedHome();
+    const sessionId = 'hint-abandoned-fence';
+    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const markerDir = join(home, '.claude');
+    mkdirSync(markerDir, { recursive: true });
+    const claim = join(markerDir, `.cah-marker-claim-cah-hint-shown-${hash}`);
+    const fence = `${claim}.taken-99999999-dead-operation`;
+    const ownerB = { pid: process.pid, nonce: 'restored-b' };
+    writeFileSync(fence, JSON.stringify(ownerB));
+    const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+    const result = runHint(JSON.stringify({ session_id: sessionId, transcript_path: tp }), home);
+    assert.equal(result.stdout, '');
+    assert.deepEqual(JSON.parse(readFileSync(claim, 'utf8')), ownerB);
+    assert.equal(existsSync(fence), false);
+  });
+
+  it('ignores the interlock environment without the explicit test-only guard', async () => {
+    const home = isolatedHome();
+    const interlock = join(home, 'unguarded-interlock');
+    const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+    const result = await runHintAsync(
+      JSON.stringify({ session_id: 'unguarded-interlock', transcript_path: tp }),
+      home,
+      {
+        CAH_TEST_ONLY_OWNER_INTERLOCK: interlock,
+        CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'claim-release',
+      },
+    );
+    assert.equal(result.stdout, EXPECTED);
+    assert.equal(existsSync(`${interlock}.ready`), false);
+  });
+
+  it('old claim release cannot unlink a successor owner', async () => {
+    const home = isolatedHome();
+    const sessionId = 'hint-release-toctou';
+    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const markerDir = join(home, '.claude');
+    const claim = join(markerDir, `.cah-marker-claim-cah-hint-shown-${hash}`);
+    const interlock = join(home, 'hint-release-interlock');
+    const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+    const running = runHintAsync(
+      JSON.stringify({ session_id: sessionId, transcript_path: tp }),
+      home,
+      {
+        CAH_TEST_ONLY: '1',
+        CAH_TEST_ONLY_OWNER_INTERLOCK: interlock,
+        CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'claim-release',
+      },
+    );
+    await waitForPath(`${interlock}.ready`);
+    unlinkSync(claim);
+    const successor = { pid: process.pid, nonce: 'release-successor' };
+    writeFileSync(claim, JSON.stringify(successor));
+    writeFileSync(`${interlock}.go`, 'go');
+    const result = await running;
+    assert.equal(result.stdout, EXPECTED);
+    assert.deepEqual(JSON.parse(readFileSync(claim, 'utf8')), successor);
+    assert.equal(markerExists(home, sessionId), true);
+  });
+
+  it('stale-marker cleanup restores a freshly replaced delivered marker', async () => {
+    const home = isolatedHome();
+    const sessionId = 'hint-marker-toctou';
+    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const markerDir = join(home, '.claude');
+    mkdirSync(markerDir, { recursive: true });
+    const marker = join(markerDir, `cah-hint-shown-${hash}`);
+    writeFileSync(marker, 'stale');
+    const old = Date.now() / 1000 - 30 * 24 * 60 * 60;
+    utimesSync(marker, old, old);
+    const interlock = join(home, 'hint-marker-interlock');
+    const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+    const running = runHintAsync(
+      JSON.stringify({ session_id: sessionId, transcript_path: tp }),
+      home,
+      {
+        CAH_TEST_ONLY: '1',
+        CAH_TEST_ONLY_OWNER_INTERLOCK: interlock,
+        CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'marker-remove',
+      },
+    );
+    await waitForPath(`${interlock}.ready`);
+    unlinkSync(marker);
+    writeFileSync(marker, 'fresh-successor');
+    writeFileSync(`${interlock}.go`, 'go');
+    const result = await running;
+    assert.equal(result.stdout, '');
+    assert.equal(readFileSync(marker, 'utf8'), 'fresh-successor');
   });
 });

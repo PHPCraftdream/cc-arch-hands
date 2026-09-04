@@ -1,6 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  writeFileSync,
+  readFileSync,
+  symlinkSync,
+  lstatSync,
+} from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -35,12 +41,61 @@ describe('getLatestVersion caching', () => {
     return join(dir, 'update-check.json');
   }
 
+  function makeSymlinkOrSkip(t, linkPath, targetPath) {
+    try {
+      symlinkSync(targetPath, linkPath, 'file');
+      return true;
+    } catch (e) {
+      if (process.platform === 'win32' && (e.code === 'EPERM' || e.code === 'EACCES')) {
+        t.skip('symbolic links are unavailable on this Windows runner');
+        return false;
+      }
+      throw e;
+    }
+  }
+
   it('returns the cached value directly when within the TTL window (no network call)', () => {
     const cachePath = isolatedCachePath();
     const now = 1_000_000;
     writeFileSync(cachePath, JSON.stringify({ latestVersion: '9.9.9', checkedAt: now }));
     const result = getLatestVersion(cachePath, 24 * 60 * 60 * 1000, now + 1000);
     assert.equal(result, '9.9.9');
+  });
+
+  it('does not overwrite a pre-existing foreign .tmp file while refreshing', () => {
+    const cachePath = isolatedCachePath();
+    const tempPath = `${cachePath}.tmp`;
+    const foreignTemp = '{"foreign":true}\n';
+    writeFileSync(tempPath, foreignTemp);
+    writeFileSync(cachePath, JSON.stringify({ latestVersion: '8.8.8', checkedAt: 0 }));
+    const now = Date.now();
+
+    const result = getLatestVersion(cachePath, 24 * 60 * 60 * 1000, now);
+
+    assert.equal(readFileSync(tempPath, 'utf8'), foreignTemp);
+    const published = JSON.parse(readFileSync(cachePath, 'utf8'));
+    assert.equal(published.checkedAt, now);
+    assert.equal(published.latestVersion, result);
+  });
+
+  it('does not follow a pre-existing .tmp symlink while refreshing JSON', (t) => {
+    const cachePath = isolatedCachePath();
+    const tempPath = `${cachePath}.tmp`;
+    const victimPath = `${cachePath}.victim`;
+    const victim = '{"victim":"untouched"}\n';
+    writeFileSync(victimPath, victim);
+    writeFileSync(cachePath, JSON.stringify({ latestVersion: '8.8.8', checkedAt: 0 }));
+    if (!makeSymlinkOrSkip(t, tempPath, victimPath)) return;
+    const now = Date.now();
+
+    const result = getLatestVersion(cachePath, 24 * 60 * 60 * 1000, now);
+
+    assert.equal(lstatSync(tempPath).isSymbolicLink(), true);
+    assert.equal(readFileSync(tempPath, 'utf8'), victim);
+    assert.equal(readFileSync(victimPath, 'utf8'), victim);
+    const published = JSON.parse(readFileSync(cachePath, 'utf8'));
+    assert.equal(published.checkedAt, now);
+    assert.equal(published.latestVersion, result);
   });
 
   it('returns null on a cold cache read (missing file, no crash)', () => {
