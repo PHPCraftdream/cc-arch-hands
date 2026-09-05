@@ -1,0 +1,6 @@
+{
+  "name": "cc-arch-hands-cah-bin",
+  "private": true,
+  "type": "module",
+  "cah-managed": "// cah-bin:v1"
+}

@@ -210,6 +210,16 @@ describe('run', () => {
     assert.equal(run(['bogus']), 2);
   });
 
+  it('install and reinstall return 2 for any strict parseArgs error', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-parse-positional-'));
+    try {
+      assert.equal(run(['install', '--cwd', dir, 'unexpected']), 2);
+      assert.equal(run(['reinstall', '--cwd', dir, 'unexpected']), 2);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('version returns 0', () => {
     assert.equal(run(['version']), 0);
   });

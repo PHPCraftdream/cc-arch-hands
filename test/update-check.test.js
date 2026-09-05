@@ -4,6 +4,9 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
+  rmdirSync,
+  unlinkSync,
   writeFileSync,
   readFileSync,
   symlinkSync,
@@ -51,13 +54,14 @@ async function resolveWithin(promise, timeoutMs, label) {
   }
 }
 
-function runUpdateWorker(cachePath, nowMs, fetchSpecPath) {
+function runUpdateWorker(cachePath, nowMs, fetchSpecPath, env = {}) {
   const updateCheckUrl = new URL('../lib/update-check.js', import.meta.url).href;
   const source = `
     const { parentPort, workerData } = require('node:worker_threads');
     (async () => {
       process.env.CAH_TEST_ONLY = '1';
       process.env.CAH_TEST_ONLY_UPDATE_FETCH = workerData.fetchSpecPath;
+      for (const [key, value] of Object.entries(workerData.env)) process.env[key] = value;
       const { getLatestVersion } = await import(workerData.updateCheckUrl);
       const result = getLatestVersion(workerData.cachePath, workerData.ttlMs, workerData.nowMs);
       parentPort.postMessage(result);
@@ -74,6 +78,7 @@ function runUpdateWorker(cachePath, nowMs, fetchSpecPath) {
         nowMs,
         ttlMs: 10_000,
         updateCheckUrl,
+        env,
       },
     });
     worker.once('message', resolve);
@@ -307,6 +312,128 @@ describe('getLatestVersion caching', () => {
     writeFileSync(fetchSpec, JSON.stringify({ result: '9.9.9' }));
     assert.equal(await runUpdateWorker(cachePath, now, fetchSpec), '9.9.9');
     assert.equal(existsSync(lockPath), false);
+  });
+
+  it('reclaims a lock past the absolute lease even when its PID is live', async () => {
+    const cachePath = isolatedCachePath();
+    const dir = dirname(cachePath);
+    const now = 6_000_000;
+    writeFileSync(cachePath, JSON.stringify({ latestVersion: '8.8.8', checkedAt: 0 }));
+    const lockPath = `${cachePath}.lock`;
+    mkdirSync(lockPath);
+    writeFileSync(join(lockPath, 'owner.json'), JSON.stringify({
+      kind: 'cc-arch-hands-update-check',
+      pid: process.pid,
+      token: 'reused-pid-owner',
+      startedAt: Date.now() - 6 * 60 * 1000,
+    }));
+    const fetchSpec = join(dir, 'lease-fetch.json');
+    writeFileSync(fetchSpec, JSON.stringify({ result: '9.9.9' }));
+
+    assert.equal(await runUpdateWorker(cachePath, now, fetchSpec), '9.9.9');
+    assert.equal(existsSync(lockPath), false);
+  });
+
+  it('recovers an abandoned fence without displacing its live owner', async () => {
+    const cachePath = isolatedCachePath();
+    const dir = dirname(cachePath);
+    const now = 6_500_000;
+    writeFileSync(cachePath, JSON.stringify({ latestVersion: '8.8.8', checkedAt: 0 }));
+    const lockPath = `${cachePath}.lock`;
+    const fencePath = `${lockPath}.stale-99999999-abandoned-fence`;
+    mkdirSync(fencePath);
+    writeFileSync(join(fencePath, 'owner.json'), JSON.stringify({
+      kind: 'cc-arch-hands-update-check',
+      pid: process.pid,
+      token: 'restored-b',
+      startedAt: Date.now(),
+    }));
+    const fetchSpec = join(dir, 'abandoned-fence-fetch.json');
+    const fetched = join(dir, 'abandoned-fence.fetched');
+    writeFileSync(fetchSpec, JSON.stringify({ readyPath: fetched, result: '9.9.9' }));
+
+    assert.equal(await runUpdateWorker(cachePath, now, fetchSpec), '8.8.8');
+    assert.equal(existsSync(fencePath), false);
+    assert.deepEqual(JSON.parse(readFileSync(join(lockPath, 'owner.json'), 'utf8')).token, 'restored-b');
+    assert.equal(existsSync(fetched), false);
+  });
+
+  it('fences a stale A/live B/contender C reclaim race', async () => {
+    const cachePath = isolatedCachePath();
+    const dir = dirname(cachePath);
+    const now = 7_000_000;
+    writeFileSync(cachePath, JSON.stringify({ latestVersion: '8.8.8', checkedAt: 0 }));
+    const lockPath = `${cachePath}.lock`;
+    mkdirSync(lockPath);
+    writeFileSync(join(lockPath, 'owner.json'), JSON.stringify({
+      kind: 'cc-arch-hands-update-check',
+      pid: 99999999,
+      token: 'stale-a',
+      startedAt: Date.now() - 60_000,
+    }));
+    const aSpec = join(dir, 'reclaimer-fetch.json');
+    const cSpec = join(dir, 'contender-fetch.json');
+    const cFetched = join(dir, 'contender.fetched');
+    writeFileSync(aSpec, JSON.stringify({ result: '9.9.9' }));
+    writeFileSync(cSpec, JSON.stringify({ readyPath: cFetched, result: '10.10.10' }));
+    const interlock = join(dir, 'reclaim-three-party-interlock');
+    const reclaimer = runUpdateWorker(cachePath, now, aSpec, {
+      CAH_TEST_ONLY_UPDATE_LOCK_INTERLOCK: interlock,
+      CAH_TEST_ONLY_UPDATE_LOCK_INTERLOCK_PHASE: 'reclaim-three-party',
+    });
+
+    await waitForPath(`${interlock}.before.ready`);
+    unlinkSync(join(lockPath, 'owner.json'));
+    rmdirSync(lockPath);
+    mkdirSync(lockPath);
+    writeFileSync(join(lockPath, 'owner.json'), JSON.stringify({
+      kind: 'cc-arch-hands-update-check',
+      pid: process.pid,
+      token: 'live-b',
+      startedAt: Date.now(),
+    }));
+    writeFileSync(`${interlock}.before.go`, 'go');
+    await waitForPath(`${interlock}.vacancy.ready`);
+
+    assert.equal(await resolveWithin(
+      runUpdateWorker(cachePath, now, cSpec),
+      1_000,
+      'fenced contender C',
+    ), '8.8.8');
+    assert.equal(existsSync(cFetched), false, 'C must not fetch while B is fenced');
+    writeFileSync(`${interlock}.vacancy.go`, 'go');
+
+    assert.equal(await reclaimer, '8.8.8');
+    assert.deepEqual(JSON.parse(readFileSync(join(lockPath, 'owner.json'), 'utf8')), {
+      kind: 'cc-arch-hands-update-check',
+      pid: process.pid,
+      token: 'live-b',
+      startedAt: JSON.parse(readFileSync(join(lockPath, 'owner.json'), 'utf8')).startedAt,
+    });
+    assert.equal(readdirSync(dir).some((name) => name.startsWith('update-check.json.lock.stale-')), false);
+  });
+
+  it('does not overwrite a concurrent cache winner after the final reread', async () => {
+    const cachePath = isolatedCachePath();
+    const dir = dirname(cachePath);
+    const now = 8_000_000;
+    writeFileSync(cachePath, JSON.stringify({ latestVersion: '8.8.8', checkedAt: 0 }));
+    const fetchSpec = join(dir, 'cas-fetch.json');
+    writeFileSync(fetchSpec, JSON.stringify({ result: '9.9.9' }));
+    const interlock = join(dir, 'cas-publication-interlock');
+    const publisher = runUpdateWorker(cachePath, now, fetchSpec, {
+      CAH_TEST_ONLY_FSUTIL_INTERLOCK: interlock,
+      CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE: 'write-before-rename',
+    });
+    await waitForPath(`${interlock}.ready`);
+    writeFileAtomic(cachePath, JSON.stringify({ latestVersion: '10.10.10', checkedAt: now + 1 }) + '\n');
+    writeFileSync(`${interlock}.go`, 'go');
+
+    assert.equal(await publisher, '10.10.10');
+    assert.deepEqual(JSON.parse(readFileSync(cachePath, 'utf8')), {
+      latestVersion: '10.10.10',
+      checkedAt: now + 1,
+    });
   });
 });
 

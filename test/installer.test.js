@@ -18,7 +18,7 @@ import { writeModelAgents, removeModelAgents } from '../lib/agents.js';
 import { writeCodexAgents, removeCodexAgents } from '../lib/codex-agents.js';
 import { writeSkills, removeSkills } from '../lib/skills.js';
 import { embeddedTemplates, diskTemplates } from '../lib/templates.js';
-import { writeFileAtomic } from '../lib/fsutil.js';
+import { writeFileAtomic, removeOwnedRegularFile, regularFileIdentity } from '../lib/fsutil.js';
 
 const FABLE_ORACLE = [
   ['fl', 'claude-fable-5-1', 'low'],
@@ -101,11 +101,110 @@ function runSkillWorker(action, dir, interlock, phase, subset = undefined) {
   });
 }
 
+function runLeafWriterWorker(kind, dir, interlock) {
+  const moduleUrls = {
+    commands: new URL('../lib/commands.js', import.meta.url).href,
+    agents: new URL('../lib/agents.js', import.meta.url).href,
+    codex: new URL('../lib/codex-agents.js', import.meta.url).href,
+    scope: new URL('../lib/scope.js', import.meta.url).href,
+  };
+  const source = `
+    const { parentPort, workerData } = require('node:worker_threads');
+    (async () => {
+      process.env.CAH_TEST_ONLY = '1';
+      process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK = workerData.interlock;
+      process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE = 'write-before-rename';
+      const scopeModule = await import(workerData.scopeUrl);
+      const scope = new scopeModule.Scope({ cwd: workerData.dir });
+      const module = await import(workerData.writerUrl);
+      const result = workerData.kind === 'commands'
+        ? module.writeModelCommands(null, scope)
+        : workerData.kind === 'agents'
+          ? module.writeModelAgents(null, scope)
+          : module.writeCodexAgents(null, scope);
+      parentPort.postMessage(result);
+    })().catch((error) => { setImmediate(() => { throw error; }); });
+  `;
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(source, {
+      eval: true,
+      workerData: {
+        kind,
+        dir,
+        interlock,
+        writerUrl: moduleUrls[kind],
+        scopeUrl: moduleUrls.scope,
+      },
+    });
+    worker.once('message', resolve);
+    worker.once('error', reject);
+    worker.once('exit', (code) => {
+      if (code !== 0) reject(new Error(`${kind} worker exited with code ${code}`));
+    });
+  });
+}
+
+function runAtomicRetryWorker(dest, interlock) {
+  const fsutilUrl = new URL('../lib/fsutil.js', import.meta.url).href;
+  const source = `
+    const { parentPort, workerData } = require('node:worker_threads');
+    (async () => {
+      process.env.CAH_TEST_ONLY = '1';
+      process.env.CAH_TEST_ONLY_FSUTIL_RENAME_TRANSIENT_FAILURES = '1';
+      process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK = workerData.interlock;
+      process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE = 'rename-retry';
+      const fsutil = await import(workerData.fsutilUrl);
+      const snapshot = fsutil.captureRegularFileSnapshot(workerData.dest);
+      fsutil.writeFileAtomic(workerData.dest, 'new managed body\\n', {
+        expectedDestination: snapshot.expectedDestination,
+      });
+      parentPort.postMessage('published');
+    })().catch((error) => { setImmediate(() => { throw error; }); });
+  `;
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(source, {
+      eval: true,
+      workerData: { dest, interlock, fsutilUrl },
+    });
+    worker.once('message', resolve);
+    worker.once('error', reject);
+    worker.once('exit', (code) => {
+      if (code !== 0) reject(new Error(`retry worker exited with code ${code}`));
+    });
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Atomic file writes
 // ---------------------------------------------------------------------------
 
 describe('writeFileAtomic', () => {
+  it('keeps normal umask/default modes and preserves an existing mode', (t) => {
+    if (process.platform === 'win32') {
+      t.skip('POSIX mode bits are not portable on Windows');
+      return;
+    }
+    const dir = tmpDir();
+    const created = join(dir, 'created.txt');
+    const existing = join(dir, 'existing.txt');
+    writeFileAtomic(created, 'created\n');
+    assert.equal(statSync(created).mode & 0o777, 0o666 & ~process.umask());
+    writeFileSync(existing, 'before\n', { mode: 0o640 });
+    writeFileAtomic(existing, 'after\n');
+    assert.equal(statSync(existing).mode & 0o777, 0o640);
+  });
+
+  it('applies an explicit mode to the private temp before publication', (t) => {
+    if (process.platform === 'win32') {
+      t.skip('POSIX mode bits are not portable on Windows');
+      return;
+    }
+    const dir = tmpDir();
+    const dest = join(dir, 'executable');
+    writeFileAtomic(dest, '#!/usr/bin/env node\n', { mode: 0o755 });
+    assert.equal(statSync(dest).mode & 0o777, 0o755);
+  });
+
   it('does not follow or replace a predictable temp symlink', (t) => {
     const dir = tmpDir();
     const dest = join(dir, 'target.txt');
@@ -186,6 +285,41 @@ describe('writeFileAtomic', () => {
       readdirSync(dir).filter((name) => name.includes('.cah-tmp-')),
       [],
     );
+  });
+
+  it('revalidates the expected leaf after an injected transient rename failure', async () => {
+    const dir = tmpDir();
+    const dest = join(dir, 'retry-target.txt');
+    const interlock = join(dir, 'rename-retry-interlock');
+    writeFileSync(dest, 'old managed body\n');
+    const running = runAtomicRetryWorker(dest, interlock);
+    await waitForPath(`${interlock}.ready`);
+    unlinkSync(dest);
+    writeFileSync(dest, 'foreign successor\n', { mode: 0o640 });
+    writeFileSync(`${interlock}.go`, 'go');
+    await assert.rejects(running, /destination leaf changed concurrently|refusing operation/);
+    assert.equal(readFileSync(dest, 'utf8'), 'foreign successor\n');
+    if (process.platform !== 'win32') assert.equal(statSync(dest).mode & 0o777, 0o640);
+  });
+
+  it('retries transient owned-file removal without leaving quarantine', () => {
+    const dir = tmpDir();
+    const dest = join(dir, 'remove-target.txt');
+    writeFileSync(dest, 'owned\n');
+    const identity = regularFileIdentity(dest);
+    const old = process.env.CAH_TEST_ONLY;
+    const oldFailures = process.env.CAH_TEST_ONLY_FSUTIL_REMOVE_TRANSIENT_FAILURES;
+    process.env.CAH_TEST_ONLY = '1';
+    process.env.CAH_TEST_ONLY_FSUTIL_REMOVE_TRANSIENT_FAILURES = '2';
+    try {
+      assert.equal(removeOwnedRegularFile(dest, identity), true);
+    } finally {
+      if (old === undefined) delete process.env.CAH_TEST_ONLY; else process.env.CAH_TEST_ONLY = old;
+      if (oldFailures === undefined) delete process.env.CAH_TEST_ONLY_FSUTIL_REMOVE_TRANSIENT_FAILURES;
+      else process.env.CAH_TEST_ONLY_FSUTIL_REMOVE_TRANSIENT_FAILURES = oldFailures;
+    }
+    assert.ok(!existsSync(dest));
+    assert.deepEqual(readdirSync(dir).filter((name) => name.includes('.cah-owned-remove-')), []);
   });
 });
 
@@ -739,11 +873,75 @@ describe('removeCodexAgents', () => {
   });
 });
 
+describe('shared leaf publication', () => {
+  for (const [kind, install, leaf] of [
+    ['commands', (scope) => writeModelCommands(null, scope), ['.claude', 'commands', 'fl.md']],
+    ['agents', (scope) => writeModelAgents(null, scope), ['.claude', 'agents', 'fl.md']],
+    ['codex', (scope) => writeCodexAgents(null, scope), ['.codex', 'agents', 'l55.toml']],
+  ]) {
+    it(`${kind} refuses a foreign successor and preserves its mode`, async () => {
+      const dir = tmpDir();
+      const scope = new Scope({ cwd: dir });
+      install(scope);
+      const destination = join(dir, ...leaf);
+      const interlock = join(dir, `${kind}-leaf-successor-interlock`);
+      const running = runLeafWriterWorker(kind, dir, interlock);
+      await waitForPath(`${interlock}.ready`);
+      unlinkSync(destination);
+      writeFileSync(destination, 'foreign successor\n', { mode: 0o640 });
+      writeFileSync(`${interlock}.go`, 'go');
+      await assert.rejects(running, /destination leaf changed concurrently|refusing operation/);
+      assert.equal(readFileSync(destination, 'utf8'), 'foreign successor\n');
+      if (process.platform !== 'win32') assert.equal(statSync(destination).mode & 0o777, 0o640);
+    });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // WriteSkills
 // ---------------------------------------------------------------------------
 
 describe('writeSkills', () => {
+  it('canonicalizes a symlinked scope ancestor on first install', (t) => {
+    const dir = tmpDir();
+    const realScope = join(dir, 'real-scope');
+    const linkedScope = join(dir, 'linked-scope');
+    mkdirSync(realScope);
+    try {
+      symlinkSync(realScope, linkedScope, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (e) {
+      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
+        t.skip('junction creation is unavailable in this Windows test environment');
+        return;
+      }
+      throw e;
+    }
+    const scope = new Scope({ cwd: linkedScope });
+    writeSkills(embeddedTemplates(), scope, { subset: [AllSkills[0]] });
+    assert.ok(existsSync(join(realScope, '.claude', 'skills', AllSkills[0], SKILL_MANIFEST_LEAF)));
+    assert.ok(existsSync(join(linkedScope, '.claude', 'skills', AllSkills[0], SKILL_MANIFEST_LEAF)));
+  });
+
+  it('canonicalizes an existing symlinked .claude/skills root', (t) => {
+    const dir = tmpDir();
+    const realClaude = join(dir, 'real-claude');
+    const linkedClaude = join(dir, '.claude');
+    mkdirSync(realClaude);
+    try {
+      symlinkSync(realClaude, linkedClaude, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (e) {
+      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
+        t.skip('junction creation is unavailable in this Windows test environment');
+        return;
+      }
+      throw e;
+    }
+    const scope = new Scope({ cwd: dir });
+    writeSkills(embeddedTemplates(), scope, { subset: [AllSkills[0]] });
+    assert.ok(existsSync(join(realClaude, 'skills', AllSkills[0], SKILL_MANIFEST_LEAF)));
+    assert.ok(existsSync(join(linkedClaude, 'skills', AllSkills[0], SKILL_MANIFEST_LEAF)));
+  });
+
   it('embedded smoke install', () => {
     const dir = tmpDir();
     const scope = new Scope({ cwd: dir });

@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, mkdtempSync,
+  mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, mkdtempSync, statSync,
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
@@ -40,8 +40,18 @@ function fakeSource(root) {
   );
   writeFileSync(join(root, 'lib', 'transcript-stats.js'), 'export const x = 1;\n');
   writeFileSync(join(root, 'lib', 'update-check.js'), 'export const y = 1;\n');
+  writeFileSync(join(root, 'lib', 'lease-lock.js'), 'export const lease = 1;\n');
   writeFileSync(join(root, 'lib', 'fsutil.js'), 'export const z = 1;\n');
   writeFileSync(join(root, 'lib', 'sentinel.js'), 'export const sentinel = 1;\n');
+  writeFileSync(
+    join(root, 'lib', 'cah-bin-package.json'),
+    JSON.stringify({
+      name: 'cc-arch-hands-cah-bin',
+      private: true,
+      type: 'module',
+      'cah-managed': SentinelBin,
+    }, null, 2) + '\n',
+  );
 }
 
 function waitForPath(path, timeoutMs = 5000) {
@@ -62,14 +72,14 @@ function waitForPath(path, timeoutMs = 5000) {
   });
 }
 
-function runBinWorker(dst, src, interlock) {
+function runBinWorker(dst, src, interlock, phase = 'prune-before-remove') {
   const moduleUrl = new URL('../lib/binstall.js', import.meta.url).href;
   const source = `
     const { parentPort, workerData } = require('node:worker_threads');
     (async () => {
       process.env.CAH_TEST_ONLY = '1';
       process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK = workerData.interlock;
-      process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE = 'prune-before-remove';
+      process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE = workerData.phase;
       const { writeBins } = await import(workerData.moduleUrl);
       parentPort.postMessage(writeBins(workerData.dst, workerData.src));
     })().catch((error) => { setImmediate(() => { throw error; }); });
@@ -77,7 +87,7 @@ function runBinWorker(dst, src, interlock) {
   return new Promise((resolvePromise, reject) => {
     const worker = new Worker(source, {
       eval: true,
-      workerData: { dst, src, interlock, moduleUrl },
+      workerData: { dst, src, interlock, phase, moduleUrl },
     });
     worker.once('message', resolvePromise);
     worker.once('error', reject);
@@ -106,6 +116,22 @@ describe('writeBins', () => {
     for (const f of BinFiles) {
       assert.ok(existsSync(join(dst, f.dest)), `${f.dest} should exist`);
     }
+    const installedPackage = JSON.parse(readFileSync(join(dst, 'package.json'), 'utf8'));
+    assert.equal(installedPackage.type, 'module', 'installed tree must have an explicit ESM boundary');
+    assert.equal(installedPackage['cah-managed'], SentinelBin, 'package ownership must be a JSON field');
+    if (process.platform !== 'win32') {
+      assert.equal(statSync(join(dst, 'bin', 'cah-status.js')).mode & 0o777, 0o755);
+    }
+  });
+
+  it('preserves a foreign package boundary and reports it as skipped', () => {
+    mkdirSync(dst, { recursive: true });
+    writeFileSync(join(dst, 'package.json'), JSON.stringify({ type: 'commonjs', owner: 'user' }) + '\n');
+    const r = writeBins(dst, src);
+    assert.ok(r.skipped.includes('package.json'));
+    assert.deepEqual(JSON.parse(readFileSync(join(dst, 'package.json'), 'utf8')), {
+      type: 'commonjs', owner: 'user',
+    });
   });
 
   it('injects the sentinel after the shebang and preserves it', () => {
@@ -173,6 +199,20 @@ describe('writeBins', () => {
     assert.equal(readFileSync(orphan, 'utf8'), 'foreign successor\n');
   });
 
+  it('refuses a foreign successor at the publication leaf and preserves its mode', async () => {
+    writeBins(dst, src);
+    const destination = join(dst, 'bin', 'cah-status.js');
+    const interlock = join(dst, 'write-successor-interlock');
+    const running = runBinWorker(dst, src, interlock, 'write-before-rename');
+    await waitForPath(`${interlock}.ready`);
+    rmSync(destination);
+    writeFileSync(destination, 'foreign successor\n', { mode: 0o640 });
+    writeFileSync(`${interlock}.go`, 'go');
+    await assert.rejects(running, /destination leaf changed concurrently|refusing operation/);
+    assert.equal(readFileSync(destination, 'utf8'), 'foreign successor\n');
+    if (process.platform !== 'win32') assert.equal(statSync(destination).mode & 0o777, 0o640);
+  });
+
   it('smoke-runs every installed companion binary from the mirrored tree', () => {
     const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
     const smokeHome = tmpDir();
@@ -189,12 +229,9 @@ describe('writeBins', () => {
 
     try {
       writeBins(dst, packageRoot);
-      const bins = [
-        'cah-status.js',
-        'cah-stamp.js',
-        'cah-checkpoint-hint.js',
-        'cah-status-probe.js',
-      ];
+      const bins = BinFiles
+        .filter((file) => file.dest.startsWith('bin/'))
+        .map((file) => file.dest.slice('bin/'.length));
       for (const name of bins) {
         const result = spawnSync(process.execPath, [join(dst, 'bin', name)], {
           cwd: smokeHome,
@@ -206,6 +243,9 @@ describe('writeBins', () => {
         assert.equal(result.error, undefined, `${name} process failed to start`);
         assert.equal(result.status, 0, `${name}: ${result.stderr}`);
         assert.doesNotMatch(result.stderr, /ERR_MODULE_NOT_FOUND/);
+      }
+      for (const file of BinFiles) {
+        assert.ok(existsSync(join(dst, file.dest)), `${file.dest} was not installed`);
       }
     } finally {
       rmSync(smokeHome, { recursive: true, force: true });

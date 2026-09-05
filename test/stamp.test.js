@@ -62,6 +62,10 @@ function isolatedDir() {
   return mkdtempSync(join(tmpdir(), 'cah-stamp-'));
 }
 
+function updateMarkerDir(home) {
+  return join(home, '.claude', 'cah-bin', 'cache');
+}
+
 async function waitForPath(path, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -628,12 +632,12 @@ describe('cah-stamp bin', () => {
     assert.equal(existsSync(lock), false);
   });
 
-  it('does not steal an old lock held by a live owner', () => {
+  it('does not steal a live lock within its maximum lease', () => {
     const dir = isolatedDir();
     const tp = writeTranscript(dir, 'claude-opus-4-7', 46_000);
     const throttle = join(dir, 'last-stamp.json');
     const lock = `${stampSidecarPath(throttle, 'live-lock-session')}.lock`;
-    writeClaim(lock, { pid: process.pid, nonce: 'live-owner', startedAt: Date.now() - 60 * 60 * 1000 });
+    writeClaim(lock, { pid: process.pid, nonce: 'live-owner', startedAt: Date.now() });
     const old = Date.now() / 1000 - 60 * 60;
     utimesSync(lock, old, old);
     const result = runStamp(
@@ -642,6 +646,20 @@ describe('cah-stamp bin', () => {
     );
     assert.equal(result.stdout, '');
     assert.equal(existsSync(lock), true, 'live owner lock must remain intact');
+  });
+
+  it('reclaims a live-PID lock after its absolute lease expires', () => {
+    const dir = isolatedDir();
+    const tp = writeTranscript(dir, 'claude-opus-4-7', 46_000);
+    const throttle = join(dir, 'last-stamp.json');
+    const lock = `${stampSidecarPath(throttle, 'expired-live-lock')}.lock`;
+    writeClaim(lock, { pid: process.pid, nonce: 'reused-pid', startedAt: Date.now() - 60_000 });
+    const result = runStamp(
+      { session_id: 'expired-live-lock', transcript_path: tp },
+      { CAH_STAMP_THROTTLE_PATH: throttle, CAH_STAMP_OWNER_MAX_LEASE_MS: '100' },
+    );
+    assert.ok(result.stdout.trim());
+    assert.equal(existsSync(lock), false);
   });
 
   it('does not reclaim a successor lock installed after the dead-owner check', async () => {
@@ -836,6 +854,29 @@ describe('cah-stamp bin', () => {
       assert.ok(!secondParsed.systemMessage.includes('99.0.0'), 'notice repeated in same session');
     });
 
+    it('migrates a legacy update marker into the cache without duplicating delivery', () => {
+      const dir = isolatedDir();
+      const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
+      const updateCache = freshUpdateCache(dir, '99.0.0');
+      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const sessionId = 'legacy-update-marker';
+      const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+      const legacyDir = join(hintHome, '.claude');
+      mkdirSync(legacyDir, { recursive: true });
+      writeFileSync(join(legacyDir, `cah-update-shown-${hash}`), 'legacy');
+      const result = runStamp(
+        { session_id: sessionId, transcript_path: tp, hook_event_name: 'Stop' },
+        {
+          CAH_UPDATE_CHECK_CACHE: updateCache,
+          CAH_STAMP_HINT_HOME: hintHome,
+          CAH_STAMP_THROTTLE_PATH: join(dir, 'legacy-update-throttle.json'),
+        },
+      );
+      assert.doesNotMatch(result.stdout, /99\.0\.0/);
+      assert.equal(existsSync(join(legacyDir, `cah-update-shown-${hash}`)), false);
+      assert.equal(existsSync(join(updateMarkerDir(hintHome), `cah-update-shown-${hash}`)), true);
+    });
+
     it('PostToolUse event → never appends the notice, even with a newer version cached', () => {
       const dir = isolatedDir();
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
@@ -854,7 +895,7 @@ describe('cah-stamp bin', () => {
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
       const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
-      const markerDir = join(hintHome, '.claude');
+      const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
       const oldTime = Date.now() / 1000 - 60 * 60;
       for (let i = 0; i < 70; i++) {
@@ -908,7 +949,7 @@ describe('cah-stamp bin', () => {
         { CAH_UPDATE_CHECK_CACHE: updateCache, CAH_STAMP_HINT_HOME: hintHome },
       );
       const parsed = JSON.parse(stdout.trim());
-      assert.ok(!parsed.systemMessage.includes('🔵'));
+      assert.ok(!parsed.systemMessage.includes(String.fromCodePoint(0x1F535)));
     });
 
     it('24 concurrent Stop calls emit at most one update notice', async () => {
@@ -935,7 +976,7 @@ describe('cah-stamp bin', () => {
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
       const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
-      const markerDir = join(hintHome, '.claude');
+      const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
       const sessionId = 'recovery-update-session';
       const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
@@ -960,7 +1001,7 @@ describe('cah-stamp bin', () => {
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
       const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
-      const markerDir = join(hintHome, '.claude');
+      const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
       const sessionId = 'update-reclaim-toctou';
       const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
@@ -996,7 +1037,7 @@ describe('cah-stamp bin', () => {
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
       const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
-      const markerDir = join(hintHome, '.claude');
+      const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
       const sessionId = 'update-three-party';
       const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
@@ -1043,7 +1084,7 @@ describe('cah-stamp bin', () => {
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
       const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
-      const markerDir = join(hintHome, '.claude');
+      const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
       const sessionId = 'update-abandoned-fence';
       const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
@@ -1069,7 +1110,7 @@ describe('cah-stamp bin', () => {
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
       const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
-      const markerDir = join(hintHome, '.claude');
+      const markerDir = updateMarkerDir(hintHome);
       const sessionId = 'update-release-toctou';
       const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
       const claim = join(markerDir, `.cah-marker-claim-cah-update-shown-${hash}`);
@@ -1103,7 +1144,7 @@ describe('cah-stamp bin', () => {
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
       const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
-      const markerDir = join(hintHome, '.claude');
+      const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
       const sessionId = 'update-marker-toctou';
       const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');

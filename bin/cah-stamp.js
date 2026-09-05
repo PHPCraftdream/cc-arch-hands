@@ -9,7 +9,7 @@
 // It is deliberately fail-silent: any error, missing input, or filesystem
 // hiccup results in `exit 0` with no stdout, so it can never break the session.
 
-import { readFileSync, writeFileSync, writeSync, mkdirSync, renameSync, openSync, closeSync, readdirSync, statSync, lstatSync, unlinkSync, rmdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, writeSync, mkdirSync, openSync, closeSync, readdirSync, statSync, lstatSync, unlinkSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
@@ -23,6 +23,9 @@ import {
 } from '../lib/transcript-stats.js';
 import { CURRENT_VERSION, getLatestVersion, isNewerVersion } from '../lib/update-check.js';
 import { writeFileAtomic } from '../lib/fsutil.js';
+import {
+  acquireLease, leaseOwned, pathIdentity, releaseLease, removePathIfUnchanged, samePathIdentity,
+} from '../lib/lease-lock.js';
 
 // Pro/Max rate_limits are only in the statusLine envelope; cah-status
 // persists them here so we can include them in the chat audit trail.
@@ -46,6 +49,8 @@ const FALLBACK_SESSION_KEY = '__no_session__';
 const STAMP_STATE_PREFIX = '.session-';
 const STAMP_STATE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const STAMP_LOCK_CLAIM_TTL_MS = 30_000;
+// Normal lock ownership lasts milliseconds. Fifteen minutes is a conservative
+// absolute lease that bounds PID reuse without stealing a live hook.
 // Request claims are bounded too: a process killed after persisting its
 // state cannot suppress a future retry forever. Anonymous turns use a short
 // fingerprint claim only to cover the handoff between concurrent hooks.
@@ -56,20 +61,68 @@ const UPDATE_CHECK_CACHE =
   process.env.CAH_UPDATE_CHECK_CACHE ||
   join(homedir(), '.claude', 'cah-bin', 'cache', 'update-check.json');
 
-// One marker file per session gates the one-shot "new version" notice —
-// A separate nonce-owned claim gates stdout and is swept safely.
-// are swept on each run so they never accumulate.
+// One marker file per session gates the one-shot "new version" notice.
+// A separate nonce-owned claim gates stdout, and stale markers are swept on
+// each run so they never accumulate.
 const UPDATE_MARKER_PREFIX = 'cah-update-shown-';
 const UPDATE_MARKER_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const UPDATE_MARKER_CLAIM_TTL_MS = 30_000;
 const UPDATE_MARKER_MAX_SESSIONS = 64;
 const UPDATE_MARKER_NAME_RE = /^cah-update-shown-[a-f0-9]{64}$/;
+const LEGACY_MARKER_NAME_RE = /^(?:cah-hint-shown|cah-update-shown)-[a-f0-9]{64}$/;
 const STAMP_PENDING_TTL_MS = positiveEnvMs('CAH_STAMP_PENDING_TTL_MS', 30_000);
 const ANONYMOUS_CLAIM_TTL_MS = 1000;
 
 function positiveEnvMs(name, fallback) {
   const value = Number.parseInt(process.env[name] || '', 10);
   return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function migrateLegacyMarkers(home, markerDir) {
+  const legacyDir = join(home, '.claude');
+  if (legacyDir === markerDir) return;
+  let entries;
+  try {
+    entries = readdirSync(legacyDir);
+    mkdirSync(markerDir, { recursive: true });
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    if (!LEGACY_MARKER_NAME_RE.test(name)) continue;
+    const source = join(legacyDir, name);
+    const target = join(markerDir, name);
+    let sourceIdentity;
+    try {
+      const sourceStat = lstatSync(source);
+      if (!sourceStat.isFile()) continue;
+      sourceIdentity = { dev: sourceStat.dev, ino: sourceStat.ino };
+    } catch {
+      continue;
+    }
+    try {
+      const targetStat = lstatSync(target);
+      if (!targetStat.isFile()) continue;
+      if (samePathIdentity(sourceIdentity, pathIdentity(source))) unlinkSync(source);
+      continue;
+    } catch (error) {
+      if (!error || error.code !== 'ENOENT') continue;
+    }
+    let data;
+    try { data = readFileSync(source); } catch { continue; }
+    let fd = null;
+    try {
+      fd = openSync(target, 'wx');
+      writeSync(fd, data);
+      closeSync(fd);
+      fd = null;
+      if (samePathIdentity(sourceIdentity, pathIdentity(source))) unlinkSync(source);
+    } catch {
+      if (fd !== null) {
+        try { closeSync(fd); } catch { /* best effort */ }
+      }
+    }
+  }
 }
 
 function pruneStaleMarkers(markerDir, nowMs) {
@@ -90,7 +143,9 @@ function pruneStaleMarkers(markerDir, nowMs) {
         if (!claim) continue;
         try {
           const current = statSync(p);
-          if (nowMs - current.mtimeMs > UPDATE_MARKER_TTL_MS) removePathIfUnchanged(p, current);
+          if (nowMs - current.mtimeMs > UPDATE_MARKER_TTL_MS) {
+            removePathIfUnchanged(p, current, 'marker-remove');
+          }
         } finally {
           releaseUpdateMarkerClaim(claim);
         }
@@ -108,9 +163,7 @@ function pruneStaleMarkers(markerDir, nowMs) {
       if (!claim) continue;
       try {
         const current = statSync(entry.path);
-        if (nowMs - current.mtimeMs > UPDATE_MARKER_TTL_MS || candidates.length > UPDATE_MARKER_MAX_SESSIONS) {
-          removePathIfUnchanged(entry.path, current);
-        }
+        removePathIfUnchanged(entry.path, current, 'marker-remove');
       } finally {
         releaseUpdateMarkerClaim(claim);
       }
@@ -124,329 +177,30 @@ function sessionHash(sessionId) {
 }
 
 function updateMarkerOwner(nowMs) {
-  return { pid: process.pid, nonce: randomUUID(), claimedAt: nowMs };
-}
-
-function readUpdateMarkerOwner(claimPath) {
-  try {
-    const claimStat = statSync(claimPath);
-    const ownerPath = claimStat.isDirectory() ? join(claimPath, 'owner.json') : claimPath;
-    const owner = JSON.parse(readFileSync(ownerPath, 'utf8'));
-    if (!owner || !Number.isInteger(owner.pid) || owner.pid <= 0 || typeof owner.nonce !== 'string') return null;
-    return owner;
-  } catch {
-    return null;
-  }
-}
-
-function updateMarkerProcessIsAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return !(error && error.code === 'ESRCH');
-  }
-}
-
-function fileIdentity(path) {
-  try {
-    const stat = statSync(path);
-    return { dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs };
-  } catch {
-    return null;
-  }
-}
-
-function sameFileIdentity(left, right) {
-  return left !== null && right !== null
-    && left.dev === right.dev
-    && left.ino === right.ino
-    && left.size === right.size
-    && left.mtimeMs === right.mtimeMs;
-}
-
-function pathIdentity(path) {
-  try {
-    const stat = lstatSync(path);
-    return { dev: stat.dev, ino: stat.ino, isDirectory: stat.isDirectory() };
-  } catch {
-    return null;
-  }
-}
-
-function samePathIdentity(left, right) {
-  return left !== null && right !== null && left.dev === right.dev && left.ino === right.ino;
-}
-
-function ownerSnapshot(path, readOwner) {
-  return { owner: readOwner(path), identity: fileIdentity(path) };
-}
-
-function sameOwnerSnapshot(path, expected, readOwner) {
-  const actualOwner = readOwner(path);
-  if (expected.owner && actualOwner) {
-    return expected.owner.pid === actualOwner.pid && expected.owner.nonce === actualOwner.nonce;
-  }
-  return expected.owner === null && actualOwner === null
-    && sameFileIdentity(expected.identity, fileIdentity(path));
-}
-
-function removeClaimPath(path) {
-  try {
-    const pathStat = lstatSync(path);
-    if (pathStat.isDirectory()) {
-      const entries = readdirSync(path);
-      if (entries.some((entry) => entry !== 'owner.json')) return false;
-      if (entries.includes('owner.json')) unlinkSync(join(path, 'owner.json'));
-      rmdirSync(path);
-      return true;
-    }
-    unlinkSync(path);
-    return true;
-  } catch (error) {
-    return Boolean(error && error.code === 'ENOENT');
-  }
-}
-
-function restoreMovedPath(tombstone, path) {
-  const source = pathIdentity(tombstone);
-  if (!source) return false;
-  if (source.isDirectory) {
-    let targetCreated = false;
-    try {
-      mkdirSync(path);
-      targetCreated = true;
-      const entries = readdirSync(tombstone);
-      if (entries.includes('owner.json')) {
-        renameSync(join(tombstone, 'owner.json'), join(path, 'owner.json'));
-      } else if (entries.length !== 0) {
-        rmdirSync(path);
-        return false;
-      }
-      try { rmdirSync(tombstone); } catch { /* preserve unexpected entries */ }
-      return true;
-    } catch {
-      if (targetCreated) {
-        try { rmdirSync(path); } catch { /* a successor or extra entry won */ }
-      }
-      return false;
-    }
-  }
-  let data;
-  try { data = readFileSync(tombstone); } catch { return false; }
-  let fd = null;
-  let target = null;
-  try {
-    fd = openSync(path, 'wx');
-    target = pathIdentity(path);
-    writeSync(fd, data);
-    closeSync(fd);
-    fd = null;
-    if (!samePathIdentity(source, pathIdentity(tombstone))) return false;
-    unlinkSync(tombstone);
-    return true;
-  } catch {
-    if (fd !== null) {
-      try { closeSync(fd); } catch { /* best effort */ }
-      if (samePathIdentity(target, pathIdentity(path))) {
-        try { unlinkSync(path); } catch { /* a successor may own it */ }
-      }
-    }
-    return false;
-  }
-}
-
-function testOwnerInterlock(phase, stage = 'before') {
-  if (process.env.CAH_TEST_ONLY !== '1') return;
-  const base = process.env.CAH_TEST_ONLY_OWNER_INTERLOCK;
-  const configured = process.env.CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE;
-  if (!base) return;
-  const staged = configured === `${phase}-three-party`;
-  if ((!staged && (configured !== phase || stage !== 'before'))) return;
-  const stageBase = staged ? `${base}.${stage}` : base;
-  try { writeFileSync(`${stageBase}.ready`, `${phase}:${stage}`, { flag: 'wx' }); } catch { return; }
-  const deadline = Date.now() + 10_000;
-  const waitArray = new Int32Array(new SharedArrayBuffer(4));
-  while (Date.now() < deadline) {
-    try { statSync(`${stageBase}.go`); return; } catch { /* keep waiting */ }
-    Atomics.wait(waitArray, 0, 0, 10);
-  }
-}
-
-function takeOwnerPath(path, expected, readOwner, phase) {
-  testOwnerInterlock(phase, 'before');
-  const tombstone = `${path}.taken-${process.pid}-${randomUUID()}`;
-  try {
-    renameSync(path, tombstone);
-  } catch {
-    return null;
-  }
-  testOwnerInterlock(phase, 'vacancy');
-  if (sameOwnerSnapshot(tombstone, expected, readOwner)) return tombstone;
-  restoreMovedPath(tombstone, path);
-  return null;
-}
-
-function fencePaths(path) {
-  const prefix = `${basename(path)}.taken-`;
-  try {
-    return readdirSync(dirname(path))
-      .filter((name) => name.startsWith(prefix)
-        && /^\d+-[^/]+$/.test(name.slice(prefix.length)))
-      .map((name) => join(dirname(path), name));
-  } catch {
-    return [];
-  }
-}
-
-function fenceOperatorPid(path, fencePath) {
-  const prefix = `${basename(path)}.taken-`;
-  const suffix = basename(fencePath).slice(prefix.length);
-  const match = /^(\d+)-/.exec(suffix);
-  return match ? Number.parseInt(match[1], 10) : null;
-}
-
-function quarantineUnexpectedFence(fencePath) {
-  try {
-    if (!lstatSync(fencePath).isDirectory()) return false;
-    const entries = readdirSync(fencePath);
-    if (!entries.some((entry) => entry !== 'owner.json')) return false;
-    renameSync(fencePath, `${fencePath}.orphan-${process.pid}-${randomUUID()}`);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function recoverAbandonedFence(path, fencePath, readOwner, pidIsAlive) {
-  const operatorPid = fenceOperatorPid(path, fencePath);
-  if (!Number.isInteger(operatorPid) || operatorPid <= 0 || pidIsAlive(operatorPid)) return false;
-  const fencedIdentity = fileIdentity(fencePath);
-  if (!fencedIdentity) return true;
-  if (quarantineUnexpectedFence(fencePath)) return true;
-  const currentIdentity = fileIdentity(path);
-  if (currentIdentity && sameFileIdentity(fencedIdentity, currentIdentity)) {
-    return removeClaimPath(fencePath);
-  }
-  if (currentIdentity) {
-    const currentOwner = readOwner(path);
-    if (!currentOwner) {
-      let entries;
-      try {
-        if (!lstatSync(path).isDirectory()) return false;
-        entries = readdirSync(path);
-      } catch {
-        return false;
-      }
-      if (entries.length !== 0) return false;
-    } else if (pidIsAlive(currentOwner.pid)) return false;
-    const currentSnapshot = ownerSnapshot(path, readOwner);
-    const quarantine = `${path}.abandoned-${process.pid}-${randomUUID()}`;
-    try { renameSync(path, quarantine); } catch { return false; }
-    if (!sameOwnerSnapshot(quarantine, currentSnapshot, readOwner)) {
-      restoreMovedPath(quarantine, path);
-      return false;
-    }
-    if (!removeClaimPath(quarantine)) return false;
-  }
-  return restoreMovedPath(fencePath, path);
-}
-
-function hasInFlightFence(path, readOwner, pidIsAlive) {
-  for (const fencePath of fencePaths(path)) {
-    if (!recoverAbandonedFence(path, fencePath, readOwner, pidIsAlive)) return true;
-  }
-  return fencePaths(path).length > 0;
-}
-
-function rollbackOwnedPath(path, owner, readOwner) {
-  const expected = ownerSnapshot(path, readOwner);
-  if (!expected.owner
-    || expected.owner.pid !== owner.pid
-    || expected.owner.nonce !== owner.nonce) return;
-  const tombstone = takeOwnerPath(path, expected, readOwner, 'owner-rollback');
-  if (!tombstone) return;
-  removeClaimPath(tombstone);
-}
-
-function cleanupCreatedClaim(path, identity) {
-  const current = pathIdentity(path);
-  if (!identity || !current || !current.isDirectory || !samePathIdentity(identity, current)) return false;
-  return removeClaimPath(path);
-}
-
-function removePathIfUnchanged(path, expectedIdentity, phase = 'marker-remove') {
-  testOwnerInterlock(phase);
-  const tombstone = `${path}.prune-${process.pid}-${randomUUID()}`;
-  try {
-    renameSync(path, tombstone);
-  } catch {
-    return false;
-  }
-  if (!sameFileIdentity(expectedIdentity, fileIdentity(tombstone))) {
-    restoreMovedPath(tombstone, path);
-    return false;
-  }
-  try { unlinkSync(tombstone); } catch { return false; }
-  return true;
-}
-
-function updateMarkerClaimExpired(snapshot, nowMs) {
-  if (!snapshot.identity) return false;
-  if (snapshot.owner) return !updateMarkerProcessIsAlive(snapshot.owner.pid);
-  return nowMs - snapshot.identity.mtimeMs > UPDATE_MARKER_CLAIM_TTL_MS;
+  const token = randomUUID();
+  return { pid: process.pid, token, nonce: token, timestamp: nowMs, claimedAt: nowMs };
 }
 
 function acquireUpdateMarkerClaim(marker, nowMs) {
   const claimPath = join(dirname(marker), `.cah-marker-claim-${basename(marker)}`);
-  const owner = updateMarkerOwner(nowMs);
-  for (let attempt = 0; attempt < 3; attempt++) {
-    if (hasInFlightFence(claimPath, readUpdateMarkerOwner, updateMarkerProcessIsAlive)) return null;
-    let createdIdentity = null;
-    try {
-      // mkdir is the portable atomic ownership operation. Metadata is
-      // written inside the directory only after mkdir has won the race.
-      mkdirSync(claimPath);
-      createdIdentity = pathIdentity(claimPath);
-      testOwnerInterlock('owner-write');
-      writeFileSync(join(claimPath, 'owner.json'), JSON.stringify(owner), { flag: 'wx' });
-      if (hasInFlightFence(claimPath, readUpdateMarkerOwner, updateMarkerProcessIsAlive)) {
-        rollbackOwnedPath(claimPath, owner, readUpdateMarkerOwner);
-        return null;
-      }
-      return { marker, claimPath, owner };
-    } catch (error) {
-      if (createdIdentity) {
-        cleanupCreatedClaim(claimPath, createdIdentity);
-        return null;
-      }
-      if (!error || error.code !== 'EEXIST') return null;
-      if (hasInFlightFence(claimPath, readUpdateMarkerOwner, updateMarkerProcessIsAlive)) return null;
-      const expected = ownerSnapshot(claimPath, readUpdateMarkerOwner);
-      if (!updateMarkerClaimExpired(expected, nowMs)) return null;
-      const tombstone = takeOwnerPath(claimPath, expected, readUpdateMarkerOwner, 'claim-reclaim');
-      if (!tombstone) continue;
-      if (!removeClaimPath(tombstone)) return null;
-    }
-  }
-  return null;
+  const lease = acquireLease(claimPath, {
+    nowMs,
+    staleAfterMs: UPDATE_MARKER_CLAIM_TTL_MS,
+    fenceSuffix: '.taken-',
+    interlockPhase: 'claim-reclaim',
+    releaseInterlockPhase: 'claim-release',
+    testLeaseEnv: 'CAH_UPDATE_OWNER_MAX_LEASE_MS',
+    owner: updateMarkerOwner(nowMs),
+  });
+  return lease ? { marker, claimPath, owner: lease.owner, lease } : null;
 }
 
 function updateMarkerClaimOwned(claim) {
-  if (!claim) return false;
-  const owner = readUpdateMarkerOwner(claim.claimPath);
-  return owner !== null && owner.pid === claim.owner.pid && owner.nonce === claim.owner.nonce;
+  return Boolean(claim?.lease && leaseOwned(claim.lease));
 }
 
 function releaseUpdateMarkerClaim(claim) {
-  const expected = {
-    owner: claim && claim.owner,
-    identity: fileIdentity(claim && claim.claimPath),
-  };
-  if (!claim || !expected.owner || !updateMarkerClaimOwned(claim)) return;
-  const tombstone = takeOwnerPath(claim.claimPath, expected, readUpdateMarkerOwner, 'claim-release');
-  if (!tombstone) return;
-  removeClaimPath(tombstone);
+  if (claim?.lease) releaseLease(claim.lease);
 }
 
 function markUpdateDelivered(claim) {
@@ -454,7 +208,7 @@ function markUpdateDelivered(claim) {
   try {
     const fd = openSync(claim.marker, 'wx');
     try {
-      writeSync(fd, JSON.stringify({ nonce: claim.owner.nonce, deliveredAt: Date.now() }));
+      writeSync(fd, JSON.stringify({ nonce: claim.owner.nonce || claim.owner.token, deliveredAt: Date.now() }));
     } finally {
       closeSync(fd);
     }
@@ -483,7 +237,7 @@ function claimUpdateMarker(markerDir, sessionId, nowMs) {
           releaseUpdateMarkerClaim(claim);
           return null;
         }
-        if (!removePathIfUnchanged(marker, markerStat)) {
+        if (!removePathIfUnchanged(marker, markerStat, 'marker-remove')) {
           releaseUpdateMarkerClaim(claim);
           return null;
         }
@@ -513,7 +267,8 @@ function buildUpdateNotice(payload, nowMs) {
   if (!sessionId) return null;
 
   const home = process.env.CAH_STAMP_HINT_HOME || homedir();
-  const markerDir = join(home, '.claude');
+  const markerDir = join(home, '.claude', 'cah-bin', 'cache');
+  migrateLegacyMarkers(home, markerDir);
   pruneStaleMarkers(markerDir, nowMs);
 
   let latest = null;
@@ -527,14 +282,12 @@ function buildUpdateNotice(payload, nowMs) {
   try {
     const claim = claimUpdateMarker(markerDir, sessionId, nowMs);
     if (!claim) return null;
-    const notice = {
+    return {
       claim,
-      text: `\nðŸ”µ cc-arch-hands v${latest} is out (you're on v${CURRENT_VERSION}). Update:\n` +
+      text: `\n${String.fromCodePoint(0x1F535)} cc-arch-hands v${latest} is out (you're on v${CURRENT_VERSION}). Update:\n` +
         '  global: npm install -g cc-arch-hands@latest && npx cah reinstall\n' +
         '  local:  npm install cc-arch-hands@latest && npx cah reinstall --local',
     };
-    notice.text = notice.text.replace(/^\n[^ ]+ cc-arch-hands/, `\n${String.fromCodePoint(0x1F535)} cc-arch-hands`);
-    return notice;
   } catch {
     // best-effort — worst case the notice repeats next turn
   }
@@ -670,83 +423,25 @@ function stampLockPath(path, sessionId) {
 }
 
 function stampLockOwner(nowMs) {
-  return { pid: process.pid, nonce: randomUUID(), startedAt: nowMs };
-}
-
-function readStampLockOwner(lockPath) {
-  try {
-    const lockStat = statSync(lockPath);
-    const ownerPath = lockStat.isDirectory() ? join(lockPath, 'owner.json') : lockPath;
-    const owner = JSON.parse(readFileSync(ownerPath, 'utf8'));
-    if (!owner || !Number.isInteger(owner.pid) || owner.pid <= 0 || typeof owner.nonce !== 'string') return null;
-    return owner;
-  } catch {
-    return null;
-  }
-}
-
-function stampLockOwnerIsAlive(owner) {
-  try {
-    process.kill(owner.pid, 0);
-    return true;
-  } catch (error) {
-    // EPERM and unknown errors mean the owner is considered alive.
-    return !(error && error.code === 'ESRCH');
-  }
-}
-
-function stampLockClaimExpired(snapshot, nowMs) {
-  if (!snapshot.identity) return false;
-  if (snapshot.owner) return !stampLockOwnerIsAlive(snapshot.owner);
-  return nowMs - snapshot.identity.mtimeMs > STAMP_LOCK_CLAIM_TTL_MS;
+  const token = randomUUID();
+  return { pid: process.pid, token, nonce: token, timestamp: nowMs, startedAt: nowMs };
 }
 
 function acquireStampLock(path, sessionId, nowMs) {
-  const lockPath = stampLockPath(path, sessionId);
-  try { mkdirSync(dirname(lockPath), { recursive: true }); } catch { return null; }
-
-  for (let attempt = 0; attempt < 3; attempt++) {
-    if (hasInFlightFence(lockPath, readStampLockOwner, updateMarkerProcessIsAlive)) return null;
-    const owner = stampLockOwner(nowMs);
-    let createdIdentity = null;
-    try {
-      // mkdir is the portable atomic lock acquisition primitive. The owner
-      // record is published inside the directory after it wins the race.
-      mkdirSync(lockPath);
-      createdIdentity = pathIdentity(lockPath);
-      testOwnerInterlock('owner-write');
-      writeFileSync(join(lockPath, 'owner.json'), JSON.stringify(owner), { flag: 'wx' });
-      if (hasInFlightFence(lockPath, readStampLockOwner, updateMarkerProcessIsAlive)) {
-        rollbackOwnedPath(lockPath, owner, readStampLockOwner);
-        return null;
-      }
-      return { path: lockPath, owner };
-    } catch (error) {
-      if (createdIdentity) {
-        cleanupCreatedClaim(lockPath, createdIdentity);
-        return null;
-      }
-      if (!error || error.code !== 'EEXIST') return null;
-      if (hasInFlightFence(lockPath, readStampLockOwner, updateMarkerProcessIsAlive)) return null;
-      const expected = ownerSnapshot(lockPath, readStampLockOwner);
-      if (!stampLockClaimExpired(expected, nowMs)) return null;
-      const tombstone = takeOwnerPath(lockPath, expected, readStampLockOwner, 'lock-reclaim');
-      if (!tombstone) continue;
-      if (!removeClaimPath(tombstone)) return null;
-    }
-  }
-  return null;
+  const lease = acquireLease(stampLockPath(path, sessionId), {
+    nowMs,
+    owner: stampLockOwner(nowMs),
+    staleAfterMs: STAMP_LOCK_CLAIM_TTL_MS,
+    fenceSuffix: '.taken-',
+    interlockPhase: 'lock-reclaim',
+    releaseInterlockPhase: 'lock-release',
+    testLeaseEnv: 'CAH_STAMP_OWNER_MAX_LEASE_MS',
+  });
+  return lease;
 }
 
 function releaseStampLock(lock) {
-  if (!lock || !lock.path || !lock.owner) return;
-  const expected = ownerSnapshot(lock.path, readStampLockOwner);
-  if (!expected.owner
-    || expected.owner.pid !== lock.owner.pid
-    || expected.owner.nonce !== lock.owner.nonce) return;
-  const tombstone = takeOwnerPath(lock.path, expected, readStampLockOwner, 'lock-release');
-  if (!tombstone) return;
-  removeClaimPath(tombstone);
+  releaseLease(lock);
 }
 
 function transcriptFingerprint(path) {
@@ -787,8 +482,8 @@ function main() {
   // A Stop can be the second hook for a turn already stamped by PostToolUse;
   // in that case the notice must be delivered without replaying the stamp.
   const nowMs = Date.now();
-  const lockPath = acquireStampLock(STAMP_THROTTLE_PATH, payload.session_id, nowMs);
-  if (!lockPath) return;
+  const stampLock = acquireStampLock(STAMP_THROTTLE_PATH, payload.session_id, nowMs);
+  if (!stampLock) return;
   let updateNotice = null;
   try {
   const fingerprint = transcriptFingerprint(transcriptPath);
@@ -939,7 +634,7 @@ function main() {
   );
   } finally {
     if (updateNotice) releaseUpdateMarkerClaim(updateNotice.claim);
-    releaseStampLock(lockPath);
+    releaseStampLock(stampLock);
   }
 }
 

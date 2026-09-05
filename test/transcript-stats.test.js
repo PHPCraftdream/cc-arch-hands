@@ -1089,6 +1089,48 @@ describe('readRateLimitsCache', () => {
     assert.doesNotMatch(rateLimitsContextPath(path, sessionA), /\.\.\/|a{20}/);
   });
 
+  it('expires a rate slot that disappears while preserving session context', () => {
+    const dir = isolatedDir();
+    const path = join(dir, 'rate-limits.json');
+    const first = 1_700_000_000_000;
+    const refreshed = first + 60_000;
+
+    persistRateLimitsCache(
+      path,
+      { used: 10, resetsAt: null },
+      { used: 50, resetsAt: null },
+      null,
+      1_000_000,
+      'session-a',
+      first,
+    );
+    // The next status envelope still reports five_hour but no longer has a
+    // seven_day slot. The missing slot must not be inherited at the refreshed
+    // timestamp.
+    persistRateLimitsCache(
+      path,
+      { used: 20, resetsAt: null },
+      null,
+      null,
+      1_000_000,
+      'session-a',
+      refreshed,
+    );
+
+    assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), {
+      version: 2,
+      fiveHour: { used: 20, resetsAt: null },
+      sevenDay: null,
+      capturedAt: refreshed,
+    });
+    assert.deepEqual(readRateLimitsCache(path, refreshed, 'session-a'), {
+      fiveHour: { used: 20, resetsAt: null },
+      sevenDay: null,
+      effort: null,
+      contextWindowSize: 1_000_000,
+    });
+  });
+
   it('does not prune a fresh sidecar successor after the stale-file check', async () => {
     const dir = isolatedDir();
     const path = join(dir, 'rate-limits.json');

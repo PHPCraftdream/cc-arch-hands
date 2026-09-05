@@ -5,14 +5,6 @@ All notable changes to `cc-arch-hands` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-
-- Added six optional Astra Codex agents: `la`, `ma`, `ha`, `xa`, `xxa`, and
-  `ua`, using `gpt-5.6-astra` with `low`, `medium`, `high`, `extra`, `max`,
-  and `ultra` reasoning efforts.
-
 ## [0.8.0] - 2026-09-04
 
 ### Added
@@ -21,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the one checkpoint file it just wrote (skipped, not erred, when the target
   isn't inside a git repo). Never touches anything else that happens to be
   dirty or staged in the working tree.
+- Added six optional Astra Codex agents: `la`, `ma`, `ha`, `xa`, `xxa`, and
+  `ua`, using `gpt-5.6-astra` with `low`, `medium`, `high`, `extra`, `max`,
+  and `ultra` reasoning efforts.
 
 ### Changed
 

@@ -35,6 +35,11 @@ Optional artifacts are installed only when requested:
 > `/clock` (or `/checkpoint-watch`) migrates a pre-0.4.0 bare-name command to
 > the new absolute path automatically.
 
+The installed companion tree also contains a managed `package.json` with
+`"type": "module"`. This explicit ESM boundary keeps the copied `.js` files
+working on the package's supported Node 18 runtime. A pre-existing foreign
+`~/.claude/cah-bin/package.json` is preserved and reported as foreign.
+
 The companion bins:
 - **`cah`** (and its alias `cc-arch-hands`) — the installer CLI itself.
 - **`cah-checkpoint-hint`** — Stop hook bin invoked by `/checkpoint-watch`. Emits one `[hint] Context at 90%…` per session when context fills past 90%.
