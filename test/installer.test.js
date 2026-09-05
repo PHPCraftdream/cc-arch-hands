@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
 
 import {
-  SentinelModelCommand, SentinelModelAgent, SentinelCodexAgent, SentinelSkill,
+  SentinelBin, SentinelModelCommand, SentinelModelAgent, SentinelCodexAgent, SentinelSkill,
   LegacyModelCommand, LegacyModelAgent,
   SetForModelCommand, SetForModelAgent, SetForCodexAgent, SetForSkill,
   Ownership, classifyContent,
@@ -16,6 +16,7 @@ import { Scope, StrictMissingRootError, SKILL_MANIFEST_LEAF } from '../lib/scope
 import { writeModelCommands, removeModelCommands } from '../lib/commands.js';
 import { writeModelAgents, removeModelAgents } from '../lib/agents.js';
 import { writeCodexAgents, removeCodexAgents } from '../lib/codex-agents.js';
+import { removeBins } from '../lib/binstall.js';
 import { writeSkills, removeSkills } from '../lib/skills.js';
 import { embeddedTemplates, diskTemplates } from '../lib/templates.js';
 import { writeFileAtomic, removeOwnedRegularFile, regularFileIdentity } from '../lib/fsutil.js';
@@ -373,11 +374,57 @@ describe('writeFileAtomic', () => {
     writeFileSync(dest, 'successor C\n');
     writeFileSync(`${interlock}.remove-after-rename.go`, 'go');
 
-    assert.equal(await running, false);
+    const result = await running;
+    assert.equal(result.removed, false);
+    assert.equal(
+      result.quarantinePath,
+      `${dest}.cah-owned-remove`,
+    );
     assert.equal(readFileSync(dest, 'utf8'), 'successor C\n');
-    const quarantines = readdirSync(dir).filter((name) => name.includes('.cah-owned-remove-'));
+    const quarantines = readdirSync(dir).filter((name) => name.includes('.cah-owned-remove'));
     assert.equal(quarantines.length, 1);
-    assert.equal(readFileSync(join(dir, quarantines[0]), 'utf8'), 'foreign B\n');
+    assert.equal(readFileSync(result.quarantinePath, 'utf8'), 'foreign B\n');
+  });
+
+  it('bounds repeated three-party races to one reported quarantine without hard links', async () => {
+    const dir = tmpDir();
+    const dest = join(dir, 'repeated-three-party-remove.txt');
+    const interlock = join(dir, 'repeated-three-party-remove-interlock');
+    writeFileSync(dest, 'owned A\n');
+
+    const running = runOwnedRemovalWorker(
+      dest,
+      interlock,
+      'remove-before-rename,remove-after-rename',
+    );
+    await waitForPath(`${interlock}.remove-before-rename.ready`);
+    unlinkSync(dest);
+    writeFileSync(dest, 'foreign B\n');
+    writeFileSync(`${interlock}.remove-before-rename.go`, 'go');
+    await waitForPath(`${interlock}.remove-after-rename.ready`);
+    writeFileSync(dest, 'successor C\n');
+    writeFileSync(`${interlock}.remove-after-rename.go`, 'go');
+
+    const first = await running;
+    assert.equal(first.quarantinePath, `${dest}.cah-owned-remove`);
+    assert.equal(readFileSync(first.quarantinePath, 'utf8'), 'foreign B\n');
+
+    // Repeated reclaim attempts must refuse to move a new canonical inode
+    // over the preserved slot. The same path is reported every time and B
+    // remains recoverable; no hard-link restoration is involved.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      unlinkSync(dest);
+      writeFileSync(dest, `managed retry ${attempt}\n`);
+      const retry = removeOwnedRegularFile(dest, regularFileIdentity(dest));
+      assert.equal(retry.removed, false);
+      assert.equal(retry.quarantinePath, first.quarantinePath);
+      assert.equal(readFileSync(first.quarantinePath, 'utf8'), 'foreign B\n');
+      assert.equal(readFileSync(dest, 'utf8'), `managed retry ${attempt}\n`);
+    }
+    assert.deepEqual(
+      readdirSync(dir).filter((name) => name.includes('.cah-owned-remove')),
+      ['repeated-three-party-remove.txt.cah-owned-remove'],
+    );
   });
 });
 
@@ -928,6 +975,93 @@ describe('removeCodexAgents', () => {
     assert.equal(result.pruned, 1);
     assert.throws(() => statSync(orphan), { code: 'ENOENT' });
     assert.equal(readFileSync(foreign, 'utf8'), 'foreign\n');
+  });
+});
+
+describe('truthful deterministic quarantine reporting', () => {
+  it('reports one preserved quarantine slot through every file consumer', () => {
+    const cases = [
+      {
+        label: 'commands',
+        dir: (root) => join(root, '.claude', 'commands'),
+        leaf: 'orphan.md',
+        sentinel: SentinelModelCommand,
+        remove: removeModelCommands,
+      },
+      {
+        label: 'agents',
+        dir: (root) => join(root, '.claude', 'agents'),
+        leaf: 'orphan.md',
+        sentinel: SentinelModelAgent,
+        remove: removeModelAgents,
+      },
+      {
+        label: 'Codex agents',
+        dir: (root) => join(root, '.codex', 'agents'),
+        leaf: 'orphan.toml',
+        sentinel: SentinelCodexAgent,
+        remove: removeCodexAgents,
+      },
+      {
+        label: 'bins',
+        dir: (root) => join(root, 'bin-root', 'bin'),
+        leaf: 'orphan.js',
+        sentinel: SentinelBin,
+        remove: removeBins,
+        bin: true,
+      },
+    ];
+
+    for (const entry of cases) {
+      const root = tmpDir();
+      const targetDir = entry.dir(root);
+      mkdirSync(targetDir, { recursive: true });
+      const orphan = join(targetDir, entry.leaf);
+      const quarantine = `${orphan}.cah-owned-remove`;
+      writeFileSync(orphan, `${entry.sentinel}\n`);
+      writeFileSync(quarantine, `preserved ${entry.label}\n`);
+
+      const result = entry.bin
+        ? entry.remove(join(root, 'bin-root'))
+        : entry.remove(new Scope({ cwd: root }));
+      const reported = entry.bin
+        ? result.skipped.filter((value) => value.includes('orphan.js.cah-owned-remove'))
+        : result.skipped.filter((value) => value === quarantine);
+
+      assert.deepEqual(reported, [entry.bin ? 'bin/orphan.js.cah-owned-remove' : quarantine], entry.label);
+      assert.equal(readFileSync(quarantine, 'utf8'), `preserved ${entry.label}\n`);
+      assert.equal(readFileSync(orphan, 'utf8'), `${entry.sentinel}\n`);
+      assert.equal(
+        result.skipped.filter((value) => value.includes('orphan')).length,
+        1,
+        `${entry.label} must report the bounded slot once`,
+      );
+    }
+
+    const skillRoot = tmpDir();
+    const orphanSkill = 'orphan-quarantine';
+    const orphanDir = join(skillRoot, '.claude', 'skills', orphanSkill);
+    mkdirSync(orphanDir, { recursive: true });
+    const manifest = join(orphanDir, SKILL_MANIFEST_LEAF);
+    const quarantine = `${manifest}.cah-owned-remove`;
+    writeFileSync(manifest, `${SentinelSkill}\n`);
+    writeFileSync(quarantine, 'preserved skill data\n');
+    const skillResult = writeSkills(embeddedTemplates(), new Scope({ cwd: skillRoot }));
+    assert.ok(skillResult.preserved.includes(`${orphanSkill}/${SKILL_MANIFEST_LEAF}.cah-owned-remove`));
+    assert.equal(readFileSync(quarantine, 'utf8'), 'preserved skill data\n');
+
+    const managedRoot = tmpDir();
+    const managedScope = new Scope({ cwd: managedRoot });
+    writeSkills(embeddedTemplates(), managedScope);
+    const managedSkill = AllSkills[0];
+    const managedManifest = join(
+      managedRoot, '.claude', 'skills', managedSkill, SKILL_MANIFEST_LEAF,
+    );
+    const managedQuarantine = `${managedManifest}.cah-owned-remove`;
+    writeFileSync(managedQuarantine, 'preserved managed skill data\n');
+    const removeResult = removeSkills(embeddedTemplates(), managedScope, { subset: [managedSkill] });
+    assert.ok(removeResult.preserved.includes(`${managedSkill}/${SKILL_MANIFEST_LEAF}.cah-owned-remove`));
+    assert.equal(readFileSync(managedQuarantine, 'utf8'), 'preserved managed skill data\n');
   });
 });
 

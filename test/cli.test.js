@@ -757,3 +757,36 @@ describe('strict local and path conflicts', () => {
     }
   });
 });
+
+describe('probe recovery guidance', () => {
+  it('identifies malformed backup JSON and never recommends restoring from it', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-probe-cli-malformed-'));
+    const claude = join(home, '.claude');
+    const cache = join(claude, 'cah-bin', 'cache');
+    const settingsPath = join(claude, 'settings.json');
+    const backupPath = join(cache, 'probe-backup.json');
+    try {
+      mkdirSync(cache, { recursive: true });
+      writeFileSync(settingsPath, JSON.stringify({
+        statusLine: {
+          type: 'command',
+          command: 'node probe.js',
+          'cah-sentinel': 'cah-probe-statusline:v1',
+          'cah-name': 'probe',
+        },
+      }));
+      writeFileSync(backupPath, '{ malformed backup');
+
+      let rc;
+      const error = withHome(home, () => captureStderr(() => {
+        rc = run(['probe', 'statusline', 'stop']);
+      }));
+      assert.equal(rc, 1);
+      assert.match(error, /could not parse probe backup/);
+      assert.match(error, new RegExp(`fix the JSON in ${backupPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+      assert.doesNotMatch(error, /restore from .*probe-backup\.json/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});

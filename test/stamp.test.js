@@ -3,57 +3,78 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync, utimesSync, mkdirSync, unlinkSync, rmdirSync, symlinkSync, lstatSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
-import { tmpdir } from 'node:os';
+import { tmpdir, homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BIN = join(__dirname, '..', 'bin', 'cah-stamp.js');
 
-function runStamp(stdinData, env) {
-  const input = typeof stdinData === 'string' ? stdinData : JSON.stringify(stdinData);
-  // Default: point the rate_limits cache at a guaranteed-missing path so the
-  // host's real ~/.claude/cah-bin/cache/rate-limits.json never leaks into
-  // assertions anchored on $.
-  const cacheOverride = (env && env.CAH_RATE_LIMITS_CACHE)
-    || join(tmpdir(), 'cah-stamp-test-no-such-file.json');
-  // Each test gets its own throttle path by default, so tests do not
-  // accidentally suppress each other through the live ~/.claude/.../last-stamp.json.
-  const throttleOverride = (env && env.CAH_STAMP_THROTTLE_PATH)
-    || join(tmpdir(), `cah-stamp-throttle-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
-  // Default: a fresh, already-populated (no update) cache so tests never
-  // shell out to curl / hit the real npm registry unless a test explicitly
-  // overrides it to exercise the update-notice path.
-  let updateCacheOverride = env && env.CAH_UPDATE_CHECK_CACHE;
+function stampInvocationEnv(env = {}) {
+  const hintHome = env.CAH_STAMP_HINT_HOME
+    || mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+  const cacheOverride = env.CAH_RATE_LIMITS_CACHE
+    || join(hintHome, 'missing-rate-limits.json');
+  const throttleOverride = env.CAH_STAMP_THROTTLE_PATH
+    || join(hintHome, 'last-stamp.json');
+  let updateCacheOverride = env.CAH_UPDATE_CHECK_CACHE;
   if (!updateCacheOverride) {
-    updateCacheOverride = join(tmpdir(), `cah-stamp-updatecache-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+    updateCacheOverride = join(hintHome, 'update-check.json');
     writeFileSync(updateCacheOverride, JSON.stringify({ latestVersion: null, checkedAt: Date.now() }));
   }
-  const res = spawnSync(process.execPath, [BIN], {
-    input,
-    encoding: 'utf8',
+  return {
+    hintHome,
+    cacheOverride,
+    throttleOverride,
+    updateCacheOverride,
     env: {
       ...process.env,
-      ...(env || {}),
+      ...env,
+      CAH_STAMP_HINT_HOME: hintHome,
       CAH_RATE_LIMITS_CACHE: cacheOverride,
       CAH_STAMP_THROTTLE_PATH: throttleOverride,
       CAH_UPDATE_CHECK_CACHE: updateCacheOverride,
     },
+  };
+}
+
+function runStamp(stdinData, env) {
+  const input = typeof stdinData === 'string' ? stdinData : JSON.stringify(stdinData);
+  const invocation = stampInvocationEnv(env);
+  const res = spawnSync(process.execPath, [BIN], {
+    input,
+    encoding: 'utf8',
+    env: invocation.env,
   });
-  return { stdout: res.stdout, status: res.status, throttlePath: throttleOverride };
+  return {
+    stdout: res.stdout,
+    status: res.status,
+    hintHome: invocation.hintHome,
+    cachePath: invocation.cacheOverride,
+    throttlePath: invocation.throttleOverride,
+    updateCachePath: invocation.updateCacheOverride,
+  };
 }
 
 function runStampAsync(stdinData, env) {
   const input = typeof stdinData === 'string' ? stdinData : JSON.stringify(stdinData);
+  const invocation = stampInvocationEnv(env);
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [BIN], {
-      env: { ...process.env, ...(env || {}) },
+      env: invocation.env,
       stdio: ['pipe', 'pipe', 'ignore'],
     });
     let stdout = '';
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.on('close', (status) => resolve({ stdout, status }));
+    child.on('close', (status) => resolve({
+      stdout,
+      status,
+      hintHome: invocation.hintHome,
+      cachePath: invocation.cacheOverride,
+      throttlePath: invocation.throttleOverride,
+      updateCachePath: invocation.updateCacheOverride,
+    }));
     child.stdin.end(input);
   });
 }
@@ -136,6 +157,25 @@ describe('cah-stamp bin', () => {
     const { stdout, status } = runStamp('{not valid json');
     assert.equal(stdout, '');
     assert.equal(status, 0);
+  });
+
+  it('default harness paths isolate marker and rate-limit access from homedir', () => {
+    const dir = isolatedDir();
+    const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
+    const updateCache = join(dir, 'update-check.json');
+    writeFileSync(updateCache, JSON.stringify({ latestVersion: '99.0.0', checkedAt: Date.now() }));
+    const sessionId = `harness-home-isolation-${process.pid}-${Math.random().toString(36).slice(2)}`;
+    const result = runStamp({ session_id: sessionId, transcript_path: tp, hook_event_name: 'Stop' }, {
+      CAH_UPDATE_CHECK_CACHE: updateCache,
+    });
+    const realCache = join(homedir(), '.claude', 'cah-bin', 'cache', 'rate-limits.json');
+    assert.notEqual(result.hintHome, homedir());
+    assert.notEqual(result.cachePath, realCache);
+    assert.equal(result.cachePath, join(result.hintHome, 'missing-rate-limits.json'));
+    const marker = join(updateMarkerDir(result.hintHome), `cah-update-shown-${createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex')}`);
+    const realMarker = join(updateMarkerDir(homedir()), `cah-update-shown-${createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex')}`);
+    assert.equal(existsSync(marker), true);
+    assert.equal(existsSync(realMarker), false);
   });
 
   it('stop_hook_active: true → no output, exit 0', () => {
@@ -1168,6 +1208,36 @@ describe('cah-stamp bin', () => {
       assert.doesNotMatch(JSON.parse(result.stdout.trim()).systemMessage, /99\.0\.0/);
       assert.deepEqual(readClaim(claim), ownerB);
       assert.equal(existsSync(fence), false);
+    });
+
+    it('quarantines an abandoned update-claim fence with unexpected contents', () => {
+      const dir = isolatedDir();
+      const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
+      const updateCache = freshUpdateCache(dir, '99.0.0');
+      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const markerDir = updateMarkerDir(hintHome);
+      mkdirSync(markerDir, { recursive: true });
+      const sessionId = 'update-unexpected-fence';
+      const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+      const claim = join(markerDir, `.cah-marker-claim-cah-update-shown-${hash}`);
+      const fence = `${claim}.taken-99999999-unexpected-fence`;
+      writeClaim(fence, { pid: process.pid, nonce: 'preserve-owner' });
+      writeFileSync(join(fence, 'foreign-data.txt'), 'preserve me\n');
+
+      const result = runStamp(
+        { session_id: sessionId, transcript_path: tp, hook_event_name: 'Stop' },
+        {
+          CAH_UPDATE_CHECK_CACHE: updateCache,
+          CAH_STAMP_HINT_HOME: hintHome,
+          CAH_STAMP_THROTTLE_PATH: join(dir, 'last-stamp.json'),
+        },
+      );
+      assert.match(JSON.parse(result.stdout.trim()).systemMessage, /99\.0\.0/);
+      const quarantineDir = join(markerDir, '.cah-lease-quarantine');
+      const quarantined = join(quarantineDir, basename(fence));
+      assert.equal(existsSync(fence), false);
+      assert.equal(readFileSync(join(quarantined, 'foreign-data.txt'), 'utf8'), 'preserve me\n');
+      assert.deepEqual(readdirSync(quarantineDir), [basename(fence)]);
     });
 
     it('old update-claim release cannot unlink a successor owner', async () => {

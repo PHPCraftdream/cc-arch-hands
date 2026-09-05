@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, utimesSync, readdirSync, unlinkSync, rmdirSync, symlinkSync, lstatSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
@@ -525,6 +525,28 @@ describe('cah-checkpoint-hint bin', () => {
     assert.equal(result.stdout, '');
     assert.deepEqual(readClaim(claim), ownerB);
     assert.equal(existsSync(fence), false);
+  });
+
+  it('quarantines an abandoned claim fence with unexpected contents', () => {
+    const home = isolatedHome();
+    const sessionId = 'hint-unexpected-fence';
+    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const markerDir = cacheDir(home);
+    mkdirSync(markerDir, { recursive: true });
+    const claim = join(markerDir, `.cah-marker-claim-cah-hint-shown-${hash}`);
+    const fence = `${claim}.taken-99999999-unexpected-fence`;
+    writeClaim(fence, { pid: process.pid, nonce: 'preserve-owner' });
+    writeFileSync(join(fence, 'foreign-data.txt'), 'preserve me\n');
+    const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+
+    const result = runHint(JSON.stringify({ session_id: sessionId, transcript_path: tp }), home);
+    assert.equal(result.stdout, EXPECTED);
+    assert.equal(markerExists(home, sessionId), true);
+    const quarantineDir = join(markerDir, '.cah-lease-quarantine');
+    const quarantined = join(quarantineDir, basename(fence));
+    assert.equal(existsSync(fence), false);
+    assert.equal(readFileSync(join(quarantined, 'foreign-data.txt'), 'utf8'), 'preserve me\n');
+    assert.deepEqual(readdirSync(quarantineDir), [basename(fence)]);
   });
 
   it('ignores the interlock environment without the explicit test-only guard', async () => {

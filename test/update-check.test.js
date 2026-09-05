@@ -14,7 +14,7 @@ import {
 } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { isNewerVersion, getLatestVersion, CURRENT_VERSION } from '../lib/update-check.js';
@@ -356,6 +356,38 @@ describe('getLatestVersion caching', () => {
     assert.equal(existsSync(fencePath), false);
     assert.deepEqual(JSON.parse(readFileSync(join(lockPath, 'owner.json'), 'utf8')).token, 'restored-b');
     assert.equal(existsSync(fetched), false);
+  });
+
+  it('quarantines unexpected abandoned fence contents once and reacquires safely', async () => {
+    const cachePath = isolatedCachePath();
+    const dir = dirname(cachePath);
+    const now = 6_750_000;
+    writeFileSync(cachePath, JSON.stringify({ latestVersion: '8.8.8', checkedAt: 0 }));
+    const lockPath = `${cachePath}.lock`;
+    const fencePath = `${lockPath}.stale-99999999-unexpected-fence`;
+    mkdirSync(fencePath);
+    writeFileSync(join(fencePath, 'owner.json'), JSON.stringify({
+      kind: 'cc-arch-hands-update-check',
+      pid: process.pid,
+      token: 'preserved-owner',
+      startedAt: Date.now(),
+    }));
+    writeFileSync(join(fencePath, 'foreign-data.txt'), 'preserve me\n');
+    const fetchSpec = join(dir, 'unexpected-fence-fetch.json');
+    writeFileSync(fetchSpec, JSON.stringify({ result: '9.9.9' }));
+
+    assert.equal(await runUpdateWorker(cachePath, now, fetchSpec), '9.9.9');
+    const quarantineDir = join(dir, '.cah-lease-quarantine');
+    const quarantined = join(quarantineDir, basename(fencePath));
+    assert.equal(existsSync(fencePath), false);
+    assert.equal(readFileSync(join(quarantined, 'foreign-data.txt'), 'utf8'), 'preserve me\n');
+    assert.deepEqual(readdirSync(quarantineDir), [basename(fencePath)]);
+
+    // Force a second refresh. The prior quarantine must not be rediscovered
+    // as an active fence or trigger another suffixed quarantine.
+    writeFileSync(cachePath, JSON.stringify({ latestVersion: '8.8.8', checkedAt: 0 }));
+    assert.equal(await runUpdateWorker(cachePath, now + 1, fetchSpec), '9.9.9');
+    assert.deepEqual(readdirSync(quarantineDir), [basename(fencePath)]);
   });
 
   it('fences a stale A/live B/contender C reclaim race', async () => {

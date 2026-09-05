@@ -23,6 +23,8 @@ import {
   ProbeBusyError,
   ProbeNotActiveError,
   MissingBackupError,
+  MalformedSettingsError,
+  MalformedBackupError,
   PROBE_SENTINEL,
   PROBE_NAME,
 } from '../lib/probe.js';
@@ -191,6 +193,16 @@ describe('disableProbe', () => {
     assert.throws(() => disableProbe(h), MissingBackupError);
   });
 
+  it('throws a path-specific error for malformed settings JSON', () => {
+    const h = harness();
+    writeFileSync(h.settingsPath, '{ malformed settings');
+    assert.throws(() => disableProbe(h), (error) => {
+      assert.ok(error instanceof MalformedSettingsError);
+      assert.equal(error.path, h.settingsPath);
+      return true;
+    });
+  });
+
   it('tolerates a UTF-8 BOM in settings.json (review M6)', () => {
     const h = harness();
     const original = { type: 'command', command: 'foo', padding: 0 };
@@ -220,7 +232,28 @@ describe('probe concurrency', () => {
     assert.equal(result.ok, false);
     assert.match(result.message, /managed destination leaf changed concurrently/);
     assert.deepEqual(JSON.parse(readFileSync(h.settingsPath, 'utf8')).statusLine, edited);
-    assert.deepEqual(JSON.parse(readFileSync(h.backupPath, 'utf8')).previous, original);
+    assert.ok(!existsSync(h.backupPath), 'failed enable must roll back its exact backup');
+  });
+
+  it('does not arm against a backup replaced before enable settings publication', async () => {
+    const h = harness();
+    const original = { type: 'command', command: 'original', padding: 0 };
+    writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
+    const interlock = join(h.settingsPath, '..', 'enable-backup-replacement-interlock');
+    const worker = runProbeWorker('enableProbe', h, interlock, 'enable-before-settings-write');
+
+    await waitForPath(`${interlock}.ready`);
+    unlinkSync(h.backupPath);
+    const successor = { previous: { type: 'command', command: 'foreign', padding: 0 } };
+    writeFileSync(h.backupPath, JSON.stringify(successor));
+    writeFileSync(`${interlock}.go`, 'go');
+
+    const result = await worker;
+    assert.equal(result.ok, false);
+    assert.match(result.message, /probe backup changed concurrently/);
+    assert.deepEqual(JSON.parse(readFileSync(h.settingsPath, 'utf8')).statusLine, original);
+    assert.deepEqual(JSON.parse(readFileSync(h.backupPath, 'utf8')), successor,
+      'foreign successor backup must be preserved');
   });
 
   it('fails fast while another probe transition owns the operation lease', async () => {
@@ -254,6 +287,40 @@ describe('probe concurrency', () => {
     assert.equal(result.ok, true);
     assert.deepEqual(JSON.parse(readFileSync(h.backupPath, 'utf8')), successor);
     assert.deepEqual(JSON.parse(readFileSync(h.settingsPath, 'utf8')).statusLine, original);
+  });
+
+  it('does not restore settings from a backup replaced before stop restore', async () => {
+    const h = harness();
+    const original = { type: 'command', command: 'original', padding: 0 };
+    writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
+    enableProbe(h);
+
+    const interlock = join(h.settingsPath, '..', 'stop-backup-replacement-interlock');
+    const worker = runProbeWorker('disableProbe', h, interlock, 'disable-before-settings-write');
+    await waitForPath(`${interlock}.ready`);
+
+    unlinkSync(h.backupPath);
+    const successor = { previous: { type: 'command', command: 'foreign', padding: 0 } };
+    writeFileSync(h.backupPath, JSON.stringify(successor));
+    writeFileSync(`${interlock}.go`, 'go');
+
+    const result = await worker;
+    assert.equal(result.ok, false);
+    assert.match(result.message, /probe backup changed concurrently/);
+    assert.ok(JSON.parse(readFileSync(h.settingsPath, 'utf8')).statusLine['cah-sentinel']);
+    assert.deepEqual(JSON.parse(readFileSync(h.backupPath, 'utf8')), successor,
+      'foreign successor backup must be preserved');
+  });
+
+  it('throws a path-specific error for malformed backup JSON', () => {
+    const h = harness();
+    enableProbe(h);
+    writeFileSync(h.backupPath, '{ malformed backup');
+    assert.throws(() => disableProbe(h), (error) => {
+      assert.ok(error instanceof MalformedBackupError);
+      assert.equal(error.path, h.backupPath);
+      return true;
+    });
   });
 });
 
