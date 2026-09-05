@@ -277,7 +277,7 @@ describe('removeBins', () => {
     const foreign = join(dst, 'bin', 'someones-tool.js');
     writeFileSync(foreign, 'not ours\n');
     const r = removeBins(dst);
-    assert.ok(r.skipped.includes('someones-tool.js'));
+    assert.ok(r.skipped.includes('bin/someones-tool.js'));
     assert.ok(existsSync(foreign), 'foreign file must survive');
   });
 

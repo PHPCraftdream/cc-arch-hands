@@ -312,6 +312,74 @@ describe('probe concurrency', () => {
       'foreign successor backup must be preserved');
   });
 
+  it('rolls back the exact settings leaf when backup changes after enable publication', async () => {
+    const h = harness();
+    const original = { type: 'command', command: 'original', padding: 0 };
+    writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
+
+    const interlock = join(h.settingsPath, '..', 'enable-post-settings-interlock');
+    const worker = runProbeWorker('enableProbe', h, interlock, 'enable-post-settings-rename');
+    await waitForPath(`${interlock}.ready`);
+
+    unlinkSync(h.backupPath);
+    const successor = { previous: { type: 'command', command: 'foreign-successor', padding: 0 } };
+    writeFileSync(h.backupPath, JSON.stringify(successor));
+    writeFileSync(`${interlock}.go`, 'go');
+
+    const result = await worker;
+    assert.equal(result.ok, false);
+    assert.match(result.message, /probe backup changed concurrently/);
+    assert.deepEqual(JSON.parse(readFileSync(h.settingsPath, 'utf8')).statusLine, original,
+      'failed enable must disarm its exact settings publication');
+    assert.deepEqual(JSON.parse(readFileSync(h.backupPath, 'utf8')), successor,
+      'enable must not remove a foreign backup successor');
+  });
+
+  it('rolls back the exact settings leaf when backup changes after stop publication', async () => {
+    const h = harness();
+    const original = { type: 'command', command: 'original', padding: 0 };
+    writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
+    enableProbe(h);
+
+    const interlock = join(h.settingsPath, '..', 'stop-post-settings-interlock');
+    const worker = runProbeWorker('disableProbe', h, interlock, 'disable-post-settings-rename');
+    await waitForPath(`${interlock}.ready`);
+
+    unlinkSync(h.backupPath);
+    const successor = { previous: { type: 'command', command: 'foreign-successor', padding: 0 } };
+    writeFileSync(h.backupPath, JSON.stringify(successor));
+    writeFileSync(`${interlock}.go`, 'go');
+
+    const result = await worker;
+    assert.equal(result.ok, false);
+    assert.match(result.message, /probe backup changed concurrently/);
+    assert.ok(JSON.parse(readFileSync(h.settingsPath, 'utf8')).statusLine['cah-sentinel'],
+      'failed stop must retain the probe after restoring from stale data is refused');
+    assert.deepEqual(JSON.parse(readFileSync(h.backupPath, 'utf8')), successor,
+      'stop must preserve a foreign backup successor');
+  });
+
+  it('does not roll back a settings successor after enable postcheck failure', async () => {
+    const h = harness();
+    const original = { type: 'command', command: 'original', padding: 0 };
+    writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
+
+    const interlock = join(h.settingsPath, '..', 'enable-settings-successor-interlock');
+    const worker = runProbeWorker('enableProbe', h, interlock, 'enable-post-settings-rename');
+    await waitForPath(`${interlock}.ready`);
+
+    const successor = { statusLine: { type: 'command', command: 'foreign-settings' } };
+    writeFileSync(h.settingsPath, JSON.stringify(successor));
+    writeFileSync(`${interlock}.go`, 'go');
+
+    const result = await worker;
+    assert.equal(result.ok, false);
+    assert.match(result.message, /managed destination leaf changed concurrently/);
+    assert.deepEqual(JSON.parse(readFileSync(h.settingsPath, 'utf8')), successor,
+      'settings successor must never be overwritten during rollback');
+    assert.ok(!existsSync(h.backupPath), 'failed enable must roll back only its backup leaf');
+  });
+
   it('throws a path-specific error for malformed backup JSON', () => {
     const h = harness();
     enableProbe(h);

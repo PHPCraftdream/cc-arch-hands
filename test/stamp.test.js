@@ -945,7 +945,7 @@ describe('cah-stamp bin', () => {
       assert.equal(existsSync(join(updateMarkerDir(hintHome), `cah-update-shown-${hash}`)), true);
     });
 
-    it('ignores a legacy update marker symlink and sweeps stale raw entries', (t) => {
+    it('ignores a legacy update marker symlink and preserves stale unknown raw entries', (t) => {
       const dir = isolatedDir();
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
@@ -978,7 +978,7 @@ describe('cah-stamp bin', () => {
       );
       assert.match(result.stdout, /99\.0\.0/);
       assert.equal(lstatSync(symlink).isSymbolicLink(), true);
-      assert.equal(existsSync(stale), false);
+      assert.equal(existsSync(stale), true);
       assert.equal(existsSync(join(hintHome, 'escape')), false);
     });
 

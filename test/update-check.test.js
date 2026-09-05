@@ -390,6 +390,44 @@ describe('getLatestVersion caching', () => {
     assert.deepEqual(readdirSync(quarantineDir), [basename(fencePath)]);
   });
 
+  it('uses a bounded collision slot when the deterministic quarantine name is occupied', async () => {
+    const cachePath = isolatedCachePath();
+    const dir = dirname(cachePath);
+    const now = 6_875_000;
+    writeFileSync(cachePath, JSON.stringify({ latestVersion: '8.8.8', checkedAt: 0 }));
+    const lockPath = `${cachePath}.lock`;
+    const fencePath = `${lockPath}.stale-99999999-colliding-fence`;
+    mkdirSync(fencePath);
+    writeFileSync(join(fencePath, 'owner.json'), JSON.stringify({
+      kind: 'cc-arch-hands-update-check',
+      pid: process.pid,
+      token: 'preserved-owner',
+      startedAt: Date.now(),
+    }));
+    writeFileSync(join(fencePath, 'foreign-data.txt'), 'move both entries\n');
+
+    const quarantineDir = join(dir, '.cah-lease-quarantine');
+    const occupied = join(quarantineDir, basename(fencePath));
+    mkdirSync(occupied, { recursive: true });
+    writeFileSync(join(occupied, 'foreign-data.txt'), 'original occupant\n');
+
+    const fetchSpec = join(dir, 'collision-fence-fetch.json');
+    writeFileSync(fetchSpec, JSON.stringify({ result: '9.9.9' }));
+    assert.equal(await runUpdateWorker(cachePath, now, fetchSpec), '9.9.9');
+
+    assert.equal(existsSync(fencePath), false);
+    assert.equal(readFileSync(join(occupied, 'foreign-data.txt'), 'utf8'), 'original occupant\n');
+    const slots = readdirSync(quarantineDir).filter((name) => name.startsWith('.slot-'));
+    assert.deepEqual(slots, ['.slot-0']);
+    const quarantined = join(quarantineDir, '.slot-0', basename(fencePath));
+    assert.equal(readFileSync(join(quarantined, 'foreign-data.txt'), 'utf8'), 'move both entries\n');
+
+    // A subsequent recovery does not rediscover or requarantine the slot.
+    writeFileSync(cachePath, JSON.stringify({ latestVersion: '8.8.8', checkedAt: 0 }));
+    assert.equal(await runUpdateWorker(cachePath, now + 1, fetchSpec), '9.9.9');
+    assert.deepEqual(readdirSync(quarantineDir).filter((name) => name.startsWith('.slot-')), ['.slot-0']);
+  });
+
   it('fences a stale A/live B/contender C reclaim race', async () => {
     const cachePath = isolatedCachePath();
     const dir = dirname(cachePath);

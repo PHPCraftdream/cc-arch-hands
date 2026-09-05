@@ -173,7 +173,7 @@ describe('cah-checkpoint-hint bin', () => {
     assert.equal(markerExists(home, sessionId), true);
   });
 
-  it('sweeps stale raw legacy hint markers without reading nested paths', () => {
+  it('preserves stale unknown raw legacy hint markers without reading nested paths', () => {
     const home = isolatedHome();
     const legacyDir = join(home, '.claude');
     mkdirSync(legacyDir, { recursive: true });
@@ -187,7 +187,7 @@ describe('cah-checkpoint-hint bin', () => {
       home,
     );
     assert.equal(result.stdout, '');
-    assert.equal(existsSync(stale), false);
+    assert.equal(existsSync(stale), true);
     assert.equal(existsSync(join(home, 'escape')), false);
   });
 

@@ -7,7 +7,7 @@
 // missing input, or filesystem hiccup results in `exit 0` with no stdout, so it
 // can never break the user's session.
 
-import { mkdirSync, openSync, closeSync, readFileSync, readdirSync, statSync, lstatSync, unlinkSync, writeSync, writeFileSync } from 'node:fs';
+import { mkdirSync, openSync, closeSync, readFileSync, readdirSync, lstatSync, unlinkSync, writeSync, writeFileSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
@@ -48,12 +48,14 @@ function pruneStaleMarkers(markerDir, nowMs) {
     if (!MARKER_NAME_RE.test(name)) continue;
     const p = join(markerDir, name);
     try {
-      if (nowMs - statSync(p).mtimeMs > MARKER_TTL_MS) {
+      const stat = lstatSync(p);
+      if (!stat.isFile()) continue;
+      if (nowMs - stat.mtimeMs > MARKER_TTL_MS) {
         const claim = acquireMarkerClaim(p, nowMs);
         if (!claim) continue;
         try {
-          const current = statSync(p);
-          if (nowMs - current.mtimeMs > MARKER_TTL_MS) {
+          const current = lstatSync(p);
+          if (current.isFile() && nowMs - current.mtimeMs > MARKER_TTL_MS) {
             removePathIfUnchanged(p, current, 'marker-remove');
           }
         } finally {
@@ -68,7 +70,10 @@ function pruneStaleMarkers(markerDir, nowMs) {
   for (const name of entries) {
     if (!MARKER_NAME_RE.test(name)) continue;
     const p = join(markerDir, name);
-    try { fresh.push({ path: p, mtimeMs: statSync(p).mtimeMs }); } catch { /* best effort */ }
+    try {
+      const stat = lstatSync(p);
+      if (stat.isFile()) fresh.push({ path: p, mtimeMs: stat.mtimeMs });
+    } catch { /* best effort */ }
   }
   fresh.sort((a, b) => b.mtimeMs - a.mtimeMs);
   for (const entry of fresh.slice(MARKER_MAX_SESSIONS)) {
@@ -76,8 +81,8 @@ function pruneStaleMarkers(markerDir, nowMs) {
       const claim = acquireMarkerClaim(entry.path, nowMs);
       if (!claim) continue;
       try {
-        const current = statSync(entry.path);
-        removePathIfUnchanged(entry.path, current, 'marker-remove');
+        const current = lstatSync(entry.path);
+        if (current.isFile()) removePathIfUnchanged(entry.path, current, 'marker-remove');
       } finally {
         releaseMarkerClaim(claim);
       }
@@ -88,6 +93,12 @@ function pruneStaleMarkers(markerDir, nowMs) {
 function directLegacyMarkerPrefix(name) {
   if (typeof name !== 'string' || name.includes('/') || name.includes('\\') || name.includes('\0')) return null;
   return LEGACY_MARKER_PREFIXES.find((prefix) => name.startsWith(prefix) && name.length > prefix.length) || null;
+}
+
+function isSafeCurrentMarkerName(name, prefix, sessionId) {
+  if (typeof sessionId !== 'string' || sessionId.length === 0) return false;
+  const expected = `${prefix}${sessionId}`;
+  return expected === name && directLegacyMarkerPrefix(expected) === prefix;
 }
 
 function sameLegacyFileIdentity(left, right) {
@@ -134,7 +145,7 @@ function migrateLegacyFile(source, target, sourceStat) {
   }
 }
 
-function migrateLegacyMarkers(home, markerDir, sessionId, nowMs = Date.now()) {
+function migrateLegacyMarkers(home, markerDir, sessionId) {
   const legacyDir = join(home, '.claude');
   if (legacyDir === markerDir) return;
   let entries;
@@ -156,16 +167,7 @@ function migrateLegacyMarkers(home, markerDir, sessionId, nowMs = Date.now()) {
       continue;
     }
 
-    // Raw legacy names cannot be mapped for another session. Retain fresh
-    // ones for a later exact match, but sweep stale entries regardless of
-    // whether their suffix is a hash, UUID, or any other old session ID.
-    if (nowMs - sourceStat.mtimeMs > MARKER_TTL_MS) {
-      removeLegacyIfUnchanged(source, sourceStat);
-      continue;
-    }
-
-    const currentName = typeof sessionId === 'string' ? `${prefix}${sessionId}` : null;
-    const isCurrentSession = currentName !== null && currentName === name;
+    const isCurrentSession = isSafeCurrentMarkerName(name, prefix, sessionId);
     const suffix = name.slice(prefix.length);
     const isLegacyHash = /^[a-f0-9]{64}$/.test(suffix);
     if (!isCurrentSession && !isLegacyHash) continue;
@@ -230,7 +232,8 @@ function claimMarker(markerDir, sessionId, nowMs) {
   try {
     mkdirSync(markerDir, { recursive: true });
     try {
-      const markerStat = statSync(marker);
+      const markerStat = lstatSync(marker);
+      if (!markerStat.isFile()) return null;
       if (nowMs - markerStat.mtimeMs <= MARKER_TTL_MS) return null;
     } catch (error) {
       if (!error || error.code !== 'ENOENT') return null;
@@ -239,7 +242,11 @@ function claimMarker(markerDir, sessionId, nowMs) {
     if (!claim) return null;
     try {
       try {
-        const markerStat = statSync(marker);
+        const markerStat = lstatSync(marker);
+        if (!markerStat.isFile()) {
+          releaseMarkerClaim(claim);
+          return null;
+        }
         if (nowMs - markerStat.mtimeMs <= MARKER_TTL_MS) {
           releaseMarkerClaim(claim);
           return null;

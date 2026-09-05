@@ -83,6 +83,12 @@ function directLegacyMarkerPrefix(name) {
   return LEGACY_MARKER_PREFIXES.find((prefix) => name.startsWith(prefix) && name.length > prefix.length) || null;
 }
 
+function isSafeCurrentMarkerName(name, prefix, sessionId) {
+  if (typeof sessionId !== 'string' || sessionId.length === 0) return false;
+  const expected = `${prefix}${sessionId}`;
+  return expected === name && directLegacyMarkerPrefix(expected) === prefix;
+}
+
 function sameLegacyFileIdentity(left, right) {
   return left !== null && right !== null
     && String(left.dev) === String(right.dev)
@@ -127,7 +133,7 @@ function migrateLegacyFile(source, target, sourceStat) {
   }
 }
 
-function migrateLegacyMarkers(home, markerDir, sessionId, nowMs = Date.now()) {
+function migrateLegacyMarkers(home, markerDir, sessionId) {
   const legacyDir = join(home, '.claude');
   if (legacyDir === markerDir) return;
   let entries;
@@ -149,16 +155,7 @@ function migrateLegacyMarkers(home, markerDir, sessionId, nowMs = Date.now()) {
       continue;
     }
 
-    // Unknown raw IDs stay in the legacy directory while fresh so a later
-    // hook can match them exactly. Stale entries are swept independent of
-    // suffix format.
-    if (nowMs - sourceStat.mtimeMs > UPDATE_MARKER_TTL_MS) {
-      removeLegacyIfUnchanged(source, sourceStat);
-      continue;
-    }
-
-    const currentName = typeof sessionId === 'string' ? `${prefix}${sessionId}` : null;
-    const isCurrentSession = currentName !== null && currentName === name;
+    const isCurrentSession = isSafeCurrentMarkerName(name, prefix, sessionId);
     const suffix = name.slice(prefix.length);
     const isLegacyHash = /^[a-f0-9]{64}$/.test(suffix);
     if (!isCurrentSession && !isLegacyHash) continue;
@@ -182,13 +179,14 @@ function pruneStaleMarkers(markerDir, nowMs) {
     if (!UPDATE_MARKER_NAME_RE.test(name)) continue;
     const p = join(markerDir, name);
     try {
-      const stat = statSync(p);
+      const stat = lstatSync(p);
+      if (!stat.isFile()) continue;
       if (nowMs - stat.mtimeMs > UPDATE_MARKER_TTL_MS) {
         const claim = acquireUpdateMarkerClaim(p, nowMs);
         if (!claim) continue;
         try {
-          const current = statSync(p);
-          if (nowMs - current.mtimeMs > UPDATE_MARKER_TTL_MS) {
+          const current = lstatSync(p);
+          if (current.isFile() && nowMs - current.mtimeMs > UPDATE_MARKER_TTL_MS) {
             removePathIfUnchanged(p, current, 'marker-remove');
           }
         } finally {
@@ -268,7 +266,8 @@ function claimUpdateMarker(markerDir, sessionId, nowMs) {
   try {
     mkdirSync(markerDir, { recursive: true });
     try {
-      const markerStat = statSync(marker);
+      const markerStat = lstatSync(marker);
+      if (!markerStat.isFile()) return null;
       if (nowMs - markerStat.mtimeMs <= UPDATE_MARKER_TTL_MS) return null;
     } catch (statError) {
       if (!statError || statError.code !== 'ENOENT') return null;
@@ -277,7 +276,11 @@ function claimUpdateMarker(markerDir, sessionId, nowMs) {
     if (!claim) return null;
     try {
       try {
-        const markerStat = statSync(marker);
+        const markerStat = lstatSync(marker);
+        if (!markerStat.isFile()) {
+          releaseUpdateMarkerClaim(claim);
+          return null;
+        }
         if (nowMs - markerStat.mtimeMs <= UPDATE_MARKER_TTL_MS) {
           releaseUpdateMarkerClaim(claim);
           return null;
