@@ -10,7 +10,7 @@ import { run, resolveScope, parseOnly, resolveDeps, classifyPath } from '../lib/
 import { BinFiles } from '../lib/binstall.js';
 import { AllCodexAgents } from '../lib/manifest.js';
 import { Scope } from '../lib/scope.js';
-import { SentinelBin, SetForModelCommand } from '../lib/sentinel.js';
+import { SentinelBin, SentinelCodexAgent, SetForModelCommand } from '../lib/sentinel.js';
 
 // os.homedir() reads $HOME / %USERPROFILE% on each call, so we can sandbox the
 // always-global bin directory to a temp dir for the duration of a test.
@@ -388,8 +388,8 @@ describe('run install/uninstall --codex-agents', () => {
     try {
       withHome(home, () => {
         assert.equal(run(['install', '--codex-agents']), 0);
-        assert.ok(existsSync(join(home, '.codex', 'agents', 'h55.toml')));
-        assert.ok(readFileSync(join(home, '.codex', 'agents', 'h55.toml'), 'utf8').includes('model = "gpt-5.5"'));
+        assert.ok(existsSync(join(home, '.codex', 'agents', 'ha.toml')));
+        assert.ok(readFileSync(join(home, '.codex', 'agents', 'ha.toml'), 'utf8').includes('model = "gpt-6-astra"'));
         assert.ok(readFileSync(join(home, '.codex', 'agents', 'xxt.toml'), 'utf8').includes('model = "gpt-5.6-terra"'));
         assert.ok(readFileSync(join(home, '.codex', 'agents', 'xxt.toml'), 'utf8').includes('model_reasoning_effort = "max"'));
         assert.ok(readFileSync(join(home, '.codex', 'agents', 'ul.toml'), 'utf8').includes('model = "gpt-5.6-luna"'));
@@ -403,7 +403,7 @@ describe('run install/uninstall --codex-agents', () => {
         assert.ok(codexRows.every((r) => r.state === 'mine'));
 
         assert.equal(run(['uninstall', '--codex-agents']), 0);
-        assert.ok(!existsSync(join(home, '.codex', 'agents', 'h55.toml')));
+        assert.ok(!existsSync(join(home, '.codex', 'agents', 'ha.toml')));
       });
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -415,12 +415,49 @@ describe('run install/uninstall --codex-agents', () => {
     try {
       withHome(home, () => {
         assert.equal(run(['install', '--only', 'codex-agents']), 0);
-        assert.ok(existsSync(join(home, '.codex', 'agents', 'h55.toml')));
+        assert.ok(existsSync(join(home, '.codex', 'agents', 'ha.toml')));
         // claude-side must NOT be touched by a codex-only selection
         assert.ok(!existsSync(join(home, '.claude', 'commands')));
 
         assert.equal(run(['uninstall', '--only', 'codex-agents']), 0);
-        assert.ok(!existsSync(join(home, '.codex', 'agents', 'h55.toml')));
+        assert.ok(!existsSync(join(home, '.codex', 'agents', 'ha.toml')));
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('install and reinstall prune all legacy sentinel-owned Codex TOML and preserve foreign files', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
+    const legacyNames = [
+      'l55', 'm55', 'h55', 'x55', 'l54', 'm54', 'h54', 'x54',
+      'l54m', 'm54m', 'h54m', 'x54m',
+    ];
+    const agentsDir = join(home, '.codex', 'agents');
+    const foreignPath = join(agentsDir, 'foreign-legacy.toml');
+    try {
+      withHome(home, () => {
+        mkdirSync(agentsDir, { recursive: true });
+        for (const name of legacyNames) {
+          writeFileSync(join(agentsDir, `${name}.toml`), `${SentinelCodexAgent}\nlegacy\n`);
+        }
+        const foreignBody = 'foreign user-owned Codex agent\n';
+        writeFileSync(foreignPath, foreignBody);
+
+        assert.equal(run(['install', '--codex-agents']), 0);
+        for (const name of legacyNames) {
+          assert.ok(!existsSync(join(agentsDir, `${name}.toml`)), `${name}.toml must be pruned on install`);
+        }
+        assert.equal(readFileSync(foreignPath, 'utf8'), foreignBody);
+
+        for (const name of legacyNames) {
+          writeFileSync(join(agentsDir, `${name}.toml`), `${SentinelCodexAgent}\nlegacy again\n`);
+        }
+        assert.equal(run(['reinstall', '--codex-agents']), 0);
+        for (const name of legacyNames) {
+          assert.ok(!existsSync(join(agentsDir, `${name}.toml`)), `${name}.toml must be pruned on reinstall`);
+        }
+        assert.equal(readFileSync(foreignPath, 'utf8'), foreignBody);
       });
     } finally {
       rmSync(home, { recursive: true, force: true });

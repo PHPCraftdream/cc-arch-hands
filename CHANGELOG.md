@@ -14,11 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   isn't inside a git repo). Never touches anything else that happens to be
   dirty or staged in the working tree.
 - Added six optional Astra Codex agents: `la`, `ma`, `ha`, `xa`, `xxa`, and
-  `ua`, using `gpt-5.6-astra` with `low`, `medium`, `high`, `extra`, `max`,
+  `ua`, using `gpt-6-astra` with `low`, `medium`, `high`, `extra`, `max`,
   and `ultra` reasoning efforts.
 
 ### Changed
 
+- Removed the 12 legacy GPT Codex agents (`l55`/`m55`/`h55`/`x55`,
+  `l54`/`m54`/`h54`/`x54`, and `l54m`/`m54m`/`h54m`/`x54m`). The optional
+  Codex registry now contains 24 agents: six each for Terra, Luna, Sol, and
+  Astra. Install/reinstall prunes their sentinel-owned orphan TOML files while
+  preserving foreign files.
 - **BREAKING: per-model slash-commands (`/oh`, `/fh`, ...) are now opt-in.**
   A bare `cah install`/`cah reinstall` no longer writes `~/.claude/commands/`
   — install them explicitly with `--commands`, or `--only commands`. The

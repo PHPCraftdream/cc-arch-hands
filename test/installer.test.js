@@ -914,13 +914,13 @@ describe('writeCodexAgents', () => {
     const agentsDir = join(dir, '.codex', 'agents');
     mkdirSync(agentsDir, { recursive: true });
 
-    const foreignPath = join(agentsDir, 'h55.toml');
+    const foreignPath = join(agentsDir, 'ha.toml');
     const foreignBody = 'someone else owns this';
     writeFileSync(foreignPath, foreignBody);
 
     const { written, skipped } = writeCodexAgents(null, scope);
     assert.equal(written, AllCodexAgents.length - 1);
-    assert.deepEqual(skipped, ['h55.toml']);
+    assert.deepEqual(skipped, ['ha.toml']);
     assert.equal(readFileSync(foreignPath, 'utf8'), foreignBody);
   });
 
@@ -966,15 +966,15 @@ describe('removeCodexAgents', () => {
     const agentsDir = join(dir, '.codex', 'agents');
     mkdirSync(agentsDir, { recursive: true });
 
-    const minePath = join(agentsDir, 'h55.toml');
+    const minePath = join(agentsDir, 'ha.toml');
     writeFileSync(minePath, `x\n${SentinelCodexAgent}\n`);
-    const foreignPath = join(agentsDir, 'm55.toml');
+    const foreignPath = join(agentsDir, 'ma.toml');
     const foreignBody = 'not yours';
     writeFileSync(foreignPath, foreignBody);
 
     const { removed, skipped } = removeCodexAgents(scope);
     assert.equal(removed, 1);
-    assert.deepEqual(skipped, ['m55.toml']);
+    assert.deepEqual(skipped, ['ma.toml']);
     assert.throws(() => statSync(minePath), { code: 'ENOENT' });
     assert.equal(readFileSync(foreignPath, 'utf8'), foreignBody);
   });
@@ -1090,7 +1090,7 @@ describe('shared leaf publication', () => {
   for (const [kind, install, leaf] of [
     ['commands', (scope) => writeModelCommands(null, scope), ['.claude', 'commands', 'fl.md']],
     ['agents', (scope) => writeModelAgents(null, scope), ['.claude', 'agents', 'fl.md']],
-    ['codex', (scope) => writeCodexAgents(null, scope), ['.codex', 'agents', 'l55.toml']],
+    ['codex', (scope) => writeCodexAgents(null, scope), ['.codex', 'agents', 'lt.toml']],
   ]) {
     it(`${kind} refuses a foreign successor and preserves its mode`, async () => {
       const dir = tmpDir();

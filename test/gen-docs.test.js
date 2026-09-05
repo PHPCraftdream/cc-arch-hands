@@ -19,20 +19,32 @@ describe('gen-docs --check', () => {
   });
 
   it('defines exactly six collision-free Astra Codex agents', () => {
-    const astra = AllCodexAgents.filter((agent) => agent.model === 'gpt-5.6-astra');
+    assert.equal(AllCodexAgents.length, 24);
+    const astra = AllCodexAgents.filter((agent) => agent.model === 'gpt-6-astra');
     assert.deepEqual(
       astra,
       [
-        { name: 'la', model: 'gpt-5.6-astra', effort: 'low', display: 'Astra - low' },
-        { name: 'ma', model: 'gpt-5.6-astra', effort: 'medium', display: 'Astra - medium' },
-        { name: 'ha', model: 'gpt-5.6-astra', effort: 'high', display: 'Astra - high' },
-        { name: 'xa', model: 'gpt-5.6-astra', effort: 'extra', display: 'Astra - extra' },
-        { name: 'xxa', model: 'gpt-5.6-astra', effort: 'max', display: 'Astra - max' },
-        { name: 'ua', model: 'gpt-5.6-astra', effort: 'ultra', display: 'Astra - ultra' },
+        { name: 'la', model: 'gpt-6-astra', effort: 'low', display: 'Astra - low' },
+        { name: 'ma', model: 'gpt-6-astra', effort: 'medium', display: 'Astra - medium' },
+        { name: 'ha', model: 'gpt-6-astra', effort: 'high', display: 'Astra - high' },
+        { name: 'xa', model: 'gpt-6-astra', effort: 'extra', display: 'Astra - extra' },
+        { name: 'xxa', model: 'gpt-6-astra', effort: 'max', display: 'Astra - max' },
+        { name: 'ua', model: 'gpt-6-astra', effort: 'ultra', display: 'Astra - ultra' },
       ],
     );
 
     const names = AllCodexAgents.map((agent) => agent.name);
     assert.equal(new Set(names).size, names.length, 'Codex agent aliases must be unique');
+
+    const familyCounts = new Map();
+    for (const agent of AllCodexAgents) {
+      familyCounts.set(agent.model, (familyCounts.get(agent.model) ?? 0) + 1);
+    }
+    assert.deepEqual([...familyCounts.entries()], [
+      ['gpt-5.6-terra', 6],
+      ['gpt-5.6-luna', 6],
+      ['gpt-5.6-sol', 6],
+      ['gpt-6-astra', 6],
+    ]);
   });
 });
