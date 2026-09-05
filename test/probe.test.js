@@ -9,6 +9,10 @@ import {
   unlinkSync,
   symlinkSync,
   lstatSync,
+  openSync,
+  writeSync,
+  closeSync,
+  utimesSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -73,6 +77,32 @@ function runProbeWorker(action, paths, interlock, phase) {
     worker.once('message', resolve);
     worker.once('error', reject);
   });
+}
+
+function mutateSettingsInPlace(path) {
+  const before = lstatSync(path, { bigint: true });
+  const original = readFileSync(path);
+  const mutated = Buffer.from(original);
+  const marker = Buffer.from('cah-status-probe.js');
+  const offset = mutated.indexOf(marker);
+  assert.ok(offset >= 0, 'published probe command must be present');
+  mutated[offset] = mutated[offset] === 0x63 ? 0x64 : 0x63;
+  const fd = openSync(path, 'r+');
+  try {
+    writeSync(fd, mutated, 0, mutated.length, 0);
+  } finally {
+    closeSync(fd);
+  }
+  // Restore the prior timestamps after the same-size in-place rewrite. The
+  // exact snapshot check must still reject this because the bytes changed.
+  utimesSync(path, Number(before.atimeNs) / 1e9, Number(before.mtimeNs) / 1e9);
+  const after = lstatSync(path, { bigint: true });
+  assert.equal(after.dev, before.dev);
+  assert.equal(after.ino, before.ino);
+  assert.equal(after.size, before.size);
+  assert.equal(after.mtimeMs, before.mtimeMs);
+  assert.notDeepEqual(mutated, original);
+  return mutated;
 }
 
 function makeSymlinkOrSkip(t, linkPath, targetPath) {
@@ -406,6 +436,53 @@ describe('probe concurrency', () => {
     assert.deepEqual(readFileSync(h.settingsPath), successor);
     assert.equal(sameFileIdentity(regularFileIdentity(h.settingsPath), successorIdentity), true);
     assert.ok(existsSync(h.backupPath), 'failed stop must retain its backup');
+  });
+
+  it('preserves a same-inode, same-size mutated settings file during enable rollback', async (t) => {
+    if (process.platform === 'win32') {
+      t.skip('nanosecond mtime restoration is not deterministic on Windows');
+      return;
+    }
+    const h = harness();
+    writeFileSync(h.settingsPath, JSON.stringify({
+      statusLine: { type: 'command', command: 'original', padding: 0 },
+    }));
+
+    const interlock = join(h.settingsPath, '..', 'enable-in-place-mutation-interlock');
+    const worker = runProbeWorker('enableProbe', h, interlock, 'enable-post-settings-rename');
+    await waitForPath(`${interlock}.ready`);
+    const mutated = mutateSettingsInPlace(h.settingsPath);
+    writeFileSync(`${interlock}.go`, 'go');
+
+    const result = await worker;
+    assert.equal(result.ok, false);
+    assert.deepEqual(readFileSync(h.settingsPath), mutated,
+      'enable rollback must preserve an in-place content successor');
+    assert.ok(!existsSync(h.backupPath), 'enable rollback must still remove its backup');
+  });
+
+  it('preserves a same-inode, same-size mutated settings file during stop rollback', async (t) => {
+    if (process.platform === 'win32') {
+      t.skip('nanosecond mtime restoration is not deterministic on Windows');
+      return;
+    }
+    const h = harness();
+    writeFileSync(h.settingsPath, JSON.stringify({
+      statusLine: { type: 'command', command: 'original', padding: 0 },
+    }));
+    enableProbe(h);
+
+    const interlock = join(h.settingsPath, '..', 'stop-in-place-mutation-interlock');
+    const worker = runProbeWorker('disableProbe', h, interlock, 'disable-post-settings-rename');
+    await waitForPath(`${interlock}.ready`);
+    const mutated = mutateSettingsInPlace(h.settingsPath);
+    writeFileSync(`${interlock}.go`, 'go');
+
+    const result = await worker;
+    assert.equal(result.ok, false);
+    assert.deepEqual(readFileSync(h.settingsPath), mutated,
+      'stop rollback must preserve an in-place content successor');
+    assert.ok(existsSync(h.backupPath), 'stop rollback must retain its backup');
   });
 
   it('throws a path-specific error for malformed backup JSON', () => {

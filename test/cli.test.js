@@ -363,6 +363,28 @@ describe('run install/uninstall --only bins', () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  it('rejects a foreign ESM package boundary before CLI bin mutation', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
+    try {
+      withHome(home, () => {
+        const binDir = join(home, '.claude', 'cah-bin');
+        const foreignPackage = JSON.stringify({ type: 'module', owner: 'user' }) + '\n';
+        mkdirSync(binDir, { recursive: true });
+        writeFileSync(join(binDir, 'package.json'), foreignPackage);
+
+        let rc;
+        const error = captureStderr(() => { rc = run(['install', '--only', 'bins']); });
+        assert.equal(rc, 1);
+        assert.match(error, /foreign package boundary/);
+        assert.equal(readFileSync(join(binDir, 'package.json'), 'utf8'), foreignPackage);
+        assert.ok(!existsSync(join(binDir, 'bin', 'cah-status.js')),
+          'CLI failure must not publish companion leaves');
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
 
 
@@ -478,7 +500,7 @@ describe('run install/uninstall --codex-agents', () => {
         assert.equal(readFileSync(removedAlias, 'utf8'), 'foreign user-owned legacy alias\n');
 
         const reinstall = captureStdout(() => assert.equal(run(['reinstall', '--codex-agents']), 0));
-        assert.equal((reinstall.match(/^    h55\.toml$/gm) || []).length, 2);
+        assert.equal((reinstall.match(/^    skipped: h55\.toml$/gm) || []).length, 2);
         assert.equal(readFileSync(removedAlias, 'utf8'), 'foreign user-owned legacy alias\n');
       });
     } finally {

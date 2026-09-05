@@ -124,15 +124,18 @@ describe('writeBins', () => {
     }
   });
 
-  it('preserves a compatible foreign package boundary and reports it as skipped', () => {
+  it('rejects any foreign package boundary before any bin mutation', () => {
     mkdirSync(dst, { recursive: true });
     writeFileSync(join(dst, 'package.json'), JSON.stringify({ type: 'module', owner: 'user' }) + '\n');
-    const r = writeBins(dst, src);
-    assert.equal(r.written, BinFiles.length - 1);
-    assert.ok(r.skipped.includes('package.json'));
+    assert.throws(
+      () => writeBins(dst, src),
+      /foreign package boundary.*managed companion bins require/,
+    );
     assert.deepEqual(JSON.parse(readFileSync(join(dst, 'package.json'), 'utf8')), {
       type: 'module', owner: 'user',
     });
+    assert.ok(!existsSync(join(dst, 'bin')), 'foreign-boundary preflight must not create bin leaves');
+    assert.ok(!existsSync(join(dst, 'lib')), 'foreign-boundary preflight must not create lib leaves');
   });
 
   it('rejects an incompatible foreign boundary before any bin mutation', () => {
@@ -150,7 +153,7 @@ describe('writeBins', () => {
 
     assert.throws(
       () => writeBins(dst, src),
-      /incompatible foreign package boundary.*type: module/,
+      /foreign package boundary.*managed companion bins require/,
     );
     assert.deepEqual(readFileSync(packagePath), Buffer.from(JSON.stringify({ type: 'commonjs', owner: 'user' }) + '\n'));
     assert.deepEqual(readFileSync(existingBin), beforeBin);
@@ -165,7 +168,7 @@ describe('writeBins', () => {
     writeFileSync(packagePath, '{ malformed package\n');
     assert.throws(
       () => writeBins(dst, src),
-      /malformed foreign package boundary.*valid JSON/,
+      /foreign package boundary.*managed companion bins require/,
     );
     assert.equal(readFileSync(packagePath, 'utf8'), '{ malformed package\n');
     assert.ok(!existsSync(join(dst, 'bin')), 'preflight failure must not create bin leaves');
@@ -177,43 +180,11 @@ describe('writeBins', () => {
     writeFileSync(packagePath, JSON.stringify({ owner: 'user' }) + '\n');
     assert.throws(
       () => writeBins(dst, src),
-      /incompatible foreign package boundary.*type: module/,
+      /foreign package boundary.*managed companion bins require/,
     );
     assert.equal(readFileSync(packagePath, 'utf8'), '{"owner":"user"}\n');
     assert.ok(!existsSync(join(dst, 'bin')), 'preflight failure must not create bin leaves');
     assert.ok(!existsSync(join(dst, 'lib')), 'preflight failure must not create lib leaves');
-  });
-
-  it('smoke-runs every installed companion binary with a compatible foreign module boundary', () => {
-    mkdirSync(dst, { recursive: true });
-    const foreignPackage = { type: 'module', owner: 'user' };
-    writeFileSync(join(dst, 'package.json'), JSON.stringify(foreignPackage) + '\n');
-    const r = writeBins(dst, src);
-    assert.equal(r.written, BinFiles.length - 1);
-    assert.ok(r.skipped.includes('package.json'));
-    assert.deepEqual(JSON.parse(readFileSync(join(dst, 'package.json'), 'utf8')), foreignPackage);
-
-    const smokeHome = tmpDir();
-    try {
-      const env = { ...process.env, HOME: smokeHome, USERPROFILE: smokeHome };
-      const bins = BinFiles
-        .filter((file) => file.dest.startsWith('bin/'))
-        .map((file) => file.dest.slice('bin/'.length));
-      for (const name of bins) {
-        const result = spawnSync(process.execPath, [join(dst, 'bin', name)], {
-          cwd: smokeHome,
-          env,
-          input: '{}\n',
-          encoding: 'utf8',
-          timeout: 10_000,
-        });
-        assert.equal(result.error, undefined, `${name} process failed to start`);
-        assert.equal(result.status, 0, `${name}: ${result.stderr}`);
-        assert.doesNotMatch(result.stderr, /ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM/);
-      }
-    } finally {
-      rmSync(smokeHome, { recursive: true, force: true });
-    }
   });
 
   it('injects the sentinel after the shebang and preserves it', () => {
@@ -285,7 +256,6 @@ describe('writeBins', () => {
   it('reports foreign bin orphans with bin-root-relative paths exactly once', () => {
     mkdirSync(join(dst, 'bin'), { recursive: true });
     mkdirSync(join(dst, 'lib'), { recursive: true });
-    writeFileSync(join(dst, 'package.json'), JSON.stringify({ type: 'module', owner: 'user' }) + '\n');
     writeFileSync(join(dst, 'bin', 'cah-status.js'), 'foreign current bin\n');
     writeFileSync(join(dst, 'bin', 'old-tool.js'), 'foreign orphan bin\n');
     writeFileSync(join(dst, 'lib', 'old-helper.js'), 'foreign orphan lib\n');
@@ -293,14 +263,14 @@ describe('writeBins', () => {
     const installed = writeBins(dst, src);
     assert.deepEqual(
       installed.skipped,
-      ['bin/cah-status.js', 'package.json', 'bin/old-tool.js', 'lib/old-helper.js'],
+      ['bin/cah-status.js', 'bin/old-tool.js', 'lib/old-helper.js'],
     );
     assert.ok(installed.skipped.every((value) => !['cah-status.js', 'old-tool.js', 'old-helper.js'].includes(value)));
 
     const removed = removeBins(dst);
     assert.deepEqual(
       removed.skipped,
-      ['package.json', 'bin/cah-status.js', 'bin/old-tool.js', 'lib/old-helper.js'],
+      ['bin/cah-status.js', 'bin/old-tool.js', 'lib/old-helper.js'],
     );
     assert.equal(new Set(removed.skipped).size, removed.skipped.length);
   });
@@ -309,7 +279,7 @@ describe('writeBins', () => {
     writeBins(dst, src);
     const destination = join(dst, 'bin', 'cah-status.js');
     const interlock = join(dst, 'write-successor-interlock');
-    const running = runBinWorker(dst, src, interlock, 'write-before-rename');
+    const running = runBinWorker(dst, src, interlock, 'binstall-before-leaf-write');
     await waitForPath(`${interlock}.ready`);
     rmSync(destination);
     writeFileSync(destination, 'foreign successor\n', { mode: 0o640 });
@@ -317,6 +287,28 @@ describe('writeBins', () => {
     await assert.rejects(running, /destination leaf changed concurrently|refusing operation/);
     assert.equal(readFileSync(destination, 'utf8'), 'foreign successor\n');
     if (process.platform !== 'win32') assert.equal(statSync(destination).mode & 0o777, 0o640);
+  });
+
+  it('fails and rolls back leaves when a foreign boundary replaces the boundary mid-run', async () => {
+    const packagePath = join(dst, 'package.json');
+    const interlock = join(dst, 'boundary-successor-interlock');
+    const running = runBinWorker(dst, src, interlock, 'binstall-after-first-leaf');
+    await waitForPath(`${interlock}.ready`);
+
+    rmSync(packagePath);
+    const foreignPackage = JSON.stringify({ type: 'commonjs', owner: 'user' }) + '\n';
+    writeFileSync(packagePath, foreignPackage);
+    writeFileSync(`${interlock}.go`, 'go');
+
+    await assert.rejects(
+      running,
+      /managed package boundary changed concurrently.*refusing operation/,
+    );
+    assert.equal(readFileSync(packagePath, 'utf8'), foreignPackage);
+    assert.ok(!existsSync(join(dst, 'bin', 'cah-status.js')),
+      'a failed run must not report or leave a successfully usable bin tree');
+    assert.ok(!existsSync(join(dst, 'lib', 'transcript-stats.js')),
+      'rollback must remove leaves published by this invocation');
   });
 
   it('smoke-runs every installed companion binary from the mirrored tree', () => {
