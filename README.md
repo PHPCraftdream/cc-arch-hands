@@ -390,6 +390,7 @@ npx cah install --only bins                         # companion bins (cah-status
                                                     #   cah-checkpoint-hint, cah-status-probe,
                                                     #   + shared lib leaves: transcript-stats.js,
                                                     #     update-check.js, lease-lock.js, fsutil.js,
+                                                    #     fs-atomic.js,
                                                     #     sentinel.js)
 
 # One example per skill (every installable artefact has its own line).
@@ -516,6 +517,7 @@ cc-arch-hands/
 │   ├── scope.js                 # global vs local target dir resolution
 │   ├── templates.js             # bundled / disk template abstraction
 │   ├── fsutil.js                # readFileMaybe + orphan-prune helpers
+│   ├── fs-atomic.js             # atomic publication, identity, quarantine helpers
 │   ├── transcript-stats.js      # shared: stats, formatStatusLine, makeBar, reset formatters
 │   ├── commands.js              # render + install + remove (44 .md bodies)
 │   ├── agents.js                # render + install + remove (44 .md bodies)

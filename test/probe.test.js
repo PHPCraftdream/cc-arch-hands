@@ -52,7 +52,7 @@ async function waitForPath(path) {
   }
 }
 
-function runProbeWorker(action, paths, interlock, phase) {
+function runProbeWorker(action, paths, interlock, phase, fsInterlock = null, fsPhase = null) {
   const probeUrl = new URL('../lib/probe.js', import.meta.url).href;
   const source = `
     const { parentPort, workerData } = require('node:worker_threads');
@@ -60,6 +60,10 @@ function runProbeWorker(action, paths, interlock, phase) {
       process.env.CAH_TEST_ONLY = '1';
       process.env.CAH_TEST_ONLY_PROBE_INTERLOCK = workerData.interlock;
       process.env.CAH_TEST_ONLY_PROBE_INTERLOCK_PHASE = workerData.phase;
+      if (workerData.fsInterlock && workerData.fsPhase) {
+        process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK = workerData.fsInterlock;
+        process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE = workerData.fsPhase;
+      }
       const probe = await import(workerData.probeUrl);
       try {
         const value = probe[workerData.action](workerData.paths);
@@ -72,7 +76,7 @@ function runProbeWorker(action, paths, interlock, phase) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(source, {
       eval: true,
-      workerData: { action, paths, interlock, phase, probeUrl },
+      workerData: { action, paths, interlock, phase, fsInterlock, fsPhase, probeUrl },
     });
     worker.once('message', resolve);
     worker.once('error', reject);
@@ -412,6 +416,38 @@ describe('probe concurrency', () => {
       'settings successor must never be overwritten during rollback');
     assert.equal(sameFileIdentity(regularFileIdentity(h.settingsPath), successorIdentity), true);
     assert.ok(!existsSync(h.backupPath), 'failed enable must roll back only its backup leaf');
+  });
+
+  it('keeps C during a probe rollback vacancy', async () => {
+    const h = harness();
+    const original = { type: 'command', command: 'original', padding: 0 };
+    writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
+    enableProbe(h);
+
+    const probeInterlock = join(h.settingsPath, '..', 'probe-rollback-vacancy-probe');
+    const fsInterlock = join(h.settingsPath, '..', 'probe-rollback-vacancy-fs');
+    const worker = runProbeWorker(
+      'disableProbe',
+      h,
+      probeInterlock,
+      'disable-post-settings-rename',
+      fsInterlock,
+      'probe-rollback-before-final',
+    );
+    await waitForPath(`${probeInterlock}.ready`);
+    unlinkSync(h.backupPath);
+    writeFileSync(h.backupPath, JSON.stringify({ previous: { owner: 'C' } }));
+    writeFileSync(`${probeInterlock}.go`, 'go');
+    await waitForPath(`${fsInterlock}.ready`);
+    assert.equal(existsSync(h.settingsPath), false, 'rollback must fence settings before final publication');
+    const successor = JSON.stringify({ owner: 'C-settings' }) + '\n';
+    writeFileSync(h.settingsPath, successor);
+    writeFileSync(`${fsInterlock}.go`, 'go');
+
+    const result = await worker;
+    assert.equal(result.ok, false);
+    assert.equal(readFileSync(h.settingsPath, 'utf8'), successor);
+    assert.ok(existsSync(`${h.settingsPath}.cah-owned-publish/old`));
   });
 
   it('does not roll back a byte-identical settings successor after stop postcheck failure', async () => {

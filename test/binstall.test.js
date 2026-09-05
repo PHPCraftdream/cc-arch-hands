@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, mkdtempSync, statSync,
+  mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, mkdtempSync, statSync, unlinkSync,
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
@@ -42,6 +42,7 @@ function fakeSource(root) {
   writeFileSync(join(root, 'lib', 'update-check.js'), 'export const y = 1;\n');
   writeFileSync(join(root, 'lib', 'lease-lock.js'), 'export const lease = 1;\n');
   writeFileSync(join(root, 'lib', 'fsutil.js'), 'export const z = 1;\n');
+  writeFileSync(join(root, 'lib', 'fs-atomic.js'), 'export const atomic = 1;\n');
   writeFileSync(join(root, 'lib', 'sentinel.js'), 'export const sentinel = 1;\n');
   writeFileSync(
     join(root, 'lib', 'cah-bin-package.json'),
@@ -327,6 +328,32 @@ describe('writeBins', () => {
       'a failed run must not report or leave a successfully usable bin tree');
     assert.ok(!existsSync(join(dst, 'lib', 'transcript-stats.js')),
       'rollback must remove leaves published by this invocation');
+  });
+
+  it('keeps C during the boundary rollback vacancy', async () => {
+    writeBins(dst, src);
+    const sourceThatWillFail = join(src, 'bin', 'cah-stamp.js');
+    const packagePath = join(dst, 'package.json');
+    const interlock = join(dst, 'boundary-rollback-vacancy-interlock');
+    const running = runBinWorker(
+      dst,
+      src,
+      interlock,
+      'binstall-after-first-leaf,binstall-rollback-before-final',
+    );
+
+    await waitForPath(`${interlock}.binstall-after-first-leaf.ready`);
+    unlinkSync(sourceThatWillFail);
+    writeFileSync(`${interlock}.binstall-after-first-leaf.go`, 'go');
+    await waitForPath(`${interlock}.binstall-rollback-before-final.ready`);
+    assert.equal(existsSync(packagePath), false, 'rollback must fence the old boundary before publishing');
+    const successor = JSON.stringify({ owner: 'C' }) + '\n';
+    writeFileSync(packagePath, successor);
+    writeFileSync(`${interlock}.binstall-rollback-before-final.go`, 'go');
+
+    await assert.rejects(running);
+    assert.equal(readFileSync(packagePath, 'utf8'), successor);
+    assert.ok(existsSync(`${packagePath}.cah-owned-publish/old`));
   });
 
   it('smoke-runs every installed companion binary from the mirrored tree', () => {

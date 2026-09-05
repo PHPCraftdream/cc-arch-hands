@@ -19,6 +19,7 @@ const EXPECTED_RUNTIME_BINS = [
   'bin/cah-status.js',
 ];
 const EXPECTED_SHARED_LIB_LEAVES = [
+  'lib/fs-atomic.js',
   'lib/fsutil.js',
   'lib/lease-lock.js',
   'lib/sentinel.js',

@@ -18,7 +18,7 @@ import { join, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { isNewerVersion, getLatestVersion, CURRENT_VERSION } from '../lib/update-check.js';
-import { writeFileAtomic } from '../lib/fsutil.js';
+import { isOlderThan, mtimeMsForAge, sameDeviceIdentity, sameFileIdentity, writeFileAtomic } from '../lib/fsutil.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -511,5 +511,39 @@ describe('CURRENT_VERSION', () => {
   it('stays in sync with package.json — bump both together on release', () => {
     const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
     assert.equal(CURRENT_VERSION, pkg.version);
+  });
+});
+
+describe('exact filesystem identities', () => {
+  it('compares synthetic >2^53 dev/ino/size/mtimeNs without Number rounding', () => {
+    const base = {
+      dev: 2n ** 53n + 101n,
+      ino: 2n ** 53n + 203n,
+      size: 2n ** 53n + 305n,
+      mtimeNs: 2n ** 53n + 407n,
+      isFile: () => true,
+    };
+    assert.equal(sameFileIdentity(base, { ...base, isFile: () => true }), true);
+    assert.equal(sameFileIdentity(base, {
+      ...base, ino: base.ino + 1n, isFile: () => true,
+    }), false);
+    assert.equal(sameFileIdentity(base, {
+      ...base, mtimeNs: base.mtimeNs + 1n, isFile: () => true,
+    }), false);
+    assert.equal(sameDeviceIdentity(base, {
+      ...base, dev: base.dev + 1n,
+    }), false);
+    assert.equal(sameFileIdentity(base, {
+      ...base, dev: Number(base.dev), ino: Number(base.ino),
+      size: Number(base.size), mtimeNs: Number(base.mtimeNs), isFile: () => true,
+    }), false);
+  });
+
+  it('converts mtimeNs to a safe millisecond Number only for age checks', () => {
+    const nowMs = 1_700_000_000_000;
+    const stat = { mtimeNs: BigInt(nowMs - 100) * 1_000_000n };
+    assert.equal(mtimeMsForAge(stat), nowMs - 100);
+    assert.equal(isOlderThan(stat, nowMs, 50), true);
+    assert.equal(mtimeMsForAge({ mtimeNs: (BigInt(Number.MAX_SAFE_INTEGER) + 1n) * 1_000_000n }), null);
   });
 });

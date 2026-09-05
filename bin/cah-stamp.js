@@ -22,7 +22,7 @@ import {
   readRateLimitsCache,
 } from '../lib/transcript-stats.js';
 import { CURRENT_VERSION, getLatestVersion, isNewerVersion } from '../lib/update-check.js';
-import { writeFileAtomic } from '../lib/fsutil.js';
+import { isOlderThan, sameFileIdentity, writeFileAtomic } from '../lib/fsutil.js';
 import {
   acquireLease, leaseOwned, pathIdentity, releaseLease, removePathIfUnchanged, samePathIdentity,
 } from '../lib/lease-lock.js';
@@ -89,18 +89,10 @@ function isSafeCurrentMarkerName(name, prefix, sessionId) {
   return expected === name && directLegacyMarkerPrefix(expected) === prefix;
 }
 
-function sameLegacyFileIdentity(left, right) {
-  return left !== null && right !== null
-    && String(left.dev) === String(right.dev)
-    && String(left.ino) === String(right.ino)
-    && left.size === right.size
-    && left.mtimeMs === right.mtimeMs;
-}
-
 function removeLegacyIfUnchanged(path, expected) {
   try {
-    const current = lstatSync(path);
-    if (!current.isFile() || !sameLegacyFileIdentity(expected, current)) return false;
+    const current = lstatSync(path, { bigint: true });
+    if (!current.isFile() || !sameFileIdentity(expected, current)) return false;
     unlinkSync(path);
     return true;
   } catch {
@@ -110,7 +102,7 @@ function removeLegacyIfUnchanged(path, expected) {
 
 function migrateLegacyFile(source, target, sourceStat) {
   try {
-    const targetStat = lstatSync(target);
+    const targetStat = lstatSync(target, { bigint: true });
     if (!targetStat.isFile()) return;
     removeLegacyIfUnchanged(source, sourceStat);
     return;
@@ -149,7 +141,7 @@ function migrateLegacyMarkers(home, markerDir, sessionId) {
     const source = join(legacyDir, name);
     let sourceStat;
     try {
-      sourceStat = lstatSync(source);
+      sourceStat = lstatSync(source, { bigint: true });
       if (!sourceStat.isFile()) continue;
     } catch {
       continue;
@@ -179,14 +171,14 @@ function pruneStaleMarkers(markerDir, nowMs) {
     if (!UPDATE_MARKER_NAME_RE.test(name)) continue;
     const p = join(markerDir, name);
     try {
-      const stat = lstatSync(p);
+      const stat = lstatSync(p, { bigint: true });
       if (!stat.isFile()) continue;
-      if (nowMs - stat.mtimeMs > UPDATE_MARKER_TTL_MS) {
+      if (isOlderThan(stat, nowMs, UPDATE_MARKER_TTL_MS)) {
         const claim = acquireUpdateMarkerClaim(p, nowMs);
         if (!claim) continue;
         try {
-          const current = lstatSync(p);
-          if (current.isFile() && nowMs - current.mtimeMs > UPDATE_MARKER_TTL_MS) {
+          const current = lstatSync(p, { bigint: true });
+          if (current.isFile() && isOlderThan(current, nowMs, UPDATE_MARKER_TTL_MS)) {
             removePathIfUnchanged(p, current, 'marker-remove');
           }
         } finally {
@@ -194,18 +186,18 @@ function pruneStaleMarkers(markerDir, nowMs) {
         }
         continue;
       }
-      candidates.push({ path: p, mtimeMs: stat.mtimeMs });
+      candidates.push({ path: p, mtimeNs: stat.mtimeNs });
     } catch {
       // ignore individual failures — best-effort hygiene
     }
   }
-  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  candidates.sort((a, b) => a.mtimeNs === b.mtimeNs ? 0 : a.mtimeNs > b.mtimeNs ? -1 : 1);
   for (const entry of candidates.slice(UPDATE_MARKER_MAX_SESSIONS)) {
     try {
       const claim = acquireUpdateMarkerClaim(entry.path, nowMs);
       if (!claim) continue;
       try {
-        const current = statSync(entry.path);
+        const current = statSync(entry.path, { bigint: true });
         removePathIfUnchanged(entry.path, current, 'marker-remove');
       } finally {
         releaseUpdateMarkerClaim(claim);
@@ -266,9 +258,9 @@ function claimUpdateMarker(markerDir, sessionId, nowMs) {
   try {
     mkdirSync(markerDir, { recursive: true });
     try {
-      const markerStat = lstatSync(marker);
+      const markerStat = lstatSync(marker, { bigint: true });
       if (!markerStat.isFile()) return null;
-      if (nowMs - markerStat.mtimeMs <= UPDATE_MARKER_TTL_MS) return null;
+      if (!isOlderThan(markerStat, nowMs, UPDATE_MARKER_TTL_MS)) return null;
     } catch (statError) {
       if (!statError || statError.code !== 'ENOENT') return null;
     }
@@ -276,12 +268,12 @@ function claimUpdateMarker(markerDir, sessionId, nowMs) {
     if (!claim) return null;
     try {
       try {
-        const markerStat = lstatSync(marker);
+        const markerStat = lstatSync(marker, { bigint: true });
         if (!markerStat.isFile()) {
           releaseUpdateMarkerClaim(claim);
           return null;
         }
-        if (nowMs - markerStat.mtimeMs <= UPDATE_MARKER_TTL_MS) {
+        if (!isOlderThan(markerStat, nowMs, UPDATE_MARKER_TTL_MS)) {
           releaseUpdateMarkerClaim(claim);
           return null;
         }
@@ -421,20 +413,20 @@ function pruneStampSidecars(path, nowMs) {
     if (!name.startsWith(prefix) || !name.endsWith('.json')) continue;
     const sidecar = join(dirname(path), name);
     try {
-      const stat = statSync(sidecar);
-      if (nowMs - stat.mtimeMs > STAMP_STATE_TTL_MS) {
+      const stat = statSync(sidecar, { bigint: true });
+      if (isOlderThan(stat, nowMs, STAMP_STATE_TTL_MS)) {
         removePathIfUnchanged(sidecar, stat, 'sidecar-prune');
         continue;
       }
-      candidates.push({ path: sidecar, mtimeMs: stat.mtimeMs });
+      candidates.push({ path: sidecar, mtimeNs: stat.mtimeNs });
     } catch {
       // Best-effort cleanup; concurrent hook processes may be writing it.
     }
   }
-  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  candidates.sort((a, b) => a.mtimeNs === b.mtimeNs ? 0 : a.mtimeNs > b.mtimeNs ? -1 : 1);
   for (const entry of candidates.slice(MAX_STAMP_SESSIONS)) {
     try {
-      const current = statSync(entry.path);
+      const current = statSync(entry.path, { bigint: true });
       removePathIfUnchanged(entry.path, current, 'sidecar-prune');
     } catch { /* best effort */ }
   }
@@ -494,8 +486,8 @@ function releaseStampLock(lock) {
 
 function transcriptFingerprint(path) {
   try {
-    const stat = statSync(path);
-    return `${stat.size}:${stat.mtimeMs}`;
+    const stat = statSync(path, { bigint: true });
+    return `${stat.size}:${stat.mtimeNs}`;
   } catch {
     return null;
   }

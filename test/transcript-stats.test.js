@@ -1,4 +1,4 @@
-import './transcript-read-cases.js';
-import './transcript-display-cases.js';
-import './transcript-cache-cases.js';
-import './transcript-effort-cases.js';
+import '../test-support/transcript-read-cases.js';
+import '../test-support/transcript-display-cases.js';
+import '../test-support/transcript-cache-cases.js';
+import '../test-support/transcript-effort-cases.js';
