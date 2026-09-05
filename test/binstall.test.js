@@ -4,6 +4,7 @@ import {
   mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, mkdtempSync,
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { Worker } from 'node:worker_threads';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir, homedir } from 'node:os';
@@ -41,6 +42,49 @@ function fakeSource(root) {
   writeFileSync(join(root, 'lib', 'update-check.js'), 'export const y = 1;\n');
   writeFileSync(join(root, 'lib', 'fsutil.js'), 'export const z = 1;\n');
   writeFileSync(join(root, 'lib', 'sentinel.js'), 'export const sentinel = 1;\n');
+}
+
+function waitForPath(path, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolvePromise, reject) => {
+    const poll = () => {
+      if (existsSync(path)) {
+        resolvePromise();
+        return;
+      }
+      if (Date.now() >= deadline) {
+        reject(new Error(`timed out waiting for ${path}`));
+        return;
+      }
+      setTimeout(poll, 10);
+    };
+    poll();
+  });
+}
+
+function runBinWorker(dst, src, interlock) {
+  const moduleUrl = new URL('../lib/binstall.js', import.meta.url).href;
+  const source = `
+    const { parentPort, workerData } = require('node:worker_threads');
+    (async () => {
+      process.env.CAH_TEST_ONLY = '1';
+      process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK = workerData.interlock;
+      process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE = 'prune-before-remove';
+      const { writeBins } = await import(workerData.moduleUrl);
+      parentPort.postMessage(writeBins(workerData.dst, workerData.src));
+    })().catch((error) => { setImmediate(() => { throw error; }); });
+  `;
+  return new Promise((resolvePromise, reject) => {
+    const worker = new Worker(source, {
+      eval: true,
+      workerData: { dst, src, interlock, moduleUrl },
+    });
+    worker.once('message', resolvePromise);
+    worker.once('error', reject);
+    worker.once('exit', (code) => {
+      if (code !== 0) reject(new Error(`bin worker exited with code ${code}`));
+    });
+  });
 }
 
 describe('writeBins', () => {
@@ -110,6 +154,23 @@ describe('writeBins', () => {
     assert.equal(readFileSync(foreignLeaf, 'utf8'), 'foreign content, no sentinel\n');
     assert.equal(r.pruned, 0);
     assert.ok(existsSync(foreignExtra), 'foreign extra left untouched');
+  });
+
+  it('preserves a foreign successor installed during orphan pruning', async () => {
+    writeBins(dst, src);
+    const orphan = join(dst, 'bin', 'cah-old.js');
+    const interlock = join(dst, 'prune-successor-interlock');
+    writeFileSync(orphan, `#!/usr/bin/env node\n${SentinelBin}\nold\n`);
+
+    const running = runBinWorker(dst, src, interlock);
+    await waitForPath(`${interlock}.ready`);
+    rmSync(orphan);
+    writeFileSync(orphan, 'foreign successor\n');
+    writeFileSync(`${interlock}.go`, 'go');
+
+    const result = await running;
+    assert.equal(result.pruned, 0);
+    assert.equal(readFileSync(orphan, 'utf8'), 'foreign successor\n');
   });
 
   it('smoke-runs every installed companion binary from the mirrored tree', () => {

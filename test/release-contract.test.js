@@ -451,6 +451,41 @@ describe('release and generated-doc contracts', () => {
     }
   });
 
+  it('ccheckpoint does not remove a successor lock after publication is interrupted', () => {
+    const repo = makeCheckpointRepo();
+    const bashEnvDir = mkdtempSync(join(tmpdir(), 'cah-ccheckpoint-signal-window-'));
+    try {
+      writeFileSync(join(repo, 'docs', 'checkpoints', 'state.md'), 'signal-window update\n');
+      const bashEnv = join(bashEnvDir, 'ccheckpoint-signal-window-env.sh');
+      const realMv = process.platform === 'win32'
+        ? execFileSync(BASH, ['-c', 'command -v mv'], { encoding: 'utf8' }).trim()
+        : execFileSync('command', ['-v', 'mv'], { encoding: 'utf8', shell: true }).trim();
+      writeFileSync(bashEnv, `mv() {
+  "$CCHECKPOINT_REAL_MV" "$@"
+  mv_status=$?
+  if [ "$mv_status" -eq 0 ]; then
+    : > "$2"
+    kill -TERM "$$"
+  fi
+  return "$mv_status"
+}
+`);
+      const result = runCheckpointCommit(repo, 'state.md', {
+        BASH_ENV: toBashPath(bashEnv),
+        CCHECKPOINT_REAL_MV: toBashPath(realMv),
+      });
+
+      const indexPath = gitPath(repo, 'index');
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /commit succeeded: [0-9a-f]{7}/);
+      assert.equal(existsSync(`${indexPath}.lock`), true);
+      assert.equal(readFileSync(`${indexPath}.lock`, 'utf8'), '');
+    } finally {
+      rmSync(bashEnvDir, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it('README describes no-effort Haiku and shared-bin uninstall explicitly', () => {
     const readme = read('README.md');
     assert.match(readme, /\/h\s+Haiku \(top\), no effort control/);

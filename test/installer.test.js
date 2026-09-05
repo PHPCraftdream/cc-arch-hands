@@ -65,7 +65,7 @@ function waitForPath(path, timeoutMs = 5000) {
   });
 }
 
-function runSkillWorker(action, dir, interlock, phase) {
+function runSkillWorker(action, dir, interlock, phase, subset = undefined) {
   const skillsUrl = new URL('../lib/skills.js', import.meta.url).href;
   const templatesUrl = new URL('../lib/templates.js', import.meta.url).href;
   const scopeUrl = new URL('../lib/scope.js', import.meta.url).href;
@@ -80,7 +80,8 @@ function runSkillWorker(action, dir, interlock, phase) {
       const { Scope } = await import(workerData.scopeUrl);
       const scope = new Scope({ cwd: workerData.dir });
       const result = workerData.action === 'write'
-        ? skills.writeSkills(templates.embeddedTemplates(), scope)
+        ? skills.writeSkills(templates.embeddedTemplates(), scope, workerData.subset
+          ? { subset: workerData.subset } : {})
         : skills.removeSkills(templates.embeddedTemplates(), scope);
       parentPort.postMessage(result);
     })().catch((error) => {
@@ -90,7 +91,7 @@ function runSkillWorker(action, dir, interlock, phase) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(source, {
       eval: true,
-      workerData: { action, dir, interlock, phase, skillsUrl, templatesUrl, scopeUrl },
+      workerData: { action, dir, interlock, phase, subset, skillsUrl, templatesUrl, scopeUrl },
     });
     worker.once('message', resolve);
     worker.once('error', reject);
@@ -1207,6 +1208,30 @@ describe('writeSkills', () => {
     );
     assert.equal(readFileSync(join(outside, SKILL_MANIFEST_LEAF), 'utf8'), 'outside must survive\n');
     assert.equal(readFileSync(manifest, 'utf8'), 'outside must survive\n');
+  });
+
+  it('fails closed when the manifest leaf is replaced before atomic publication', async () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const name = AllSkills[0];
+    const destDir = join(dir, '.claude', 'skills', name);
+    const manifest = join(destDir, SKILL_MANIFEST_LEAF);
+    const interlock = join(dir, 'write-leaf-replacement-interlock');
+    mkdirSync(destDir, { recursive: true });
+    writeFileSync(manifest, `${SentinelSkill}\n`);
+
+    const running = runSkillWorker('write', dir, interlock, 'write-before-rename', [name]);
+    await waitForPath(`${interlock}.ready`);
+    unlinkSync(manifest);
+    writeFileSync(manifest, 'foreign successor\n');
+    writeFileSync(`${interlock}.go`, 'go');
+
+    await assert.rejects(running, /destination leaf changed concurrently|refusing operation/);
+    assert.equal(readFileSync(manifest, 'utf8'), 'foreign successor\n');
+    assert.deepEqual(
+      readdirSync(destDir).filter((entry) => entry.includes('.cah-tmp-')),
+      [],
+    );
   });
 });
 

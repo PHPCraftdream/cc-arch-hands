@@ -320,21 +320,28 @@ fails.
      exit 0
    fi
    # Publish through Git's lockfile path: fill index.lock completely, then
-   # atomically rename that lockfile over index. Cleanup removes our lock on
-   # every ordinary failure or trapped signal before the rename.
+   # atomically rename that lockfile over index. Ignore ordinary termination
+   # signals across the rename and ownership transition so cleanup cannot
+   # remove a successor lock created after publication.
    cp "$sync_index_file" "$real_index_lock"
    status=$?
    if [ "$status" -ne 0 ]; then
      echo "commit succeeded: ${committed_head:0:7}; real index synchronization skipped"
      exit 0
    fi
+   trap '' HUP INT TERM
    mv -f "$real_index_lock" "$real_index"
    status=$?
+   if [ "$status" -eq 0 ]; then
+     sync_lock_owned=0
+   fi
+   trap 'exit 129' HUP
+   trap 'exit 130' INT
+   trap 'exit 143' TERM
    if [ "$status" -ne 0 ]; then
      echo "commit succeeded: ${committed_head:0:7}; real index synchronization skipped"
      exit 0
    fi
-   sync_lock_owned=0
    rm -f -- "$sync_index_file"
    sync_index_file=
    short_commit=${committed_head:0:7}

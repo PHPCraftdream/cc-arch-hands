@@ -37,6 +37,20 @@ function waitForPath(path, timeoutMs = 5000) {
   });
 }
 
+async function resolveWithin(promise, timeoutMs, label) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} exceeded ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function runUpdateWorker(cachePath, nowMs, fetchSpecPath) {
   const updateCheckUrl = new URL('../lib/update-check.js', import.meta.url).href;
   const source = `
@@ -183,13 +197,18 @@ describe('getLatestVersion caching', () => {
 
     const slow = runUpdateWorker(cachePath, now, slowSpec);
     await waitForPath(slowReady);
+    const waiterStartedAt = Date.now();
     const waiter = runUpdateWorker(cachePath, now, waiterSpec);
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(existsSync(waiterFetched), false, 'the waiter must not stampede into fetch');
+
+    const waiterResult = await resolveWithin(waiter, 2_000, 'live-owner waiter');
+    assert.ok(Date.now() - waiterStartedAt < 2_000, 'live-owner waiter must return promptly');
+    assert.equal(waiterResult, '8.8.8');
+    assert.equal(existsSync(waiterFetched), false);
     writeFileSync(slowGo, 'go\n');
 
     assert.equal(await slow, '8.8.8');
-    assert.equal(await waiter, '8.8.8');
     assert.equal(existsSync(waiterFetched), false);
     assert.deepEqual(JSON.parse(readFileSync(cachePath, 'utf8')), {
       latestVersion: '8.8.8',
@@ -216,14 +235,25 @@ describe('getLatestVersion caching', () => {
 
     const successfulPublisher = runUpdateWorker(cachePath, now, successSpec);
     await waitForPath(successReady);
+    const waiterStartedAt = Date.now();
     const slowFailedFetcher = runUpdateWorker(cachePath, now, slowSpec);
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(existsSync(slowStarted), false, 'the failed fetch must wait behind the publisher');
+
+    const waiterResult = await resolveWithin(slowFailedFetcher, 2_000, 'live-owner waiter');
+    assert.ok(Date.now() - waiterStartedAt < 2_000, 'live-owner waiter must return promptly');
+    assert.equal(waiterResult, '8.8.8');
+    assert.equal(existsSync(slowStarted), false);
     writeFileSync(successGo, 'go\n');
 
     assert.equal(await successfulPublisher, '9.9.9');
-    assert.equal(await slowFailedFetcher, '9.9.9');
     assert.equal(existsSync(slowStarted), false);
+
+    const laterSpec = join(dir, 'later-fetch.json');
+    const laterFetched = join(dir, 'later.fetched');
+    writeFileSync(laterSpec, JSON.stringify({ readyPath: laterFetched, result: '10.10.10' }));
+    assert.equal(await runUpdateWorker(cachePath, now + 1, laterSpec), '9.9.9');
+    assert.equal(existsSync(laterFetched), false, 'a later call must use the published cache');
     assert.deepEqual(JSON.parse(readFileSync(cachePath, 'utf8')), {
       latestVersion: '9.9.9',
       checkedAt: now,
