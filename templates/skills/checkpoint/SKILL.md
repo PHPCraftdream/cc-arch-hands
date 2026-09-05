@@ -18,7 +18,7 @@ A name is a first-class identifier — `/resume pre-refactor` will find it. Re-r
 
 ## Behavior
 
-1. **Resolve the target path.** Use `<repo-root>/docs/checkpoints/` if a `.git` directory is found in the current working directory or any parent; otherwise fall back to `~/.claude/checkpoints/`. Filename: `<name>.md` if a name was provided, else `YYYY-MM-DD-HHMM.md`.
+1. **Resolve the caller repository and target path.** From the caller's original working directory, run `git rev-parse --show-toplevel`. If it succeeds with a non-empty path, use that path as `<repo-root>` and write to `<repo-root>/docs/checkpoints/`; otherwise fall back to `~/.claude/checkpoints/`. Use Git's repository discovery rather than inspecting `.git` or walking parent directories yourself: this handles both a normal `.git` directory and a linked worktree's `.git` file without accidentally selecting a parent repository. Filename: `<name>.md` if a name was provided, else `YYYY-MM-DD-HHMM.md`.
 2. **Collect state.** Gather these, each only if present (omit silently otherwise):
    - **Session summary.** A 5–15 sentence narrative recap of the session in the agent's own words: what the user is working on, what's been done so far, what's currently in flight, what working hypotheses are alive, which files/URLs were inspected, what /loop or /babysit timers are active. This is the section that survives auto-compact — write it so a stranger (or a future you with no memory of this chat) can pick up the thread. Honesty over polish: if something is uncertain, say "unclear" rather than smoothing it over.
    - **Active goal.** If a `/goal` Stop hook is in force in the session, copy its condition text verbatim.

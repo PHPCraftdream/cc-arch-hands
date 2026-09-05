@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added six optional Astra Codex agents: `la`, `ma`, `ha`, `xa`, `xxa`, and
+  `ua`, using `gpt-5.6-astra` with `low`, `medium`, `high`, `extra`, `max`,
+  and `ultra` reasoning efforts.
+
 ## [0.8.0] - 2026-09-04
 
 ### Added

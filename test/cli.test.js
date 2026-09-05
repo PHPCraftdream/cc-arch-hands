@@ -7,6 +7,8 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import { run, resolveScope, parseOnly, resolveDeps, classifyPath } from '../lib/cli.js';
+import { BinFiles } from '../lib/binstall.js';
+import { AllCodexAgents } from '../lib/manifest.js';
 import { Scope } from '../lib/scope.js';
 import { SentinelBin, SetForModelCommand } from '../lib/sentinel.js';
 
@@ -286,14 +288,7 @@ describe('Windows wrappers', () => {
 // ---------------------------------------------------------------------------
 
 describe('run install/uninstall --only bins', () => {
-  const BIN_LEAVES = [
-    'bin/cah-status.js',
-    'bin/cah-stamp.js',
-    'bin/cah-checkpoint-hint.js',
-    'bin/cah-status-probe.js',
-    'lib/transcript-stats.js',
-    'lib/update-check.js',
-  ];
+  const BIN_LEAVES = BinFiles.map(({ dest }) => dest);
 
   it('copies the real companion bins into <HOME>/.claude/cah-bin and removes them', () => {
     const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
@@ -335,7 +330,7 @@ describe('run install/uninstall --only bins', () => {
         const out = captureStdout(() => run(['list', '--json']));
         const rows = out.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
         const binRows = rows.filter((r) => r.kind === 'bin');
-        assert.equal(binRows.length, BIN_LEAVES.length);
+        assert.equal(binRows.length, BinFiles.length);
         assert.ok(binRows.every((r) => r.state === 'mine'), 'all bin rows should be mine');
       });
     } finally {
@@ -394,7 +389,7 @@ describe('run install/uninstall --codex-agents', () => {
         const out = captureStdout(() => run(['list', '--json']));
         const rows = out.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
         const codexRows = rows.filter((r) => r.kind === 'codex-agent');
-        assert.equal(codexRows.length, 30);
+        assert.equal(codexRows.length, AllCodexAgents.length);
         assert.ok(codexRows.every((r) => r.state === 'mine'));
 
         assert.equal(run(['uninstall', '--codex-agents']), 0);

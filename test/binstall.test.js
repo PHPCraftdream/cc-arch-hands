@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {
   mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, mkdtempSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { tmpdir, homedir } from 'node:os';
 
 import { SentinelBin } from '../lib/sentinel.js';
@@ -37,6 +39,8 @@ function fakeSource(root) {
   );
   writeFileSync(join(root, 'lib', 'transcript-stats.js'), 'export const x = 1;\n');
   writeFileSync(join(root, 'lib', 'update-check.js'), 'export const y = 1;\n');
+  writeFileSync(join(root, 'lib', 'fsutil.js'), 'export const z = 1;\n');
+  writeFileSync(join(root, 'lib', 'sentinel.js'), 'export const sentinel = 1;\n');
 }
 
 describe('writeBins', () => {
@@ -106,6 +110,45 @@ describe('writeBins', () => {
     assert.equal(readFileSync(foreignLeaf, 'utf8'), 'foreign content, no sentinel\n');
     assert.equal(r.pruned, 0);
     assert.ok(existsSync(foreignExtra), 'foreign extra left untouched');
+  });
+
+  it('smoke-runs every installed companion binary from the mirrored tree', () => {
+    const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+    const smokeHome = tmpDir();
+    const smokeCache = join(smokeHome, 'cache');
+    const env = {
+      ...process.env,
+      HOME: smokeHome,
+      USERPROFILE: smokeHome,
+      CAH_UPDATE_CHECK_CACHE: join(smokeCache, 'update-check.json'),
+      CAH_RATE_LIMITS_CACHE: join(smokeCache, 'rate-limits.json'),
+      CAH_STAMP_THROTTLE_PATH: join(smokeCache, 'last-stamp.json'),
+      CAH_PROBE_LOG: join(smokeCache, 'probe.log'),
+    };
+
+    try {
+      writeBins(dst, packageRoot);
+      const bins = [
+        'cah-status.js',
+        'cah-stamp.js',
+        'cah-checkpoint-hint.js',
+        'cah-status-probe.js',
+      ];
+      for (const name of bins) {
+        const result = spawnSync(process.execPath, [join(dst, 'bin', name)], {
+          cwd: smokeHome,
+          env,
+          input: '{}\n',
+          encoding: 'utf8',
+          timeout: 10_000,
+        });
+        assert.equal(result.error, undefined, `${name} process failed to start`);
+        assert.equal(result.status, 0, `${name}: ${result.stderr}`);
+        assert.doesNotMatch(result.stderr, /ERR_MODULE_NOT_FOUND/);
+      }
+    } finally {
+      rmSync(smokeHome, { recursive: true, force: true });
+    }
   });
 });
 

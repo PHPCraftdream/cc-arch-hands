@@ -18,9 +18,12 @@ fails.
 
 ## Behavior
 
-1. Invoke `Skill('checkpoint', <the same argument, or none>)` and take note of
-   the absolute path it reports. Before running another shell command, extract
-   its basename as data and require it to match
+1. Invoke `Skill('checkpoint', <the same argument, or none>)` from the same
+   caller working directory and take note of the absolute path it reports.
+   `/checkpoint` resolves that caller repository with
+   `git rev-parse --show-toplevel`, so a linked worktree's `.git` file resolves
+   to the worktree root, not the parent repository. Before running another
+   shell command, extract its basename as data and require it to match
    `^[a-z0-9]+(?:-[a-z0-9]+)*\.md$` (the timestamp form matches this rule too).
    Also verify conceptually that the reported path is
    `<caller-repo-root>/docs/checkpoints/<basename>`. If either check cannot be
@@ -131,23 +134,28 @@ fails.
    if [ "$head_ref_status" -eq 0 ] && [ -n "$captured_head_ref" ]; then
      head_identity_kind=symbolic
      captured_head_identity=$captured_head_ref
-     captured_head_target=$captured_head_ref
    else
      head_identity_kind=detached
      captured_head_identity=$old_head
-     captured_head_target=HEAD
    fi
+   # Updating HEAD lets Git dereference the symbolic ref at the same atomic CAS
+   # that checks old_head. A symbolic HEAD that moved to another commit therefore
+   # cannot cause the previously captured branch to be advanced accidentally.
+   captured_head_target=HEAD
    verify_head_identity() {
      current_head_ref=$(git symbolic-ref -q HEAD 2>/dev/null)
      current_ref_status=$?
      if [ "$head_identity_kind" = symbolic ]; then
        [ "$current_ref_status" -eq 0 ] || return 1
        [ "$current_head_ref" = "$captured_head_identity" ] || return 1
-       return 0
+     else
+       [ "$current_ref_status" -eq 1 ] || return 1
      fi
-     [ "$current_ref_status" -eq 1 ] || return 1
+   }
+   verify_head_state() {
+     verify_head_identity || return 1
      current_head_oid=$(git rev-parse --verify HEAD 2>/dev/null) || return 1
-     [ "$current_head_oid" = "$captured_head_identity" ]
+     [ "$current_head_oid" = "$expected_head_oid" ]
    }
 
    # The lock is held while checking staged state, creating the commit, and
@@ -168,7 +176,8 @@ fails.
        exit 0
      fi
    done
-   if ! verify_head_identity; then
+   expected_head_oid=$old_head
+   if ! verify_head_state; then
      echo "commit skipped: HEAD changed concurrently"
      exit 0
    fi
@@ -229,6 +238,11 @@ fails.
        exit "$status"
      fi
 
+     expected_head_oid=$old_head
+     if ! verify_head_state; then
+       echo "commit skipped: HEAD changed concurrently; real index preserved"
+       exit 0
+     fi
      git update-ref "$captured_head_target" "$new_commit" "$old_head"
      cas_status=$?
      if [ "$cas_status" -eq 0 ]; then
@@ -255,14 +269,11 @@ fails.
 
    # Confirm both the captured ref identity and the successful CAS before
    # publishing the real index. The lock prevents checkout/switch from changing
-   # HEAD between this check and the lockfile rename.
-   if ! verify_head_identity; then
-     echo "commit succeeded: ${committed_head:0:7}; real index synchronization skipped: HEAD changed concurrently"
-     exit 0
-   fi
-   current_head=$(git rev-parse --verify HEAD 2>/dev/null)
-   status=$?
-   if [ "$status" -ne 0 ] || [ "$current_head" != "$committed_head" ]; then
+   # HEAD between this check and the lockfile rename. For detached HEAD the
+   # post-CAS OID must be the newly committed head (the pre-CAS OID was only the
+   # compare-and-swap expected value).
+   expected_head_oid=$committed_head
+   if ! verify_head_state; then
      echo "commit succeeded: ${committed_head:0:7}; real index synchronization skipped: HEAD changed concurrently"
      exit 0
    fi
@@ -339,11 +350,16 @@ fails.
 
    It captures the symbolic HEAD ref (or detached HEAD identity) and `old_head`,
    builds a complete tree in an isolated index, creates the commit with
-   `git commit-tree`, and advances only the captured ref with
-   `git update-ref <captured-ref> new old` as an atomic compare-and-swap. On a
-   CAS conflict on that same ref it rebuilds from the newly observed `HEAD`, up
-   to three attempts; a changed HEAD identity skips without changing another
-   branch. Merge, rebase, cherry-pick, revert, sequencer, and bisect states are
+   `git commit-tree`, and advances `HEAD` with
+   `git update-ref HEAD new old` as an atomic compare-and-swap. Git dereferences
+   a symbolic `HEAD` while performing that CAS, so a pre-CAS switch to a
+   different-OID branch cannot advance the previously captured branch by
+   accident. The pre-CAS check requires the captured identity and `old_head` OID;
+   after a successful CAS the post-CAS check requires the same symbolic ref (or
+   detached `HEAD`) and `committed_head` OID before synchronizing the real index.
+   On a CAS conflict on the currently checked-out ref it rebuilds from the newly
+   observed `HEAD`, up to three attempts; a changed HEAD identity skips without
+   synchronizing the real index. Merge, rebase, cherry-pick, revert, sequencer, and bisect states are
    skipped. The real index lock is claimed before preflight and held through
    publication, so checkout/switch and concurrent index mutations are
    serialized; private-index commands do not contend for that lock. The

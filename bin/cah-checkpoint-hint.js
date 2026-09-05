@@ -7,7 +7,7 @@
 // missing input, or filesystem hiccup results in `exit 0` with no stdout, so it
 // can never break the user's session.
 
-import { mkdirSync, openSync, closeSync, readFileSync, readdirSync, statSync, unlinkSync, renameSync, writeSync, writeFileSync, linkSync } from 'node:fs';
+import { mkdirSync, openSync, closeSync, readFileSync, readdirSync, statSync, lstatSync, unlinkSync, renameSync, rmdirSync, writeSync, writeFileSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
@@ -92,7 +92,9 @@ function claimOwner(nowMs) {
 
 function readClaimOwner(claimPath) {
   try {
-    const owner = JSON.parse(readFileSync(claimPath, 'utf8'));
+    const claimStat = statSync(claimPath);
+    const ownerPath = claimStat.isDirectory() ? join(claimPath, 'owner.json') : claimPath;
+    const owner = JSON.parse(readFileSync(ownerPath, 'utf8'));
     if (!owner || !Number.isInteger(owner.pid) || owner.pid <= 0 || typeof owner.nonce !== 'string') return null;
     return owner;
   } catch {
@@ -126,6 +128,19 @@ function sameFileIdentity(left, right) {
     && left.mtimeMs === right.mtimeMs;
 }
 
+function pathIdentity(path) {
+  try {
+    const stat = lstatSync(path);
+    return { dev: stat.dev, ino: stat.ino, isDirectory: stat.isDirectory() };
+  } catch {
+    return null;
+  }
+}
+
+function samePathIdentity(left, right) {
+  return left !== null && right !== null && left.dev === right.dev && left.ino === right.ino;
+}
+
 function ownerSnapshot(path) {
   return { owner: readClaimOwner(path), identity: fileIdentity(path) };
 }
@@ -139,16 +154,66 @@ function sameOwnerSnapshot(path, expected) {
     && sameFileIdentity(expected.identity, fileIdentity(path));
 }
 
-function restoreMovedPath(tombstone, path) {
+function removeClaimPath(path) {
   try {
-    linkSync(tombstone, path);
-    unlinkSync(tombstone);
+    const pathStat = lstatSync(path);
+    if (pathStat.isDirectory()) {
+      const entries = readdirSync(path);
+      if (entries.some((entry) => entry !== 'owner.json')) return false;
+      if (entries.includes('owner.json')) unlinkSync(join(path, 'owner.json'));
+      rmdirSync(path);
+      return true;
+    }
+    unlinkSync(path);
     return true;
   } catch (error) {
-    if (error && error.code === 'EEXIST'
-      && sameFileIdentity(fileIdentity(tombstone), fileIdentity(path))) {
-      try { unlinkSync(tombstone); } catch { /* best effort */ }
+    return Boolean(error && error.code === 'ENOENT');
+  }
+}
+
+function restoreMovedPath(tombstone, path) {
+  const source = pathIdentity(tombstone);
+  if (!source) return false;
+  if (source.isDirectory) {
+    let targetCreated = false;
+    try {
+      mkdirSync(path);
+      targetCreated = true;
+      const entries = readdirSync(tombstone);
+      if (entries.includes('owner.json')) {
+        renameSync(join(tombstone, 'owner.json'), join(path, 'owner.json'));
+      } else if (entries.length !== 0) {
+        rmdirSync(path);
+        return false;
+      }
+      try { rmdirSync(tombstone); } catch { /* preserve unexpected entries */ }
       return true;
+    } catch {
+      if (targetCreated) {
+        try { rmdirSync(path); } catch { /* a successor or extra entry won */ }
+      }
+      return false;
+    }
+  }
+  let data;
+  try { data = readFileSync(tombstone); } catch { return false; }
+  let fd = null;
+  let target = null;
+  try {
+    fd = openSync(path, 'wx');
+    target = pathIdentity(path);
+    writeSync(fd, data);
+    closeSync(fd);
+    fd = null;
+    if (!samePathIdentity(source, pathIdentity(tombstone))) return false;
+    unlinkSync(tombstone);
+    return true;
+  } catch {
+    if (fd !== null) {
+      try { closeSync(fd); } catch { /* best effort */ }
+      if (samePathIdentity(target, pathIdentity(path))) {
+        try { unlinkSync(path); } catch { /* a successor may own it */ }
+      }
     }
     // Preserve the moved inode under its tombstone rather than deleting a
     // successor when another owner already occupies the canonical path.
@@ -191,7 +256,8 @@ function fencePaths(path) {
   const prefix = `${basename(path)}.taken-`;
   try {
     return readdirSync(dirname(path))
-      .filter((name) => name.startsWith(prefix))
+      .filter((name) => name.startsWith(prefix)
+        && /^\d+-[^/]+$/.test(name.slice(prefix.length)))
       .map((name) => join(dirname(path), name));
   } catch {
     return [];
@@ -205,19 +271,40 @@ function fenceOperatorPid(path, fencePath) {
   return match ? Number.parseInt(match[1], 10) : null;
 }
 
+function quarantineUnexpectedFence(fencePath) {
+  try {
+    if (!lstatSync(fencePath).isDirectory()) return false;
+    const entries = readdirSync(fencePath);
+    if (!entries.some((entry) => entry !== 'owner.json')) return false;
+    renameSync(fencePath, `${fencePath}.orphan-${process.pid}-${randomUUID()}`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function recoverAbandonedFence(path, fencePath) {
   const operatorPid = fenceOperatorPid(path, fencePath);
   if (!Number.isInteger(operatorPid) || operatorPid <= 0 || processIsAlive(operatorPid)) return false;
   const fencedIdentity = fileIdentity(fencePath);
   if (!fencedIdentity) return true;
+  if (quarantineUnexpectedFence(fencePath)) return true;
   const currentIdentity = fileIdentity(path);
   if (currentIdentity && sameFileIdentity(fencedIdentity, currentIdentity)) {
-    try { unlinkSync(fencePath); } catch { return false; }
-    return true;
+    return removeClaimPath(fencePath);
   }
   if (currentIdentity) {
     const currentOwner = readClaimOwner(path);
-    if (!currentOwner || processIsAlive(currentOwner.pid)) return false;
+    if (!currentOwner) {
+      let entries;
+      try {
+        if (!lstatSync(path).isDirectory()) return false;
+        entries = readdirSync(path);
+      } catch {
+        return false;
+      }
+      if (entries.length !== 0) return false;
+    } else if (processIsAlive(currentOwner.pid)) return false;
     const currentSnapshot = ownerSnapshot(path);
     const quarantine = `${path}.abandoned-${process.pid}-${randomUUID()}`;
     try { renameSync(path, quarantine); } catch { return false; }
@@ -225,16 +312,9 @@ function recoverAbandonedFence(path, fencePath) {
       restoreMovedPath(quarantine, path);
       return false;
     }
-    try { unlinkSync(quarantine); } catch { return false; }
+    if (!removeClaimPath(quarantine)) return false;
   }
-  try {
-    linkSync(fencePath, path);
-  } catch (error) {
-    if (!error || error.code !== 'EEXIST'
-      || !sameFileIdentity(fileIdentity(fencePath), fileIdentity(path))) return false;
-  }
-  try { unlinkSync(fencePath); } catch { return false; }
-  return true;
+  return restoreMovedPath(fencePath, path);
 }
 
 function hasInFlightFence(path) {
@@ -251,7 +331,13 @@ function rollbackOwnedPath(path, owner) {
     || expected.owner.nonce !== owner.nonce) return;
   const tombstone = takeOwnerPath(path, expected, 'claim-rollback');
   if (!tombstone) return;
-  try { unlinkSync(tombstone); } catch { /* best effort */ }
+  removeClaimPath(tombstone);
+}
+
+function cleanupCreatedClaim(path, identity) {
+  const current = pathIdentity(path);
+  if (!identity || !current || !current.isDirectory || !samePathIdentity(identity, current)) return false;
+  return removeClaimPath(path);
 }
 
 function removePathIfUnchanged(path, expectedIdentity) {
@@ -281,29 +367,31 @@ function acquireMarkerClaim(marker, nowMs) {
   const owner = claimOwner(nowMs);
   for (let attempt = 0; attempt < 3; attempt++) {
     if (hasInFlightFence(claimPath)) return null;
-    const candidate = `${claimPath}.candidate-${process.pid}-${randomUUID()}`;
+    let createdIdentity = null;
     try {
-      writeFileSync(candidate, JSON.stringify(owner), { flag: 'wx' });
-      try {
-        linkSync(candidate, claimPath);
-        if (hasInFlightFence(claimPath)) {
-          rollbackOwnedPath(claimPath, owner);
-          return null;
-        }
-        return { marker, claimPath, owner };
-      } catch (error) {
-        throw error;
-      } finally {
-        try { unlinkSync(candidate); } catch { /* best effort */ }
+      // mkdir is the portable atomic ownership operation. Metadata is
+      // written inside the directory only after mkdir has won the race.
+      mkdirSync(claimPath);
+      createdIdentity = pathIdentity(claimPath);
+      testOwnerInterlock('owner-write');
+      writeFileSync(join(claimPath, 'owner.json'), JSON.stringify(owner), { flag: 'wx' });
+      if (hasInFlightFence(claimPath)) {
+        rollbackOwnedPath(claimPath, owner);
+        return null;
       }
+      return { marker, claimPath, owner };
     } catch (error) {
+      if (createdIdentity) {
+        cleanupCreatedClaim(claimPath, createdIdentity);
+        return null;
+      }
       if (!error || error.code !== 'EEXIST') return null;
       if (hasInFlightFence(claimPath)) return null;
       const expected = ownerSnapshot(claimPath);
       if (!claimExpired(expected, nowMs)) return null;
       const tombstone = takeOwnerPath(claimPath, expected, 'claim-reclaim');
       if (!tombstone) continue;
-      try { unlinkSync(tombstone); } catch { return null; }
+      if (!removeClaimPath(tombstone)) return null;
     }
   }
   return null;
@@ -320,7 +408,7 @@ function releaseMarkerClaim(claim) {
   if (!claim || !expected.owner || !markerClaimOwned(claim)) return;
   const tombstone = takeOwnerPath(claim.claimPath, expected, 'claim-release');
   if (!tombstone) return;
-  try { unlinkSync(tombstone); } catch { /* best effort */ }
+  removeClaimPath(tombstone);
 }
 
 function markDelivered(claim) {

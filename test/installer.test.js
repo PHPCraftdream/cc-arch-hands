@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, mkdtempSync, existsSync, symlinkSync, unlinkSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, lstatSync, rmdirSync, mkdtempSync, existsSync, symlinkSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
@@ -1168,6 +1168,46 @@ describe('writeSkills', () => {
     }
     assert.ok(!existsSync(join(dir, '.claude', 'skills', name, SKILL_MANIFEST_LEAF)));
   });
+
+  it('fails closed when a managed skill ancestor is replaced before owned write', async (t) => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const name = AllSkills[0];
+    const destDir = join(dir, '.claude', 'skills', name);
+    const outside = join(dir, 'outside-write-victim');
+    const manifest = join(destDir, SKILL_MANIFEST_LEAF);
+    const interlock = join(dir, 'write-ancestor-replacement-interlock');
+    mkdirSync(destDir, { recursive: true });
+    mkdirSync(outside);
+    writeFileSync(manifest, `${SentinelSkill}\n`);
+    writeFileSync(join(outside, SKILL_MANIFEST_LEAF), 'outside must survive\n');
+
+    try {
+      const probe = join(dir, 'directory-link-probe');
+      symlinkSync(outside, probe, process.platform === 'win32' ? 'junction' : 'dir');
+      unlinkSync(probe);
+    } catch (e) {
+      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
+        t.skip('junction creation is unavailable in this Windows test environment');
+        return;
+      }
+      throw e;
+    }
+
+    const running = runSkillWorker('write', dir, interlock, 'write-before-owned-write');
+    await waitForPath(`${interlock}.ready`);
+    unlinkSync(manifest);
+    rmdirSync(destDir);
+    symlinkSync(outside, destDir, process.platform === 'win32' ? 'junction' : 'dir');
+    writeFileSync(`${interlock}.go`, 'go');
+
+    await assert.rejects(
+      running,
+      /managed (skill parent|destination parent) changed concurrently|refusing operation/,
+    );
+    assert.equal(readFileSync(join(outside, SKILL_MANIFEST_LEAF), 'utf8'), 'outside must survive\n');
+    assert.equal(readFileSync(manifest, 'utf8'), 'outside must survive\n');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1501,6 +1541,46 @@ describe('skill data-loss protection', () => {
     assert.equal(result.removed, AllSkills.length - 1);
     assert.deepEqual(result.preserved, [first]);
     assert.equal(readFileSync(userFile, 'utf8'), 'must survive\n');
+  });
+
+  it('preserves an outside victim and successor when an ancestor is replaced before owned removal', async (t) => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const name = AllSkills[0];
+    const destDir = join(dir, '.claude', 'skills', name);
+    const outside = join(dir, 'outside-remove-victim');
+    const manifest = join(destDir, SKILL_MANIFEST_LEAF);
+    const interlock = join(dir, 'remove-ancestor-replacement-interlock');
+    mkdirSync(destDir, { recursive: true });
+    mkdirSync(outside);
+    writeFileSync(manifest, `${SentinelSkill}\n`);
+    writeFileSync(join(outside, SKILL_MANIFEST_LEAF), 'outside must survive\n');
+
+    try {
+      const probe = join(dir, 'directory-link-probe');
+      symlinkSync(outside, probe, process.platform === 'win32' ? 'junction' : 'dir');
+      unlinkSync(probe);
+    } catch (e) {
+      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
+        t.skip('junction creation is unavailable in this Windows test environment');
+        return;
+      }
+      throw e;
+    }
+
+    const running = runSkillWorker('remove', dir, interlock, 'remove-before-owned-delete');
+    await waitForPath(`${interlock}.ready`);
+    unlinkSync(manifest);
+    rmdirSync(destDir);
+    symlinkSync(outside, destDir, process.platform === 'win32' ? 'junction' : 'dir');
+    writeFileSync(`${interlock}.go`, 'go');
+    const result = await running;
+
+    assert.equal(result.removed, 0);
+    assert.deepEqual(result.preserved, [name]);
+    assert.ok(lstatSync(destDir).isSymbolicLink(), 'replacement successor must remain');
+    assert.equal(readFileSync(join(outside, SKILL_MANIFEST_LEAF), 'utf8'), 'outside must survive\n');
+    assert.equal(readFileSync(manifest, 'utf8'), 'outside must survive\n');
   });
 });
 

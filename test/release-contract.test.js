@@ -71,6 +71,14 @@ function toBashPath(path) {
   }).trim();
 }
 
+function gitPath(repo, path) {
+  return runGit(repo, ['rev-parse', '--path-format=absolute', '--git-path', path]);
+}
+
+function indexEntry(repo, path) {
+  return runGit(repo, ['ls-files', '--stage', '--', path]);
+}
+
 function stagedNames(repo) {
   const output = runGit(repo, ['diff', '--cached', '--name-only']);
   return output ? output.split(/\r?\n/) : [];
@@ -130,6 +138,35 @@ describe('release and generated-doc contracts', () => {
     }
   });
 
+  it('ccheckpoint commits from detached HEAD and synchronizes its real index', () => {
+    const repo = makeCheckpointRepo();
+    try {
+      runGit(repo, ['switch', '--detach', 'HEAD']);
+      const checkpoint = join(repo, 'docs', 'checkpoints', 'state.md');
+      writeFileSync(checkpoint, 'detached update\n');
+      writeFileSync(join(repo, 'unrelated.txt'), 'staged alongside detached checkpoint\n');
+      runGit(repo, ['add', '--', 'unrelated.txt']);
+
+      const result = runCheckpointCommit(repo);
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /commit succeeded: [0-9a-f]{7}/);
+      assert.equal(runGit(repo, ['rev-parse', '--abbrev-ref', 'HEAD']), 'HEAD');
+      assert.deepEqual(stagedNames(repo), ['unrelated.txt'], result.stdout + result.stderr);
+      assert.equal(runGit(repo, ['show', ':unrelated.txt']), 'staged alongside detached checkpoint');
+      assert.equal(runGit(repo, ['diff', '--name-only', '--', 'docs/checkpoints/state.md']), '');
+      assert.equal(runGit(repo, ['diff', '--cached', '--name-only', '--', 'docs/checkpoints/state.md']), '');
+      assert.equal(
+        indexEntry(repo, 'docs/checkpoints/state.md').split(' ').slice(0, 2).join(' '),
+        runGit(repo, ['ls-tree', '--format=%(objectmode) %(objectname)', 'HEAD', '--', 'docs/checkpoints/state.md']),
+      );
+      assert.equal(runGit(repo, ['show', 'HEAD:docs/checkpoints/state.md']), 'detached update');
+      assert.equal(existsSync(`${gitPath(repo, 'index')}.lock`), false);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it('ccheckpoint skips a checkpoint that is already staged', () => {
     const repo = makeCheckpointRepo();
     try {
@@ -161,7 +198,7 @@ describe('release and generated-doc contracts', () => {
         : execFileSync('command', ['-v', 'git'], { encoding: 'utf8', shell: true }).trim();
       const bashEnv = join(wrapperDir, 'ccheckpoint-race-env.sh');
       writeFileSync(bashEnv, `git() {
-  if [ "$1" = update-ref ] && [ "$2" = "$CCHECKPOINT_CAPTURED_REF" ] && [ ! -e .cah-race-triggered ]; then
+  if [ "$1" = update-ref ] && [ "$2" = HEAD ] && [ ! -e .cah-race-triggered ]; then
     : > .cah-race-triggered
     printf 'parallel\n' > parallel.txt
     parallel_index=$(mktemp)
@@ -169,7 +206,7 @@ describe('release and generated-doc contracts', () => {
     GIT_INDEX_FILE="$parallel_index" "$CCHECKPOINT_REAL_GIT" add -- parallel.txt
     parallel_tree=$(GIT_INDEX_FILE="$parallel_index" "$CCHECKPOINT_REAL_GIT" write-tree)
     parallel_commit=$(printf 'parallel\n' | "$CCHECKPOINT_REAL_GIT" commit-tree "$parallel_tree" -p "$4")
-    "$CCHECKPOINT_REAL_GIT" update-ref "$2" "$parallel_commit" "$4"
+    "$CCHECKPOINT_REAL_GIT" update-ref HEAD "$parallel_commit" "$4"
     rm -f -- "$parallel_index"
   fi
   "$CCHECKPOINT_REAL_GIT" "$@"
@@ -178,7 +215,6 @@ describe('release and generated-doc contracts', () => {
       const result = runCheckpointCommit(repo, 'state.md', {
         BASH_ENV: toBashPath(bashEnv),
         CCHECKPOINT_REAL_GIT: realGit,
-        CCHECKPOINT_CAPTURED_REF: runGit(repo, ['symbolic-ref', 'HEAD']),
       });
 
       assert.equal(result.status, 0, result.stderr);
@@ -206,9 +242,9 @@ describe('release and generated-doc contracts', () => {
       writeFileSync(join(repo, 'docs', 'checkpoints', 'state.md'), 'switch race\n');
       const bashEnv = join(wrapperDir, 'ccheckpoint-switch-env.sh');
       writeFileSync(bashEnv, `git() {
-  if [ "$1" = update-ref ] && [ "$2" = "$CCHECKPOINT_CAPTURED_REF" ] && [ ! -e .cah-switch-triggered ]; then
+  if [ "$1" = update-ref ] && [ "$2" = HEAD ] && [ ! -e .cah-switch-triggered ]; then
     : > .cah-switch-triggered
-    "$CCHECKPOINT_REAL_GIT" switch same-oid >/dev/null 2>&1
+    "$CCHECKPOINT_REAL_GIT" symbolic-ref HEAD refs/heads/same-oid
   fi
   "$CCHECKPOINT_REAL_GIT" "$@"
 }
@@ -218,14 +254,14 @@ describe('release and generated-doc contracts', () => {
         CCHECKPOINT_REAL_GIT: process.platform === 'win32'
           ? execFileSync('where.exe', ['git'], { encoding: 'utf8' }).split(/\r?\n/)[0]
           : execFileSync('command', ['-v', 'git'], { encoding: 'utf8', shell: true }).trim(),
-        CCHECKPOINT_CAPTURED_REF: capturedRef,
       });
 
       assert.equal(result.status, 0, result.stderr);
       assert.match(result.stdout, /commit succeeded: [0-9a-f]{7}/);
-      assert.equal(runGit(repo, ['symbolic-ref', 'HEAD']), capturedRef);
-      assert.equal(runGit(repo, ['rev-parse', 'refs/heads/same-oid']), capturedOid);
-      assert.notEqual(runGit(repo, ['rev-parse', capturedRef]), capturedOid);
+      assert.match(result.stdout, /real index synchronization skipped: HEAD changed concurrently/);
+      assert.equal(runGit(repo, ['symbolic-ref', 'HEAD']), 'refs/heads/same-oid');
+      assert.equal(runGit(repo, ['rev-parse', capturedRef]), capturedOid);
+      assert.notEqual(runGit(repo, ['rev-parse', 'refs/heads/same-oid']), capturedOid);
     } finally {
       rmSync(wrapperDir, { recursive: true, force: true });
       rmSync(repo, { recursive: true, force: true });
@@ -247,7 +283,7 @@ describe('release and generated-doc contracts', () => {
       writeFileSync(join(repo, 'docs', 'checkpoints', 'state.md'), 'different switch race\n');
       const bashEnv = join(wrapperDir, 'ccheckpoint-switch-env.sh');
       writeFileSync(bashEnv, `git() {
-  if [ "$1" = update-ref ] && [ "$2" = "$CCHECKPOINT_CAPTURED_REF" ] && [ ! -e .cah-switch-triggered ]; then
+  if [ "$1" = update-ref ] && [ "$2" = HEAD ] && [ ! -e .cah-switch-triggered ]; then
     : > .cah-switch-triggered
     "$CCHECKPOINT_REAL_GIT" symbolic-ref HEAD refs/heads/different-oid
   fi
@@ -259,14 +295,13 @@ describe('release and generated-doc contracts', () => {
         CCHECKPOINT_REAL_GIT: process.platform === 'win32'
           ? execFileSync('where.exe', ['git'], { encoding: 'utf8' }).split(/\r?\n/)[0]
           : execFileSync('command', ['-v', 'git'], { encoding: 'utf8', shell: true }).trim(),
-        CCHECKPOINT_CAPTURED_REF: capturedRef,
       });
 
       assert.equal(result.status, 0, result.stderr);
-      assert.match(result.stdout, /real index synchronization skipped: HEAD changed concurrently/);
+      assert.match(result.stdout, /commit skipped: HEAD switched concurrently; real index preserved/);
       assert.doesNotMatch(result.stdout, /retry limit reached/);
       assert.equal(runGit(repo, ['rev-parse', 'HEAD']), differentHead);
-      assert.notEqual(runGit(repo, ['rev-parse', capturedRef]), capturedOid);
+      assert.equal(runGit(repo, ['rev-parse', capturedRef]), capturedOid);
     } finally {
       rmSync(wrapperDir, { recursive: true, force: true });
       rmSync(repo, { recursive: true, force: true });
@@ -308,6 +343,49 @@ describe('release and generated-doc contracts', () => {
       assert.equal(existsSync(`${indexPath}.lock`), true);
     } finally {
       rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('checkpoint and ccheckpoint resolve a linked worktree as the caller repo', () => {
+    assert.match(CHECKPOINT_SKILL, /git rev-parse --show-toplevel/);
+    assert.match(CHECKPOINT_SKILL, /linked worktree's `.git` file/);
+
+    const parentRepo = makeCheckpointRepo('cah-ccheckpoint-linked-parent-');
+    const worktree = mkdtempSync(join(tmpdir(), 'cah-ccheckpoint-linked-worktree-'));
+    rmSync(worktree, { recursive: true, force: true });
+    try {
+      runGit(parentRepo, ['worktree', 'add', '-q', '-b', 'linked-contract', worktree, 'HEAD']);
+      assert.equal(readFileSync(join(worktree, '.git'), 'utf8').startsWith('gitdir: '), true);
+      assert.equal(
+        runGit(worktree, ['rev-parse', '--show-toplevel']).replaceAll('\\', '/'),
+        worktree.replaceAll('\\', '/'),
+      );
+
+      writeFileSync(join(parentRepo, 'docs', 'checkpoints', 'state.md'), 'parent must stay untouched\n');
+      writeFileSync(join(worktree, 'docs', 'checkpoints', 'state.md'), 'linked worktree update\n');
+      writeFileSync(join(worktree, 'unrelated.txt'), 'linked staged update\n');
+      runGit(worktree, ['add', '--', 'unrelated.txt']);
+      const parentHead = runGit(parentRepo, ['rev-parse', 'HEAD']);
+
+      const result = runCheckpointCommit(worktree);
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /commit succeeded: [0-9a-f]{7}/);
+      assert.equal(runGit(parentRepo, ['rev-parse', 'HEAD']), parentHead);
+      assert.equal(readFileSync(join(parentRepo, 'docs', 'checkpoints', 'state.md'), 'utf8'), 'parent must stay untouched\n');
+      assert.equal(runGit(worktree, ['show', 'HEAD:docs/checkpoints/state.md']), 'linked worktree update');
+      assert.deepEqual(stagedNames(worktree), ['unrelated.txt'], result.stdout + result.stderr);
+      assert.equal(runGit(worktree, ['diff', '--name-only', '--', 'docs/checkpoints/state.md']), '');
+      assert.equal(runGit(worktree, ['diff', '--cached', '--name-only', '--', 'docs/checkpoints/state.md']), '');
+      assert.equal(existsSync(`${gitPath(worktree, 'index')}.lock`), false);
+    } finally {
+      try {
+        runGit(parentRepo, ['worktree', 'remove', '--force', worktree]);
+      } catch {
+        // The worktree may not have been registered if setup failed.
+      }
+      rmSync(worktree, { recursive: true, force: true });
+      rmSync(parentRepo, { recursive: true, force: true });
     }
   });
 

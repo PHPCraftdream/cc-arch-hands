@@ -25,7 +25,7 @@ The artifacts:
 
 Optional artifacts are installed only when requested:
 - **per-model slash-commands** (<!--gen:count:model-commands-->44<!--/gen-->) under `~/.claude/commands/`, via `--commands`. Opt-in — see the [known Claude Code regression](#1-per-model-slash-commands-44) below; the sub-agent half above is unaffected and stays in the default install.
-- **Codex custom agents** (<!--gen:count:codex-agents-->30<!--/gen-->) under `~/.codex/agents/`, via `--codex-agents`.
+- **Codex custom agents** (<!--gen:count:codex-agents-->36<!--/gen-->) under `~/.codex/agents/`, via `--codex-agents`.
 
 > **Since 0.4.0:** `cah install` copies the companion bins into
 > `~/.claude/cah-bin/` and `settings.json` references them by absolute path
@@ -159,7 +159,7 @@ inside Claude Code, so identical names do not collide.
 <!--gen:count:model-commands-->44<!--/gen--> commands, <!--gen:count:model-commands-->44<!--/gen--> agents — one line per row-cell in
 [`lib/manifest.js`](lib/manifest.js).
 
-### 3. Optional Codex custom agents (<!--gen:count:codex-agents-->30<!--/gen-->)
+### 3. Optional Codex custom agents (<!--gen:count:codex-agents-->36<!--/gen-->)
 
 Codex agents are not part of the default install. Install them explicitly with `--codex-agents`, or select them as a class via `--only codex-agents` (also combinable, e.g. `--only skills,codex-agents`):
 
@@ -169,7 +169,7 @@ npx cah reinstall --codex-agents
 npx cah uninstall --codex-agents
 ```
 
-Generated agent names use effort prefix + model suffix. Existing GPT agents use `l/m/h/x` for `low/medium/high/xhigh`; Terra (`t`), Luna (`l`) and Sol (`s`) use all six levels: `l/m/h` for `low/medium/high` and `x/xx/u` for `extra/max/ultra`. Their full Codex model IDs are `gpt-5.6-terra`, `gpt-5.6-luna`, and `gpt-5.6-sol`. They write TOML custom-agent files for Codex under `~/.codex/agents/`.
+Generated agent names use effort prefix + model suffix. Existing GPT agents use `l/m/h/x` for `low/medium/high/xhigh`; Terra (`t`), Luna (`l`), Sol (`s`) and Astra (`a`) use all six levels: `l/m/h` for `low/medium/high` and `x/xx/u` for `extra/max/ultra`. Their full Codex model IDs are `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.6-sol`, and `gpt-5.6-astra`. They write TOML custom-agent files for Codex under `~/.codex/agents/`.
 
 <!--gen:table:codex-agents (run `npm run gen:docs` after editing lib/manifest.js) -->
 | Model | Agents by effort |
@@ -180,6 +180,7 @@ Generated agent names use effort prefix + model suffix. Existing GPT agents use 
 | Terra | `lt` low · `mt` medium · `ht` high · `xt` extra · `xxt` max · `ut` ultra |
 | Luna | `ll` low · `ml` medium · `hl` high · `xl` extra · `xxl` max · `ul` ultra |
 | Sol | `ls` low · `ms` medium · `hs` high · `xs` extra · `xxs` max · `us` ultra |
+| Astra | `la` low · `ma` medium · `ha` high · `xa` extra · `xxa` max · `ua` ultra |
 <!--/gen:table:codex-agents-->
 
 ### 4. Skills (11)
@@ -320,7 +321,7 @@ What `/resume` does:
 | Slash-commands | <!--gen:count:model-commands-->44<!--/gen--> | `<scope>/.claude/commands/<name>.md` (only with `--commands`) |
 | Sub-agents | <!--gen:count:model-commands-->44<!--/gen--> | `<scope>/.claude/agents/<name>.md` |
 | Skills | 11 | `<scope>/.claude/skills/<name>/` |
-| Codex custom agents | <!--gen:count:codex-agents-->30<!--/gen--> | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
+| Codex custom agents | <!--gen:count:codex-agents-->36<!--/gen--> | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
 
 `<scope>` is `~/` by default (global install). Use `--local` or `--cwd`
 to target a specific project directory instead.
@@ -459,6 +460,12 @@ A file under `.claude/{commands,agents,skills}/` is recognised as
 **ours** if it contains any of these. Files without a recognised marker
 are foreign — `cah` never overwrites or deletes them, only logs a
 warning.
+
+Managed skill writes and removals also reject malformed paths, links, and
+changed parent-directory identities. This is a portable same-user concurrency
+check, not a security boundary against another same-UID process: because Node
+core has no portable `openat`-style anchored operation, callers must not
+replace managed ancestors while an install or uninstall is running.
 
 ### Orphan sweep
 

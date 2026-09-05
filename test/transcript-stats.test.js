@@ -1,13 +1,16 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  existsSync,
   lstatSync,
   mkdtempSync,
   readFileSync,
   readSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
+import { Worker } from 'node:worker_threads';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -28,11 +31,58 @@ import {
   makeBar,
   toDisplayName,
 } from '../lib/transcript-stats.js';
+import { writeFileAtomic } from '../lib/fsutil.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 function isolatedDir() {
   return mkdtempSync(join(tmpdir(), 'cah-ts-'));
+}
+
+function waitForPath(path, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve, reject) => {
+    const poll = () => {
+      if (existsSync(path)) {
+        resolve();
+        return;
+      }
+      if (Date.now() >= deadline) {
+        reject(new Error(`timed out waiting for ${path}`));
+        return;
+      }
+      setTimeout(poll, 5);
+    };
+    poll();
+  });
+}
+
+function runRateCacheWorker(cachePath, nowMs, interlock) {
+  const transcriptStatsUrl = new URL('../lib/transcript-stats.js', import.meta.url).href;
+  const source = `
+    const { parentPort, workerData } = require('node:worker_threads');
+    (async () => {
+      process.env.CAH_TEST_ONLY = '1';
+      process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK = workerData.interlock;
+      process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE = 'prune-rate-context-before-remove';
+      const { persistRateLimitsCache } = await import(workerData.transcriptStatsUrl);
+      persistRateLimitsCache(workerData.cachePath, null, null, null, null, 'cleanup', workerData.nowMs);
+      parentPort.postMessage('done');
+    })().catch((error) => {
+      setImmediate(() => { throw error; });
+    });
+  `;
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(source, {
+      eval: true,
+      workerData: { cachePath, interlock, nowMs, transcriptStatsUrl },
+    });
+    worker.once('message', resolve);
+    worker.once('error', reject);
+    worker.once('exit', (code) => {
+      if (code !== 0) reject(new Error(`rate-cache worker exited with code ${code}`));
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1037,6 +1087,29 @@ describe('readRateLimitsCache', () => {
     assert.match(rateLimitsContextPath(path, sessionA), /\.context-[a-f0-9]{64}\.json$/);
     assert.notEqual(rateLimitsContextPath(path, sessionA), rateLimitsContextPath(path, sessionB));
     assert.doesNotMatch(rateLimitsContextPath(path, sessionA), /\.\.\/|a{20}/);
+  });
+
+  it('does not prune a fresh sidecar successor after the stale-file check', async () => {
+    const dir = isolatedDir();
+    const path = join(dir, 'rate-limits.json');
+    const sidecar = rateLimitsContextPath(path, 'stale-session');
+    const now = Date.now();
+    const staleMtime = now - 60 * 60 * 1000 - 1000;
+    persistRateLimitsCache(path, null, null, null, 200_000, 'stale-session', staleMtime);
+    utimesSync(sidecar, staleMtime / 1000, staleMtime / 1000);
+
+    const interlock = join(dir, 'prune-rate-context-interlock');
+    const running = runRateCacheWorker(path, now, interlock);
+    await waitForPath(`${interlock}.ready`);
+    writeFileAtomic(sidecar, JSON.stringify({
+      version: 1,
+      contextWindowSize: 1_000_000,
+      capturedAt: now,
+    }) + '\n');
+    writeFileSync(`${interlock}.go`, 'go\n');
+    assert.equal(await running, 'done');
+
+    assert.equal(readRateLimitsCache(path, now, 'stale-session').contextWindowSize, 1_000_000);
   });
 });
 
