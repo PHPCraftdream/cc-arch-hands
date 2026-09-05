@@ -275,6 +275,24 @@ describe('writeBins', () => {
     assert.equal(new Set(removed.skipped).size, removed.skipped.length);
   });
 
+  it('silently preserves the reserved root cache while reporting unknown dirs relative to the bin root', () => {
+    mkdirSync(join(dst, 'cache'), { recursive: true });
+    mkdirSync(join(dst, 'unknown-root-dir'), { recursive: true });
+
+    const installed = writeBins(dst, src);
+    assert.ok(existsSync(join(dst, 'cache')), 'reserved runtime cache must survive install');
+    assert.ok(existsSync(join(dst, 'unknown-root-dir')), 'unknown root dir must survive install');
+    assert.ok(!installed.skipped.includes('cache'), 'reserved cache must not be reported');
+    assert.ok(installed.skipped.includes('unknown-root-dir'));
+    assert.ok(installed.skipped.every((value) => !value.includes(dst)));
+
+    const removed = removeBins(dst);
+    assert.ok(existsSync(join(dst, 'cache')), 'reserved runtime cache must survive removal');
+    assert.ok(existsSync(join(dst, 'unknown-root-dir')), 'unknown root dir must survive removal');
+    assert.ok(!removed.skipped.includes('cache'), 'reserved cache must stay silent on removal');
+    assert.ok(removed.skipped.includes('unknown-root-dir'));
+  });
+
   it('refuses a foreign successor at the publication leaf and preserves its mode', async () => {
     writeBins(dst, src);
     const destination = join(dst, 'bin', 'cah-status.js');

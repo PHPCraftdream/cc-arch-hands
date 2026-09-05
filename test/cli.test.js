@@ -348,6 +348,28 @@ describe('run install/uninstall --only bins', () => {
     }
   });
 
+  it('silently preserves the root cache while reporting unknown entries with normalized paths', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
+    try {
+      withHome(home, () => {
+        const binDir = join(home, '.claude', 'cah-bin');
+        mkdirSync(join(binDir, 'cache'), { recursive: true });
+        mkdirSync(join(binDir, 'unknown-root-dir'), { recursive: true });
+
+        const out = captureStdout(() => {
+          assert.equal(run(['install', '--global', '--only', 'bins']), 0);
+        });
+        assert.ok(existsSync(join(binDir, 'cache')));
+        assert.ok(existsSync(join(binDir, 'unknown-root-dir')));
+        assert.doesNotMatch(out, /skipped: cache\b/);
+        assert.match(out, /skipped: unknown-root-dir\b/);
+        assert.doesNotMatch(out, /skipped: .*cah-bin[\\/]unknown-root-dir/);
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('bare uninstall preserves shared bins; explicit bins removal warns', () => {
     const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
     try {
