@@ -69,7 +69,7 @@ const UPDATE_MARKER_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const UPDATE_MARKER_CLAIM_TTL_MS = 30_000;
 const UPDATE_MARKER_MAX_SESSIONS = 64;
 const UPDATE_MARKER_NAME_RE = /^cah-update-shown-[a-f0-9]{64}$/;
-const LEGACY_MARKER_NAME_RE = /^(?:cah-hint-shown|cah-update-shown)-[a-f0-9]{64}$/;
+const LEGACY_MARKER_PREFIXES = ['cah-hint-shown-', 'cah-update-shown-'];
 const STAMP_PENDING_TTL_MS = positiveEnvMs('CAH_STAMP_PENDING_TTL_MS', 30_000);
 const ANONYMOUS_CLAIM_TTL_MS = 1000;
 
@@ -78,7 +78,56 @@ function positiveEnvMs(name, fallback) {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
-function migrateLegacyMarkers(home, markerDir) {
+function directLegacyMarkerPrefix(name) {
+  if (typeof name !== 'string' || name.includes('/') || name.includes('\\') || name.includes('\0')) return null;
+  return LEGACY_MARKER_PREFIXES.find((prefix) => name.startsWith(prefix) && name.length > prefix.length) || null;
+}
+
+function sameLegacyFileIdentity(left, right) {
+  return left !== null && right !== null
+    && String(left.dev) === String(right.dev)
+    && String(left.ino) === String(right.ino)
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs;
+}
+
+function removeLegacyIfUnchanged(path, expected) {
+  try {
+    const current = lstatSync(path);
+    if (!current.isFile() || !sameLegacyFileIdentity(expected, current)) return false;
+    unlinkSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function migrateLegacyFile(source, target, sourceStat) {
+  try {
+    const targetStat = lstatSync(target);
+    if (!targetStat.isFile()) return;
+    removeLegacyIfUnchanged(source, sourceStat);
+    return;
+  } catch (error) {
+    if (!error || error.code !== 'ENOENT') return;
+  }
+  let data;
+  try { data = readFileSync(source); } catch { return; }
+  let fd = null;
+  try {
+    fd = openSync(target, 'wx');
+    writeSync(fd, data);
+    closeSync(fd);
+    fd = null;
+    if (samePathIdentity(sourceStat, pathIdentity(source))) removeLegacyIfUnchanged(source, sourceStat);
+  } catch {
+    if (fd !== null) {
+      try { closeSync(fd); } catch { /* best effort */ }
+    }
+  }
+}
+
+function migrateLegacyMarkers(home, markerDir, sessionId, nowMs = Date.now()) {
   const legacyDir = join(home, '.claude');
   if (legacyDir === markerDir) return;
   let entries;
@@ -89,39 +138,35 @@ function migrateLegacyMarkers(home, markerDir) {
     return;
   }
   for (const name of entries) {
-    if (!LEGACY_MARKER_NAME_RE.test(name)) continue;
+    const prefix = directLegacyMarkerPrefix(name);
+    if (!prefix) continue;
     const source = join(legacyDir, name);
-    const target = join(markerDir, name);
-    let sourceIdentity;
+    let sourceStat;
     try {
-      const sourceStat = lstatSync(source);
+      sourceStat = lstatSync(source);
       if (!sourceStat.isFile()) continue;
-      sourceIdentity = { dev: sourceStat.dev, ino: sourceStat.ino };
     } catch {
       continue;
     }
-    try {
-      const targetStat = lstatSync(target);
-      if (!targetStat.isFile()) continue;
-      if (samePathIdentity(sourceIdentity, pathIdentity(source))) unlinkSync(source);
+
+    // Unknown raw IDs stay in the legacy directory while fresh so a later
+    // hook can match them exactly. Stale entries are swept independent of
+    // suffix format.
+    if (nowMs - sourceStat.mtimeMs > UPDATE_MARKER_TTL_MS) {
+      removeLegacyIfUnchanged(source, sourceStat);
       continue;
-    } catch (error) {
-      if (!error || error.code !== 'ENOENT') continue;
     }
-    let data;
-    try { data = readFileSync(source); } catch { continue; }
-    let fd = null;
-    try {
-      fd = openSync(target, 'wx');
-      writeSync(fd, data);
-      closeSync(fd);
-      fd = null;
-      if (samePathIdentity(sourceIdentity, pathIdentity(source))) unlinkSync(source);
-    } catch {
-      if (fd !== null) {
-        try { closeSync(fd); } catch { /* best effort */ }
-      }
-    }
+
+    const currentName = typeof sessionId === 'string' ? `${prefix}${sessionId}` : null;
+    const isCurrentSession = currentName !== null && currentName === name;
+    const suffix = name.slice(prefix.length);
+    const isLegacyHash = /^[a-f0-9]{64}$/.test(suffix);
+    if (!isCurrentSession && !isLegacyHash) continue;
+
+    const targetName = isCurrentSession
+      ? `${prefix}${sessionHash(sessionId)}`
+      : name;
+    migrateLegacyFile(source, join(markerDir, targetName), sourceStat);
   }
 }
 
@@ -268,7 +313,7 @@ function buildUpdateNotice(payload, nowMs) {
 
   const home = process.env.CAH_STAMP_HINT_HOME || homedir();
   const markerDir = join(home, '.claude', 'cah-bin', 'cache');
-  migrateLegacyMarkers(home, markerDir);
+  migrateLegacyMarkers(home, markerDir, sessionId);
   pruneStaleMarkers(markerDir, nowMs);
 
   let latest = null;

@@ -656,7 +656,11 @@ describe('cah-stamp bin', () => {
     writeClaim(lock, { pid: process.pid, nonce: 'reused-pid', startedAt: Date.now() - 60_000 });
     const result = runStamp(
       { session_id: 'expired-live-lock', transcript_path: tp },
-      { CAH_STAMP_THROTTLE_PATH: throttle, CAH_STAMP_OWNER_MAX_LEASE_MS: '100' },
+      {
+        CAH_STAMP_THROTTLE_PATH: throttle,
+        CAH_TEST_ONLY: '1',
+        CAH_STAMP_OWNER_MAX_LEASE_MS: '100',
+      },
     );
     assert.ok(result.stdout.trim());
     assert.equal(existsSync(lock), false);
@@ -875,6 +879,67 @@ describe('cah-stamp bin', () => {
       assert.doesNotMatch(result.stdout, /99\.0\.0/);
       assert.equal(existsSync(join(legacyDir, `cah-update-shown-${hash}`)), false);
       assert.equal(existsSync(join(updateMarkerDir(hintHome), `cah-update-shown-${hash}`)), true);
+    });
+
+    it('migrates a raw legacy update marker for the current session into the hashed cache', () => {
+      const dir = isolatedDir();
+      const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
+      const updateCache = freshUpdateCache(dir, '99.0.0');
+      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const sessionId = '550e8400-e29b-41d4-a716-446655440000';
+      const legacyDir = join(hintHome, '.claude');
+      mkdirSync(legacyDir, { recursive: true });
+      const legacy = join(legacyDir, `cah-update-shown-${sessionId}`);
+      writeFileSync(legacy, 'legacy');
+      const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+      const result = runStamp(
+        { session_id: sessionId, transcript_path: tp, hook_event_name: 'Stop' },
+        {
+          CAH_UPDATE_CHECK_CACHE: updateCache,
+          CAH_STAMP_HINT_HOME: hintHome,
+          CAH_STAMP_THROTTLE_PATH: join(dir, 'raw-update-throttle.json'),
+        },
+      );
+      assert.doesNotMatch(result.stdout, /99\.0\.0/);
+      assert.equal(existsSync(legacy), false);
+      assert.equal(existsSync(join(updateMarkerDir(hintHome), `cah-update-shown-${hash}`)), true);
+    });
+
+    it('ignores a legacy update marker symlink and sweeps stale raw entries', (t) => {
+      const dir = isolatedDir();
+      const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
+      const updateCache = freshUpdateCache(dir, '99.0.0');
+      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const legacyDir = join(hintHome, '.claude');
+      mkdirSync(legacyDir, { recursive: true });
+      const target = join(hintHome, 'target-marker');
+      const symlink = join(legacyDir, 'cah-update-shown-symlink-session');
+      const stale = join(legacyDir, 'cah-update-shown-raw-uuid-not-a-64-hex-suffix');
+      writeFileSync(target, 'target');
+      writeFileSync(stale, 'stale');
+      const old = Date.now() / 1000 - 30 * 24 * 60 * 60;
+      utimesSync(stale, old, old);
+      try {
+        symlinkSync(target, symlink, 'file');
+      } catch (error) {
+        if (error && ['EPERM', 'EACCES', 'UNKNOWN'].includes(error.code)) {
+          t.skip('file symlinks are unavailable on this host');
+          return;
+        }
+        throw error;
+      }
+      const result = runStamp(
+        { session_id: `../escape/${'x'.repeat(400)}`, transcript_path: tp, hook_event_name: 'Stop' },
+        {
+          CAH_UPDATE_CHECK_CACHE: updateCache,
+          CAH_STAMP_HINT_HOME: hintHome,
+          CAH_STAMP_THROTTLE_PATH: join(dir, 'raw-update-sweep-throttle.json'),
+        },
+      );
+      assert.match(result.stdout, /99\.0\.0/);
+      assert.equal(lstatSync(symlink).isSymbolicLink(), true);
+      assert.equal(existsSync(stale), false);
+      assert.equal(existsSync(join(hintHome, 'escape')), false);
     });
 
     it('PostToolUse event → never appends the notice, even with a newer version cached', () => {

@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, utimesSync, readdirSync, unlinkSync, rmdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, utimesSync, readdirSync, unlinkSync, rmdirSync, symlinkSync, lstatSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -133,6 +133,62 @@ describe('cah-checkpoint-hint bin', () => {
     assert.equal(stdout, '');
     assert.equal(status, 0);
     assert.equal(existsSync(join(home, '.claude', `cah-hint-shown-${hash}`)), false);
+  });
+
+  it('migrates a raw legacy hint marker for the current session into the hashed cache', () => {
+    const home = isolatedHome();
+    const sessionId = '550e8400-e29b-41d4-a716-446655440000';
+    const legacyDir = join(home, '.claude');
+    mkdirSync(legacyDir, { recursive: true });
+    const legacy = join(legacyDir, `cah-hint-shown-${sessionId}`);
+    writeFileSync(legacy, 'legacy');
+    const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+    const result = runHint(JSON.stringify({ session_id: sessionId, transcript_path: tp }), home);
+    assert.equal(result.stdout, '');
+    assert.equal(existsSync(legacy), false);
+    assert.equal(markerExists(home, sessionId), true);
+  });
+
+  it('ignores a legacy marker symlink during migration', (t) => {
+    const home = isolatedHome();
+    const sessionId = 'raw-symlink-session';
+    const legacyDir = join(home, '.claude');
+    mkdirSync(legacyDir, { recursive: true });
+    const target = join(home, 'target-marker');
+    const legacy = join(legacyDir, `cah-hint-shown-${sessionId}`);
+    writeFileSync(target, 'target');
+    try {
+      symlinkSync(target, legacy, 'file');
+    } catch (error) {
+      if (error && ['EPERM', 'EACCES', 'UNKNOWN'].includes(error.code)) {
+        t.skip('file symlinks are unavailable on this host');
+        return;
+      }
+      throw error;
+    }
+    const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+    const result = runHint(JSON.stringify({ session_id: sessionId, transcript_path: tp }), home);
+    assert.equal(result.stdout, EXPECTED);
+    assert.equal(lstatSync(legacy).isSymbolicLink(), true);
+    assert.equal(markerExists(home, sessionId), true);
+  });
+
+  it('sweeps stale raw legacy hint markers without reading nested paths', () => {
+    const home = isolatedHome();
+    const legacyDir = join(home, '.claude');
+    mkdirSync(legacyDir, { recursive: true });
+    const stale = join(legacyDir, 'cah-hint-shown-raw-uuid-not-a-64-hex-suffix');
+    writeFileSync(stale, 'stale');
+    const old = Date.now() / 1000 - 30 * 24 * 60 * 60;
+    utimesSync(stale, old, old);
+    const tp = writeTranscript(home, 'claude-opus-4-8', 10_000);
+    const result = runHint(
+      JSON.stringify({ session_id: `../escape/${'x'.repeat(400)}`, transcript_path: tp }),
+      home,
+    );
+    assert.equal(result.stdout, '');
+    assert.equal(existsSync(stale), false);
+    assert.equal(existsSync(join(home, 'escape')), false);
   });
 
   it('prunes stale hint markers older than the TTL but keeps fresh ones', () => {
@@ -338,7 +394,7 @@ describe('cah-checkpoint-hint bin', () => {
     const result = runHint(
       JSON.stringify({ session_id: sessionId, transcript_path: tp }),
       home,
-      { CAH_HINT_OWNER_MAX_LEASE_MS: '100' },
+      { CAH_TEST_ONLY: '1', CAH_HINT_OWNER_MAX_LEASE_MS: '100' },
     );
     assert.equal(result.stdout, EXPECTED);
     assert.equal(markerExists(home, sessionId), true);
@@ -359,10 +415,36 @@ describe('cah-checkpoint-hint bin', () => {
     const result = runHint(
       JSON.stringify({ session_id: sessionId, transcript_path: tp }),
       home,
-      { CAH_HINT_OWNER_MAX_LEASE_MS: '100' },
+      { CAH_TEST_ONLY: '1', CAH_HINT_OWNER_MAX_LEASE_MS: '100' },
     );
     assert.equal(result.stdout, EXPECTED);
     assert.equal(existsSync(fence), false);
+  });
+
+  it('ignores a lease-duration override without the explicit test-only guard', () => {
+    const home = isolatedHome();
+    const sessionId = 'unguarded-lease-duration';
+    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const markerDir = cacheDir(home);
+    const claim = join(markerDir, `.cah-marker-claim-cah-hint-shown-${hash}`);
+    mkdirSync(markerDir, { recursive: true });
+    writeClaim(claim, {
+      pid: process.pid,
+      nonce: 'live-owner',
+      claimedAt: Date.now() - 60_000,
+    });
+    const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+    const result = runHint(
+      JSON.stringify({ session_id: sessionId, transcript_path: tp }),
+      home,
+      { CAH_TEST_ONLY: '0', CAH_HINT_OWNER_MAX_LEASE_MS: '1' },
+    );
+    assert.equal(result.stdout, '');
+    assert.deepEqual(readClaim(claim), {
+      pid: process.pid,
+      nonce: 'live-owner',
+      claimedAt: JSON.parse(readFileSync(join(claim, 'owner.json'), 'utf8')).claimedAt,
+    });
   });
 
   it('does not reclaim a successor claim installed after the dead-owner check', async () => {

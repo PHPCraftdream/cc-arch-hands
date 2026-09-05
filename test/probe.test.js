@@ -12,6 +12,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { Worker } from 'node:worker_threads';
 
 import {
   enableProbe,
@@ -19,6 +20,7 @@ import {
   readProbeLog,
   probeStatus,
   ProbeAlreadyActiveError,
+  ProbeBusyError,
   ProbeNotActiveError,
   MissingBackupError,
   PROBE_SENTINEL,
@@ -33,6 +35,41 @@ function harness() {
     logPath: join(root, 'cache', 'envelope-probe.log'),
     probeBinAbsPath: join(root, 'bin', 'cah-status-probe.js'),
   };
+}
+
+async function waitForPath(path) {
+  const deadline = Date.now() + 10_000;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+function runProbeWorker(action, paths, interlock, phase) {
+  const probeUrl = new URL('../lib/probe.js', import.meta.url).href;
+  const source = `
+    const { parentPort, workerData } = require('node:worker_threads');
+    (async () => {
+      process.env.CAH_TEST_ONLY = '1';
+      process.env.CAH_TEST_ONLY_PROBE_INTERLOCK = workerData.interlock;
+      process.env.CAH_TEST_ONLY_PROBE_INTERLOCK_PHASE = workerData.phase;
+      const probe = await import(workerData.probeUrl);
+      try {
+        const value = probe[workerData.action](workerData.paths);
+        parentPort.postMessage({ ok: true, value });
+      } catch (error) {
+        parentPort.postMessage({ ok: false, name: error.name, message: error.message });
+      }
+    })().catch((error) => { setImmediate(() => { throw error; }); });
+  `;
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(source, {
+      eval: true,
+      workerData: { action, paths, interlock, phase, probeUrl },
+    });
+    worker.once('message', resolve);
+    worker.once('error', reject);
+  });
 }
 
 function makeSymlinkOrSkip(t, linkPath, targetPath) {
@@ -163,6 +200,60 @@ describe('disableProbe', () => {
     // a BOM-prefixed file must not stop the probe from being disabled
     const { restored } = disableProbe(h);
     assert.deepEqual(restored, original);
+  });
+});
+
+describe('probe concurrency', () => {
+  it('does not overwrite a settings edit made during enable', async () => {
+    const h = harness();
+    const original = { type: 'command', command: 'before-edit', padding: 0 };
+    writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
+    const interlock = join(h.settingsPath, '..', 'enable-edit-interlock');
+    const worker = runProbeWorker('enableProbe', h, interlock, 'enable-before-settings-write');
+
+    await waitForPath(`${interlock}.ready`);
+    const edited = { type: 'command', command: 'edited-by-user', padding: 0 };
+    writeFileSync(h.settingsPath, JSON.stringify({ statusLine: edited }));
+    writeFileSync(`${interlock}.go`, 'go');
+
+    const result = await worker;
+    assert.equal(result.ok, false);
+    assert.match(result.message, /managed destination leaf changed concurrently/);
+    assert.deepEqual(JSON.parse(readFileSync(h.settingsPath, 'utf8')).statusLine, edited);
+    assert.deepEqual(JSON.parse(readFileSync(h.backupPath, 'utf8')).previous, original);
+  });
+
+  it('fails fast while another probe transition owns the operation lease', async () => {
+    const h = harness();
+    const interlock = join(h.settingsPath, '..', 'enable-busy-interlock');
+    const worker = runProbeWorker('enableProbe', h, interlock, 'enable-after-read');
+
+    await waitForPath(`${interlock}.ready`);
+    assert.throws(() => enableProbe(h), ProbeBusyError);
+    writeFileSync(`${interlock}.go`, 'go');
+    const result = await worker;
+    assert.equal(result.ok, true);
+  });
+
+  it('does not remove a successor backup after stop reads the old one', async () => {
+    const h = harness();
+    const original = { type: 'command', command: 'original', padding: 0 };
+    writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
+    enableProbe(h);
+
+    const interlock = join(h.settingsPath, '..', 'stop-successor-interlock');
+    const worker = runProbeWorker('disableProbe', h, interlock, 'disable-before-backup-remove');
+    await waitForPath(`${interlock}.ready`);
+
+    unlinkSync(h.backupPath);
+    const successor = { previous: { type: 'command', command: 'new-start', padding: 0 } };
+    writeFileSync(h.backupPath, JSON.stringify(successor));
+    writeFileSync(`${interlock}.go`, 'go');
+
+    const result = await worker;
+    assert.equal(result.ok, true);
+    assert.deepEqual(JSON.parse(readFileSync(h.backupPath, 'utf8')), successor);
+    assert.deepEqual(JSON.parse(readFileSync(h.settingsPath, 'utf8')).statusLine, original);
   });
 });
 

@@ -82,7 +82,8 @@ function runSkillWorker(action, dir, interlock, phase, subset = undefined) {
       const result = workerData.action === 'write'
         ? skills.writeSkills(templates.embeddedTemplates(), scope, workerData.subset
           ? { subset: workerData.subset } : {})
-        : skills.removeSkills(templates.embeddedTemplates(), scope);
+        : skills.removeSkills(templates.embeddedTemplates(), scope, workerData.subset
+          ? { subset: workerData.subset } : {});
       parentPort.postMessage(result);
     })().catch((error) => {
       setImmediate(() => { throw error; });
@@ -97,6 +98,36 @@ function runSkillWorker(action, dir, interlock, phase, subset = undefined) {
     worker.once('error', reject);
     worker.once('exit', (code) => {
       if (code !== 0) reject(new Error(`skill worker exited with code ${code}`));
+    });
+  });
+}
+
+function runOwnedRemovalWorker(dest, interlock, phase, failures = undefined) {
+  const fsutilUrl = new URL('../lib/fsutil.js', import.meta.url).href;
+  const source = `
+    const { parentPort, workerData } = require('node:worker_threads');
+    (async () => {
+      process.env.CAH_TEST_ONLY = '1';
+      process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK = workerData.interlock;
+      process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE = workerData.phase;
+      if (workerData.failures !== undefined) {
+        process.env.CAH_TEST_ONLY_FSUTIL_REMOVE_TRANSIENT_FAILURES = String(workerData.failures);
+      }
+      const fsutil = await import(workerData.fsutilUrl);
+      const expected = fsutil.regularFileIdentity(workerData.dest);
+      const result = fsutil.removeOwnedRegularFile(workerData.dest, expected);
+      parentPort.postMessage(result);
+    })().catch((error) => { setImmediate(() => { throw error; }); });
+  `;
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(source, {
+      eval: true,
+      workerData: { dest, interlock, phase, failures, fsutilUrl },
+    });
+    worker.once('message', resolve);
+    worker.once('error', reject);
+    worker.once('exit', (code) => {
+      if (code !== 0) reject(new Error(`owned removal worker exited with code ${code}`));
     });
   });
 }
@@ -320,6 +351,33 @@ describe('writeFileAtomic', () => {
     }
     assert.ok(!existsSync(dest));
     assert.deepEqual(readdirSync(dir).filter((name) => name.includes('.cah-owned-remove-')), []);
+  });
+
+  it('preserves B when B is displaced and C occupies the canonical name', async () => {
+    const dir = tmpDir();
+    const dest = join(dir, 'three-party-remove.txt');
+    const interlock = join(dir, 'three-party-remove-interlock');
+    writeFileSync(dest, 'owned A\n');
+
+    const running = runOwnedRemovalWorker(
+      dest,
+      interlock,
+      'remove-before-rename,remove-after-rename',
+    );
+    await waitForPath(`${interlock}.remove-before-rename.ready`);
+    unlinkSync(dest);
+    writeFileSync(dest, 'foreign B\n');
+    writeFileSync(`${interlock}.remove-before-rename.go`, 'go');
+
+    await waitForPath(`${interlock}.remove-after-rename.ready`);
+    writeFileSync(dest, 'successor C\n');
+    writeFileSync(`${interlock}.remove-after-rename.go`, 'go');
+
+    assert.equal(await running, false);
+    assert.equal(readFileSync(dest, 'utf8'), 'successor C\n');
+    const quarantines = readdirSync(dir).filter((name) => name.includes('.cah-owned-remove-'));
+    assert.equal(quarantines.length, 1);
+    assert.equal(readFileSync(join(dir, quarantines[0]), 'utf8'), 'foreign B\n');
   });
 });
 
@@ -1484,6 +1542,34 @@ describe('removeSkills', () => {
     const { removed, skipped } = removeSkills(embeddedTemplates(), scope);
     assert.equal(removed, 0);
     assert.deepEqual(skipped, []);
+  });
+
+  it('preserves the original ownership decision when the manifest is replaced before capture', async () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const name = AllSkills[0];
+    const destDir = join(dir, '.claude', 'skills', name);
+    const manifest = join(destDir, SKILL_MANIFEST_LEAF);
+    const interlock = join(dir, 'remove-manifest-capture-interlock');
+    mkdirSync(destDir, { recursive: true });
+    writeFileSync(manifest, `original A\n${SentinelSkill}\n`);
+
+    const running = runSkillWorker(
+      'remove',
+      dir,
+      interlock,
+      'remove-before-owned-capture',
+      [name],
+    );
+    await waitForPath(`${interlock}.ready`);
+    unlinkSync(manifest);
+    writeFileSync(manifest, `successor B\n${SentinelSkill}\n`);
+    writeFileSync(`${interlock}.go`, 'go');
+
+    const result = await running;
+    assert.equal(result.removed, 0);
+    assert.deepEqual(result.preserved, [name]);
+    assert.equal(readFileSync(manifest, 'utf8'), `successor B\n${SentinelSkill}\n`);
   });
 
   it('rejects an unvalidated relPath escape without deleting the victim', () => {

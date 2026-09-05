@@ -32,7 +32,7 @@ const MARKER_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MARKER_CLAIM_TTL_MS = 30_000;
 const MARKER_MAX_SESSIONS = 64;
 const MARKER_NAME_RE = /^cah-hint-shown-[a-f0-9]{64}$/;
-const LEGACY_MARKER_NAME_RE = /^(?:cah-hint-shown|cah-update-shown)-[a-f0-9]{64}$/;
+const LEGACY_MARKER_PREFIXES = ['cah-hint-shown-', 'cah-update-shown-'];
 const RATE_LIMITS_CACHE =
   process.env.CAH_RATE_LIMITS_CACHE ||
   join(homedir(), '.claude', 'cah-bin', 'cache', 'rate-limits.json');
@@ -85,7 +85,56 @@ function pruneStaleMarkers(markerDir, nowMs) {
   }
 }
 
-function migrateLegacyMarkers(home, markerDir) {
+function directLegacyMarkerPrefix(name) {
+  if (typeof name !== 'string' || name.includes('/') || name.includes('\\') || name.includes('\0')) return null;
+  return LEGACY_MARKER_PREFIXES.find((prefix) => name.startsWith(prefix) && name.length > prefix.length) || null;
+}
+
+function sameLegacyFileIdentity(left, right) {
+  return left !== null && right !== null
+    && String(left.dev) === String(right.dev)
+    && String(left.ino) === String(right.ino)
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs;
+}
+
+function removeLegacyIfUnchanged(path, expected) {
+  try {
+    const current = lstatSync(path);
+    if (!current.isFile() || !sameLegacyFileIdentity(expected, current)) return false;
+    unlinkSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function migrateLegacyFile(source, target, sourceStat) {
+  try {
+    const targetStat = lstatSync(target);
+    if (!targetStat.isFile()) return;
+    removeLegacyIfUnchanged(source, sourceStat);
+    return;
+  } catch (error) {
+    if (!error || error.code !== 'ENOENT') return;
+  }
+  let data;
+  try { data = readFileSync(source); } catch { return; }
+  let fd = null;
+  try {
+    fd = openSync(target, 'wx');
+    writeSync(fd, data);
+    closeSync(fd);
+    fd = null;
+    if (samePathIdentity(sourceStat, pathIdentity(source))) removeLegacyIfUnchanged(source, sourceStat);
+  } catch {
+    if (fd !== null) {
+      try { closeSync(fd); } catch { /* best effort */ }
+    }
+  }
+}
+
+function migrateLegacyMarkers(home, markerDir, sessionId, nowMs = Date.now()) {
   const legacyDir = join(home, '.claude');
   if (legacyDir === markerDir) return;
   let entries;
@@ -96,39 +145,35 @@ function migrateLegacyMarkers(home, markerDir) {
     return;
   }
   for (const name of entries) {
-    if (!LEGACY_MARKER_NAME_RE.test(name)) continue;
+    const prefix = directLegacyMarkerPrefix(name);
+    if (!prefix) continue;
     const source = join(legacyDir, name);
-    const target = join(markerDir, name);
-    let sourceIdentity;
+    let sourceStat;
     try {
-      const sourceStat = lstatSync(source);
+      sourceStat = lstatSync(source);
       if (!sourceStat.isFile()) continue;
-      sourceIdentity = { dev: sourceStat.dev, ino: sourceStat.ino };
     } catch {
       continue;
     }
-    try {
-      const targetStat = lstatSync(target);
-      if (!targetStat.isFile()) continue;
-      if (samePathIdentity(sourceIdentity, pathIdentity(source))) unlinkSync(source);
+
+    // Raw legacy names cannot be mapped for another session. Retain fresh
+    // ones for a later exact match, but sweep stale entries regardless of
+    // whether their suffix is a hash, UUID, or any other old session ID.
+    if (nowMs - sourceStat.mtimeMs > MARKER_TTL_MS) {
+      removeLegacyIfUnchanged(source, sourceStat);
       continue;
-    } catch (error) {
-      if (!error || error.code !== 'ENOENT') continue;
     }
-    let data;
-    try { data = readFileSync(source); } catch { continue; }
-    let fd = null;
-    try {
-      fd = openSync(target, 'wx');
-      writeSync(fd, data);
-      closeSync(fd);
-      fd = null;
-      if (samePathIdentity(sourceIdentity, pathIdentity(source))) unlinkSync(source);
-    } catch {
-      if (fd !== null) {
-        try { closeSync(fd); } catch { /* best effort */ }
-      }
-    }
+
+    const currentName = typeof sessionId === 'string' ? `${prefix}${sessionId}` : null;
+    const isCurrentSession = currentName !== null && currentName === name;
+    const suffix = name.slice(prefix.length);
+    const isLegacyHash = /^[a-f0-9]{64}$/.test(suffix);
+    if (!isCurrentSession && !isLegacyHash) continue;
+
+    const targetName = isCurrentSession
+      ? `${prefix}${sessionHash(sessionId)}`
+      : name;
+    migrateLegacyFile(source, join(markerDir, targetName), sourceStat);
   }
 }
 
@@ -247,7 +292,7 @@ function main() {
 
   const home = process.env.CAH_HINT_HOME || homedir();
   const markerDir = join(home, '.claude', 'cah-bin', 'cache');
-  migrateLegacyMarkers(home, markerDir);
+  migrateLegacyMarkers(home, markerDir, sessionId);
   pruneStaleMarkers(markerDir, Date.now());
 
   let usedTokens = null;
