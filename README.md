@@ -15,8 +15,9 @@ npx cc-arch-hands install        # that's it — installs agents & skills into ~
 
 Three kinds of Claude Code artifacts under `~/.claude/` (commands, agents,
 skills), all generated from a single model registry so they stay in
-lockstep — plus the three companion bins that some skills use as hooks or
-statusLine commands, copied into `~/.claude/cah-bin/` at install time.
+lockstep — plus the four companion runtime bins that skills use as hooks,
+statusLine commands, or diagnostics, copied into `~/.claude/cah-bin/` at
+install time.
 
 The artifacts:
 - **per-model sub-agents** (<!--gen:count:model-commands-->44<!--/gen-->) under `~/.claude/agents/`,
@@ -40,14 +41,13 @@ The installed companion tree also contains a managed `package.json` with
 working on the package's supported Node 18 runtime. A pre-existing foreign
 `~/.claude/cah-bin/package.json` is preserved and reported as foreign.
 
-The companion bins:
-- **`cah`** (and its alias `cc-arch-hands`) — the installer CLI itself.
+The companion runtime bins:
 - **`cah-checkpoint-hint`** — Stop hook bin invoked by `/checkpoint-watch`. Emits one `[hint] Context at 90%…` per session when context fills past 90%.
 - **`cah-status`** — statusLine command invoked by `/clock`. Renders `<model> [effort] · X.XX% (Nk/Mk)` with a usage bar and, for Pro/Max accounts, the 5-hour and weekly quota use with reset info (`5h N% →48м · wk N% →сб 27.06 16:19`). The bracketed effort code matches the slash-command suffix convention — `[l]/[m]/[h]/[x]/[xx]` for low/medium/high/xhigh/max; omitted for models without effort support (Haiku). Refreshes every 60 s (`refreshInterval` on the entry) and on every turn boundary.
 - **`cah-stamp`** — Stop hook bin invoked by `/clock` on both `Stop` AND `PostToolUse`. Emits an `HH:MM:SS · model · X.XX% · 5h N% · wk N%` line as a `systemMessage` (no effort suffix or bars; compact text). Two safeguards prevent scrollback spam: **per-message dedup** (every assistant entry of the same turn shares an API `requestId` — if we already stamped this turn, the next hook of the same turn is suppressed) and a **session-scoped time-throttle safety net** (default 10 s, configurable via `CAH_STAMP_MIN_INTERVAL_MS`). A newer-version notice is Stop-only, even when PostToolUse already deduped the turn.
 - **`cah-status-probe`** — diagnostic statusLine bin armed by `cah probe statusline start`. Captures the raw stdin envelope to a JSONL log so you can inspect exactly which fields Claude Code delivers on your account (added in 0.4.1).
 
-All three hook bins share `lib/transcript-stats.js` for transcript
+The checkpoint, status, and stamp bins share `lib/transcript-stats.js` for transcript
 parsing — including the **cache-aware** token sum (`input_tokens +
 cache_creation_input_tokens + cache_read_input_tokens`) that matches
 Claude Code's own `used_percentage` formula. Without this, raw
@@ -388,7 +388,9 @@ npx cah install --codex-agents           # optional: install only Codex agents i
 npx cah install --only skills                       # all 11 skills
 npx cah install --only bins                         # companion bins (cah-status, cah-stamp,
                                                     #   cah-checkpoint-hint, cah-status-probe,
-                                                    #   + their shared lib/transcript-stats.js)
+                                                    #   + shared lib leaves: transcript-stats.js,
+                                                    #     update-check.js, lease-lock.js, fsutil.js,
+                                                    #     sentinel.js)
 
 # One example per skill (every installable artefact has its own line).
 # clock and checkpoint-watch auto-pull `bins` with a notice.
@@ -509,14 +511,14 @@ cc-arch-hands/
 ├── bin/cah-status-probe.js      # diagnostic statusLine bin used by `cah probe statusline`
 ├── lib/
 │   ├── cli.js                   # dispatch, arg parsing (node:util parseArgs), --only resolver
-│   ├── manifest.js              # AllModelCommands (44 entries), AllSkills (11), SkillDeps
+│   ├── manifest.js              # AllModelCommands (44 definitions), AllCodexAgents (24), AllSkills (11), SkillDeps
 │   ├── sentinel.js              # new + legacy markers, ownership classifier
 │   ├── scope.js                 # global vs local target dir resolution
 │   ├── templates.js             # bundled / disk template abstraction
 │   ├── fsutil.js                # readFileMaybe + orphan-prune helpers
 │   ├── transcript-stats.js      # shared: stats, formatStatusLine, makeBar, reset formatters
-│   ├── commands.js              # render + install + remove (44 .md files)
-│   ├── agents.js                # render + install + remove (44 .md files)
+│   ├── commands.js              # render + install + remove (44 .md bodies)
+│   ├── agents.js                # render + install + remove (44 .md bodies)
 │   ├── skills.js                # mirror templates/skills/<n>/ tree, optional subset
 │   ├── binstall.js              # copy companion bins into ~/.claude/cah-bin/ (// cah-bin:v1)
 │   └── probe.js                 # enable/disable cah-status-probe via settings.json edits
@@ -542,9 +544,11 @@ cc-arch-hands/
 └── package.json
 ```
 
-The 35 per-model command/agent bodies are **rendered parametrically** at
-install time from `AllModelCommands`, not stored as 70 nearly-identical
-files. Adding a new `{model, effort}` pair = one object in `lib/manifest.js`.
+The <!--gen:count:model-commands-->44<!--/gen--> model definitions render
+<!--gen:count:model-bodies-->88<!--/gen--> command+agent bodies, which are
+**rendered parametrically** at install time from `AllModelCommands`, not stored
+as nearly-identical files. Adding a new `{model, effort}` pair = one object in
+`lib/manifest.js`.
 
 Skills are static directory trees, mirrored verbatim, so authoring a
 new skill = drop a directory under `templates/skills/` and append its

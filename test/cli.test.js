@@ -463,6 +463,28 @@ describe('run install/uninstall --codex-agents', () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  it('preserves and reports a foreign removed Codex alias through install and reinstall', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
+    const agentsDir = join(home, '.codex', 'agents');
+    const removedAlias = join(agentsDir, 'h55.toml');
+    try {
+      withHome(home, () => {
+        mkdirSync(agentsDir, { recursive: true });
+        writeFileSync(removedAlias, 'foreign user-owned legacy alias\n');
+
+        const first = captureStdout(() => assert.equal(run(['install', '--codex-agents']), 0));
+        assert.match(first, /h55\.toml/);
+        assert.equal(readFileSync(removedAlias, 'utf8'), 'foreign user-owned legacy alias\n');
+
+        const reinstall = captureStdout(() => assert.equal(run(['reinstall', '--codex-agents']), 0));
+        assert.equal((reinstall.match(/^    h55\.toml$/gm) || []).length, 2);
+        assert.equal(readFileSync(removedAlias, 'utf8'), 'foreign user-owned legacy alias\n');
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('run install/uninstall --commands', () => {

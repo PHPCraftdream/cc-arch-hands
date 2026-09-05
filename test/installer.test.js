@@ -19,7 +19,9 @@ import { writeCodexAgents, removeCodexAgents } from '../lib/codex-agents.js';
 import { removeBins } from '../lib/binstall.js';
 import { writeSkills, removeSkills } from '../lib/skills.js';
 import { embeddedTemplates, diskTemplates } from '../lib/templates.js';
-import { writeFileAtomic, removeOwnedRegularFile, regularFileIdentity } from '../lib/fsutil.js';
+import {
+  writeFileAtomic, removeOwnedRegularFile, regularFileIdentity, sameFileIdentity,
+} from '../lib/fsutil.js';
 
 const FABLE_ORACLE = [
   ['fl', 'claude-fable-5-1', 'low'],
@@ -211,6 +213,18 @@ function runAtomicRetryWorker(dest, interlock) {
 // ---------------------------------------------------------------------------
 
 describe('writeFileAtomic', () => {
+  it('returns the inode identity published by the private temp', () => {
+    const dir = tmpDir();
+    const dest = join(dir, 'published.txt');
+    const publication = writeFileAtomic(dest, 'published body\n');
+
+    assert.equal(publication.present, true);
+    assert.equal(publication.path, dest);
+    assert.ok(publication.identity);
+    assert.equal(sameFileIdentity(regularFileIdentity(dest), publication.identity), true);
+    assert.equal(publication.expectedDestination.identity, publication.identity);
+  });
+
   it('keeps normal umask/default modes and preserves an existing mode', (t) => {
     if (process.platform === 'win32') {
       t.skip('POSIX mode bits are not portable on Windows');
@@ -290,7 +304,7 @@ describe('writeFileAtomic', () => {
         }
         writeFileAtomic(workerData.dest, Buffer.from(workerData.payload));
       })().catch((error) => {
-        process.nextTick(() => { throw error; });
+        parentPort.postMessage({ error: error.message });
       });
     `;
     const workers = payloads.map((payload) => new Worker(workerSource, {
@@ -305,6 +319,54 @@ describe('writeFileAtomic', () => {
       readdirSync(dir).filter((name) => name.includes('.cah-tmp-')),
       [],
     );
+  });
+
+  it('rejects a byte-identical successor installed immediately after rename', async () => {
+    const dir = tmpDir();
+    const dest = join(dir, 'successor.txt');
+    const interlock = join(dir, 'after-rename-interlock');
+    const payload = 'byte-identical successor\n';
+    writeFileSync(dest, 'old body\n');
+    const fsutilUrl = new URL('../lib/fsutil.js', import.meta.url).href;
+    const source = `
+      const { parentPort, workerData } = require('node:worker_threads');
+      (async () => {
+        process.env.CAH_TEST_ONLY = '1';
+        process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK = workerData.interlock;
+        process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE = 'write-after-rename';
+        const fsutil = await import(workerData.fsutilUrl);
+        const before = fsutil.captureRegularFileSnapshot(workerData.dest);
+        try {
+          fsutil.writeFileAtomic(workerData.dest, workerData.payload, {
+            expectedDestination: before.expectedDestination,
+          });
+          parentPort.postMessage({ ok: true });
+        } catch (error) {
+          parentPort.postMessage({ ok: false, message: error.message });
+        }
+      })();
+    `;
+    const worker = new Worker(source, {
+      eval: true,
+      workerData: { dest, fsutilUrl, interlock, payload },
+    });
+    const resultPromise = new Promise((resolve, reject) => {
+      worker.once('message', resolve);
+      worker.once('error', reject);
+    });
+
+    await waitForPath(`${interlock}.ready`);
+    unlinkSync(dest);
+    writeFileSync(dest, payload);
+    writeFileSync(`${interlock}.go`, 'go');
+    const result = await resultPromise;
+    assert.equal(result.ok, false);
+    assert.match(result.message, /destination leaf changed concurrently|refusing operation/);
+    assert.equal(readFileSync(dest, 'utf8'), payload);
+    await new Promise((resolve, reject) => {
+      worker.once('error', reject);
+      worker.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`worker exited ${code}`)));
+    });
   });
 
   it('cleans up its unique temp when publication fails', () => {
@@ -620,7 +682,7 @@ describe('writeModelCommands', () => {
 
     const { written, skipped, pruned } = writeModelCommands(null, scope);
     assert.equal(written, AllModelCommands.length);
-    assert.deepEqual(skipped, []);
+    assert.deepEqual(skipped, ['someone-else.md']);
     assert.equal(pruned, 2, 'mine + legacy orphans removed, foreign preserved');
 
     assert.throws(() => statSync(orphanMine), { code: 'ENOENT' });
@@ -769,7 +831,7 @@ describe('writeModelAgents', () => {
 
     const { written, skipped, pruned } = writeModelAgents(null, scope);
     assert.equal(written, AllModelCommands.length);
-    assert.deepEqual(skipped, []);
+    assert.deepEqual(skipped, ['someone-else.md']);
     assert.equal(pruned, 2, 'mine + legacy orphans removed, foreign preserved');
 
     assert.throws(() => statSync(orphanMine), { code: 'ENOENT' });

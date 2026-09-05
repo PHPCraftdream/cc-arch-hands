@@ -86,6 +86,7 @@ const TABLES = {
 
 const COUNTS = {
   'model-commands': AllModelCommands.length,
+  'model-bodies': AllModelCommands.length * 2,
   'codex-agents': AllCodexAgents.length,
 };
 

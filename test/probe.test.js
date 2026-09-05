@@ -28,6 +28,7 @@ import {
   PROBE_SENTINEL,
   PROBE_NAME,
 } from '../lib/probe.js';
+import { regularFileIdentity, sameFileIdentity } from '../lib/fsutil.js';
 
 function harness() {
   const root = mkdtempSync(join(tmpdir(), 'cah-probe-'));
@@ -368,16 +369,43 @@ describe('probe concurrency', () => {
     const worker = runProbeWorker('enableProbe', h, interlock, 'enable-post-settings-rename');
     await waitForPath(`${interlock}.ready`);
 
-    const successor = { statusLine: { type: 'command', command: 'foreign-settings' } };
-    writeFileSync(h.settingsPath, JSON.stringify(successor));
+    const successor = readFileSync(h.settingsPath);
+    unlinkSync(h.settingsPath);
+    writeFileSync(h.settingsPath, successor);
+    const successorIdentity = regularFileIdentity(h.settingsPath);
     writeFileSync(`${interlock}.go`, 'go');
 
     const result = await worker;
     assert.equal(result.ok, false);
     assert.match(result.message, /managed destination leaf changed concurrently/);
-    assert.deepEqual(JSON.parse(readFileSync(h.settingsPath, 'utf8')), successor,
+    assert.deepEqual(readFileSync(h.settingsPath), successor,
       'settings successor must never be overwritten during rollback');
+    assert.equal(sameFileIdentity(regularFileIdentity(h.settingsPath), successorIdentity), true);
     assert.ok(!existsSync(h.backupPath), 'failed enable must roll back only its backup leaf');
+  });
+
+  it('does not roll back a byte-identical settings successor after stop postcheck failure', async () => {
+    const h = harness();
+    const original = { type: 'command', command: 'original', padding: 0 };
+    writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
+    enableProbe(h);
+
+    const interlock = join(h.settingsPath, '..', 'stop-settings-successor-interlock');
+    const worker = runProbeWorker('disableProbe', h, interlock, 'disable-post-settings-rename');
+    await waitForPath(`${interlock}.ready`);
+
+    const successor = readFileSync(h.settingsPath);
+    unlinkSync(h.settingsPath);
+    writeFileSync(h.settingsPath, successor);
+    const successorIdentity = regularFileIdentity(h.settingsPath);
+    writeFileSync(`${interlock}.go`, 'go');
+
+    const result = await worker;
+    assert.equal(result.ok, false);
+    assert.match(result.message, /managed destination leaf changed concurrently/);
+    assert.deepEqual(readFileSync(h.settingsPath), successor);
+    assert.equal(sameFileIdentity(regularFileIdentity(h.settingsPath), successorIdentity), true);
+    assert.ok(existsSync(h.backupPath), 'failed stop must retain its backup');
   });
 
   it('throws a path-specific error for malformed backup JSON', () => {

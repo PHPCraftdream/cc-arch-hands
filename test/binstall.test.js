@@ -124,14 +124,96 @@ describe('writeBins', () => {
     }
   });
 
-  it('preserves a foreign package boundary and reports it as skipped', () => {
+  it('preserves a compatible foreign package boundary and reports it as skipped', () => {
     mkdirSync(dst, { recursive: true });
-    writeFileSync(join(dst, 'package.json'), JSON.stringify({ type: 'commonjs', owner: 'user' }) + '\n');
+    writeFileSync(join(dst, 'package.json'), JSON.stringify({ type: 'module', owner: 'user' }) + '\n');
     const r = writeBins(dst, src);
+    assert.equal(r.written, BinFiles.length - 1);
     assert.ok(r.skipped.includes('package.json'));
     assert.deepEqual(JSON.parse(readFileSync(join(dst, 'package.json'), 'utf8')), {
-      type: 'commonjs', owner: 'user',
+      type: 'module', owner: 'user',
     });
+  });
+
+  it('rejects an incompatible foreign boundary before any bin mutation', () => {
+    mkdirSync(join(dst, 'bin'), { recursive: true });
+    mkdirSync(join(dst, 'lib'), { recursive: true });
+    const packagePath = join(dst, 'package.json');
+    const existingBin = join(dst, 'bin', 'cah-status.js');
+    const orphan = join(dst, 'lib', 'cah-old.js');
+    const foreign = join(dst, 'bin', 'someone-elses-tool.js');
+    writeFileSync(packagePath, JSON.stringify({ type: 'commonjs', owner: 'user' }) + '\n', { mode: 0o640 });
+    writeFileSync(existingBin, `#!/usr/bin/env node\n${SentinelBin}\nexisting\n`, { mode: 0o640 });
+    writeFileSync(orphan, `#!/usr/bin/env node\n${SentinelBin}\norphan\n`);
+    writeFileSync(foreign, 'foreign\n');
+    const beforeBin = readFileSync(existingBin);
+
+    assert.throws(
+      () => writeBins(dst, src),
+      /incompatible foreign package boundary.*type: module/,
+    );
+    assert.deepEqual(readFileSync(packagePath), Buffer.from(JSON.stringify({ type: 'commonjs', owner: 'user' }) + '\n'));
+    assert.deepEqual(readFileSync(existingBin), beforeBin);
+    if (process.platform !== 'win32') assert.equal(statSync(existingBin).mode & 0o777, 0o640);
+    assert.ok(existsSync(orphan), 'preflight failure must not prune owned leaves');
+    assert.equal(readFileSync(foreign, 'utf8'), 'foreign\n');
+    assert.ok(!existsSync(join(dst, 'bin', 'cah-stamp.js')), 'preflight failure must not publish other bins');
+  });
+
+  it('rejects a malformed foreign boundary before any bin mutation', () => {
+    const packagePath = join(dst, 'package.json');
+    writeFileSync(packagePath, '{ malformed package\n');
+    assert.throws(
+      () => writeBins(dst, src),
+      /malformed foreign package boundary.*valid JSON/,
+    );
+    assert.equal(readFileSync(packagePath, 'utf8'), '{ malformed package\n');
+    assert.ok(!existsSync(join(dst, 'bin')), 'preflight failure must not create bin leaves');
+    assert.ok(!existsSync(join(dst, 'lib')), 'preflight failure must not create lib leaves');
+  });
+
+  it('rejects a foreign boundary that omits the module type before any bin mutation', () => {
+    const packagePath = join(dst, 'package.json');
+    writeFileSync(packagePath, JSON.stringify({ owner: 'user' }) + '\n');
+    assert.throws(
+      () => writeBins(dst, src),
+      /incompatible foreign package boundary.*type: module/,
+    );
+    assert.equal(readFileSync(packagePath, 'utf8'), '{"owner":"user"}\n');
+    assert.ok(!existsSync(join(dst, 'bin')), 'preflight failure must not create bin leaves');
+    assert.ok(!existsSync(join(dst, 'lib')), 'preflight failure must not create lib leaves');
+  });
+
+  it('smoke-runs every installed companion binary with a compatible foreign module boundary', () => {
+    mkdirSync(dst, { recursive: true });
+    const foreignPackage = { type: 'module', owner: 'user' };
+    writeFileSync(join(dst, 'package.json'), JSON.stringify(foreignPackage) + '\n');
+    const r = writeBins(dst, src);
+    assert.equal(r.written, BinFiles.length - 1);
+    assert.ok(r.skipped.includes('package.json'));
+    assert.deepEqual(JSON.parse(readFileSync(join(dst, 'package.json'), 'utf8')), foreignPackage);
+
+    const smokeHome = tmpDir();
+    try {
+      const env = { ...process.env, HOME: smokeHome, USERPROFILE: smokeHome };
+      const bins = BinFiles
+        .filter((file) => file.dest.startsWith('bin/'))
+        .map((file) => file.dest.slice('bin/'.length));
+      for (const name of bins) {
+        const result = spawnSync(process.execPath, [join(dst, 'bin', name)], {
+          cwd: smokeHome,
+          env,
+          input: '{}\n',
+          encoding: 'utf8',
+          timeout: 10_000,
+        });
+        assert.equal(result.error, undefined, `${name} process failed to start`);
+        assert.equal(result.status, 0, `${name}: ${result.stderr}`);
+        assert.doesNotMatch(result.stderr, /ERR_MODULE_NOT_FOUND|ERR_REQUIRE_ESM/);
+      }
+    } finally {
+      rmSync(smokeHome, { recursive: true, force: true });
+    }
   });
 
   it('injects the sentinel after the shebang and preserves it', () => {
@@ -196,7 +278,31 @@ describe('writeBins', () => {
 
     const result = await running;
     assert.equal(result.pruned, 0);
+    assert.deepEqual(result.skipped, ['bin/cah-old.js']);
     assert.equal(readFileSync(orphan, 'utf8'), 'foreign successor\n');
+  });
+
+  it('reports foreign bin orphans with bin-root-relative paths exactly once', () => {
+    mkdirSync(join(dst, 'bin'), { recursive: true });
+    mkdirSync(join(dst, 'lib'), { recursive: true });
+    writeFileSync(join(dst, 'package.json'), JSON.stringify({ type: 'module', owner: 'user' }) + '\n');
+    writeFileSync(join(dst, 'bin', 'cah-status.js'), 'foreign current bin\n');
+    writeFileSync(join(dst, 'bin', 'old-tool.js'), 'foreign orphan bin\n');
+    writeFileSync(join(dst, 'lib', 'old-helper.js'), 'foreign orphan lib\n');
+
+    const installed = writeBins(dst, src);
+    assert.deepEqual(
+      installed.skipped,
+      ['bin/cah-status.js', 'package.json', 'bin/old-tool.js', 'lib/old-helper.js'],
+    );
+    assert.ok(installed.skipped.every((value) => !['cah-status.js', 'old-tool.js', 'old-helper.js'].includes(value)));
+
+    const removed = removeBins(dst);
+    assert.deepEqual(
+      removed.skipped,
+      ['package.json', 'bin/cah-status.js', 'bin/old-tool.js', 'lib/old-helper.js'],
+    );
+    assert.equal(new Set(removed.skipped).size, removed.skipped.length);
   });
 
   it('refuses a foreign successor at the publication leaf and preserves its mode', async () => {
