@@ -418,14 +418,14 @@ describe('probe concurrency', () => {
     assert.ok(!existsSync(h.backupPath), 'failed enable must roll back only its backup leaf');
   });
 
-  it('keeps C during a probe rollback vacancy', async () => {
+  it('keeps C during a probe rollback CAS race', async () => {
     const h = harness();
     const original = { type: 'command', command: 'original', padding: 0 };
     writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
     enableProbe(h);
 
-    const probeInterlock = join(h.settingsPath, '..', 'probe-rollback-vacancy-probe');
-    const fsInterlock = join(h.settingsPath, '..', 'probe-rollback-vacancy-fs');
+    const probeInterlock = join(h.settingsPath, '..', 'probe-rollback-cas-probe');
+    const fsInterlock = join(h.settingsPath, '..', 'probe-rollback-cas-fs');
     const worker = runProbeWorker(
       'disableProbe',
       h,
@@ -439,15 +439,22 @@ describe('probe concurrency', () => {
     writeFileSync(h.backupPath, JSON.stringify({ previous: { owner: 'C' } }));
     writeFileSync(`${probeInterlock}.go`, 'go');
     await waitForPath(`${fsInterlock}.ready`);
-    assert.equal(existsSync(h.settingsPath), false, 'rollback must fence settings before final publication');
+    assert.equal(existsSync(h.settingsPath), true,
+      'rollback preparation must keep the old settings leaf visible');
+    assert.deepEqual(JSON.parse(readFileSync(h.settingsPath, 'utf8')).statusLine, original,
+      'rollback preparation must leave the published settings intact until CAS');
     const successor = JSON.stringify({ owner: 'C-settings' }) + '\n';
+    unlinkSync(h.settingsPath);
     writeFileSync(h.settingsPath, successor);
+    const successorIdentity = regularFileIdentity(h.settingsPath);
     writeFileSync(`${fsInterlock}.go`, 'go');
 
     const result = await worker;
     assert.equal(result.ok, false);
     assert.equal(readFileSync(h.settingsPath, 'utf8'), successor);
-    assert.ok(existsSync(`${h.settingsPath}.cah-owned-publish/old`));
+    assert.equal(sameFileIdentity(regularFileIdentity(h.settingsPath), successorIdentity), true);
+    assert.equal(existsSync(`${h.settingsPath}.cah-owned-publish`), false,
+      'a failed CAS must clean its private temp without creating a publication vacancy');
   });
 
   it('does not roll back a byte-identical settings successor after stop postcheck failure', async () => {

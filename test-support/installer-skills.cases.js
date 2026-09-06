@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, lstatSync, rmdirSync, mkdtempSync, existsSync, symlinkSync, unlinkSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, lstatSync, rmdirSync, mkdtempSync, existsSync, symlinkSync, unlinkSync, chmodSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
@@ -545,10 +545,33 @@ describe('writeSkills', { concurrency: false }, () => {
       [],
     );
   });
+
+  it('rejects an in-place same-size manifest edit with restored mtime and mode', async () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const name = AllSkills[0];
+    writeSkills(embeddedTemplates(), scope, { subset: [name] });
+    const manifest = join(dir, '.claude', 'skills', name, SKILL_MANIFEST_LEAF);
+    const restoredSeconds = 1_700_000_000;
+    utimesSync(manifest, restoredSeconds, restoredSeconds);
+    const before = statSync(manifest, { bigint: true });
+    const interlock = join(dir, 'write-leaf-digest-interlock');
+    const running = runSkillWorker('write', dir, interlock, 'write-before-rename', [name]);
+    await waitForPath(`${interlock}.ready`);
+    const original = readFileSync(manifest);
+    const mutated = Buffer.from(original);
+    mutated[0] = mutated[0] === 0x58 ? 0x59 : 0x58;
+    writeFileSync(manifest, mutated);
+    chmodSync(manifest, Number(before.mode & 0o777n));
+    utimesSync(manifest, restoredSeconds, restoredSeconds);
+    writeFileSync(`${interlock}.go`, 'go');
+
+    await assert.rejects(running, /destination leaf changed concurrently|refusing operation/);
+    assert.deepEqual(readFileSync(manifest), mutated);
+  });
 });
 
 // ---------------------------------------------------------------------------
 // RemoveSkills
 // ---------------------------------------------------------------------------
-
 

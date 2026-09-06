@@ -296,7 +296,7 @@ describe('writeBins', () => {
 
   it('refuses a foreign successor at the publication leaf and preserves its mode', async () => {
     writeBins(dst, src);
-    const destination = join(dst, 'bin', 'cah-status.js');
+    const destination = join(dst, 'lib', 'sentinel.js');
     const interlock = join(dst, 'write-successor-interlock');
     const running = runBinWorker(dst, src, interlock, 'binstall-before-leaf-write');
     await waitForPath(`${interlock}.ready`);
@@ -330,10 +330,11 @@ describe('writeBins', () => {
       'rollback must remove leaves published by this invocation');
   });
 
-  it('keeps C during the boundary rollback vacancy', async () => {
+  it('keeps C during boundary rollback without a publication vacancy', async () => {
     writeBins(dst, src);
     const sourceThatWillFail = join(src, 'bin', 'cah-stamp.js');
     const packagePath = join(dst, 'package.json');
+    const oldBoundary = readFileSync(packagePath, 'utf8');
     const interlock = join(dst, 'boundary-rollback-vacancy-interlock');
     const running = runBinWorker(
       dst,
@@ -346,14 +347,43 @@ describe('writeBins', () => {
     unlinkSync(sourceThatWillFail);
     writeFileSync(`${interlock}.binstall-after-first-leaf.go`, 'go');
     await waitForPath(`${interlock}.binstall-rollback-before-final.ready`);
-    assert.equal(existsSync(packagePath), false, 'rollback must fence the old boundary before publishing');
+    assert.equal(readFileSync(packagePath, 'utf8'), oldBoundary,
+      'rollback must keep the old boundary visible until replacement');
     const successor = JSON.stringify({ owner: 'C' }) + '\n';
     writeFileSync(packagePath, successor);
     writeFileSync(`${interlock}.binstall-rollback-before-final.go`, 'go');
 
     await assert.rejects(running);
     assert.equal(readFileSync(packagePath, 'utf8'), successor);
-    assert.ok(existsSync(`${packagePath}.cah-owned-publish/old`));
+    assert.equal(existsSync(`${packagePath}.cah-owned-publish`), false,
+      'rollback must not leave a publication fence after a successor wins');
+  });
+
+  it('publishes the complete dependency chain before any executable leaf', async () => {
+    writeBins(dst, src);
+    const statusPath = join(dst, 'bin', 'cah-status.js');
+    const oldStatus = readFileSync(statusPath, 'utf8');
+    writeFileSync(
+      join(src, 'bin', 'cah-status.js'),
+      "#!/usr/bin/env node\nconsole.log('new executable');\n",
+    );
+
+    const interlock = join(dst, 'dependency-boundary-interlock');
+    const running = runBinWorker(dst, src, interlock, 'binstall-after-dependencies');
+    await waitForPath(`${interlock}.ready`);
+
+    assert.ok(existsSync(join(dst, 'package.json')));
+    for (const file of BinFiles.filter((entry) => entry.dest.startsWith('lib/'))) {
+      assert.ok(existsSync(join(dst, file.dest)), `${file.dest} must precede executables`);
+    }
+    assert.equal(readFileSync(statusPath, 'utf8'), oldStatus,
+      'an executable must remain old until the dependency boundary is released');
+
+    writeFileSync(`${interlock}.go`, 'go');
+    const result = await running;
+    assert.equal(result.written, BinFiles.length);
+    assert.notEqual(readFileSync(statusPath, 'utf8'), oldStatus,
+      'the executable may update after its dependency chain is complete');
   });
 
   it('smoke-runs every installed companion binary from the mirrored tree', () => {

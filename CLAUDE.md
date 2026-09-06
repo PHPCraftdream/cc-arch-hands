@@ -41,6 +41,11 @@ The codebase has two layers: a thin CLI (`lib/cli.js`) that does arg parsing and
 
 **The `bins` install class (since 0.4.0).** `cah install` copies the four companion runtime bins and their shared library leaves (`lib/transcript-stats.js`, `lib/update-check.js`, `lib/lease-lock.js`, `lib/fsutil.js`, `lib/fs-atomic.js`, and `lib/sentinel.js`) into `~/.claude/cah-bin/`, mirroring the package's `bin/` + `lib/` layout so the bins' relative imports resolve unchanged. `settings.json` then references them by absolute path (`node "<HOME>/.claude/cah-bin/bin/cah-status.js"`) instead of a bare PATH name. This decouples `/clock` and `/checkpoint-watch` from where the npm package lives — moving, relinking, or uninstalling the package no longer breaks the statusLine/hooks. Each copied file carries the `// cah-bin:v1` sentinel (rides the line after the shebang); install does a wipe-and-prune of orphans, foreign files are never touched. The bins are **always written to the global `~/.claude/cah-bin/`** regardless of scope flags (`Scope.resolveBinDir()` ignores `--local`/`--cwd`) — there is one stable copy, and even project-local `settings.json` points at it. The npm package still declares the bins in `package.json` `bin` for backward compat, but the skills no longer rely on PATH resolution. **The `/clock` and `/checkpoint-watch` SKILL.md migrate a pre-0.4.0 bare-name `command` to the absolute path on re-run.**
 
+Publication is dependency-first: the managed package boundary, `sentinel.js`,
+`fs-atomic.js`, `fsutil.js`, `lease-lock.js`, `transcript-stats.js`, and
+`update-check.js` are replaced before any executable bin. A new executable is
+never exposed before its complete mirrored dependency chain is present.
+
 ## Key files
 
 | File | Role |

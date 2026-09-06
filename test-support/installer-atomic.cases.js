@@ -1,12 +1,15 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, lstatSync, rmdirSync, mkdtempSync, existsSync, symlinkSync, unlinkSync } from 'node:fs';
+import { chmodSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, lstatSync, rmdirSync, mkdtempSync, existsSync, symlinkSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { tmpDir, waitForWorker, waitForPath, runOwnedRemovalWorker, runAtomicRetryWorker } from './installer-test-helpers.js';
 import { SentinelModelCommand } from '../lib/sentinel.js';
-import { writeFileAtomic, removeOwnedRegularFile, regularFileIdentity, sameFileIdentity } from '../lib/fsutil.js';
+import {
+  enumerateRecoveryArtifacts, removeOwnedRegularFile, regularFileIdentity, sameFileIdentity,
+  sweepRecoveryArtifacts, writeFileAtomic,
+} from '../lib/fsutil.js';
 
 // ---------------------------------------------------------------------------
 // Atomic file writes
@@ -175,6 +178,51 @@ describe('writeFileAtomic', { concurrency: false }, () => {
     });
   });
 
+  it('rejects a mode-only successor before rename', async (t) => {
+    if (process.platform === 'win32') {
+      t.skip('POSIX mode bits are not portable on Windows');
+      return;
+    }
+    const dir = tmpDir();
+    const dest = join(dir, 'mode-successor.txt');
+    const interlock = join(dir, 'mode-successor-interlock');
+    writeFileSync(dest, 'old body\n', { mode: 0o640 });
+    const fsutilUrl = new URL('../lib/fsutil.js', import.meta.url).href;
+    const source = `
+      const { parentPort, workerData } = require('node:worker_threads');
+      (async () => {
+        process.env.CAH_TEST_ONLY = '1';
+        process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK = workerData.interlock;
+        process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE = 'write-before-final-publication';
+        const fsutil = await import(workerData.fsutilUrl);
+        const snapshot = fsutil.captureRegularFileSnapshot(workerData.dest);
+        try {
+          fsutil.writeFileAtomic(workerData.dest, 'new body\\n', {
+            expectedDestination: snapshot.expectedDestination,
+          });
+          parentPort.postMessage({ ok: true });
+        } catch (error) {
+          parentPort.postMessage({ ok: false, message: error.message });
+        }
+      })();
+    `;
+    const worker = new Worker(source, {
+      eval: true,
+      workerData: { dest, fsutilUrl, interlock },
+    });
+    const resultPromise = new Promise((resolve, reject) => {
+      worker.once('message', resolve);
+      worker.once('error', reject);
+    });
+    await waitForPath(`${interlock}.ready`);
+    chmodSync(dest, 0o600);
+    writeFileSync(`${interlock}.go`, 'go');
+    const result = await resultPromise;
+    assert.equal(result.ok, false);
+    assert.equal(readFileSync(dest, 'utf8'), 'old body\n');
+    assert.equal(statSync(dest).mode & 0o777, 0o600);
+  });
+
   it('cleans up its unique temp when publication fails', () => {
     const dir = tmpDir();
     const dest = join(dir, 'occupied-directory');
@@ -310,5 +358,35 @@ describe('writeFileAtomic', { concurrency: false }, () => {
       readdirSync(dir).filter((name) => name.includes('.cah-owned-remove')),
       ['repeated-three-party-remove.txt.cah-owned-remove'],
     );
+  });
+
+  it('reports missing-canonical recovery and sweeps only proven empty/owned artifacts', () => {
+    const dir = tmpDir();
+    const dest = join(dir, 'crashed.txt');
+    const quarantine = `${dest}.cah-owned-remove`;
+    const publication = `${dest}.cah-owned-publish`;
+    const temp = join(dir, '.cah-tmp-crashed-owned');
+    const foreignTemp = join(dir, '.cah-tmp-user-data');
+    mkdirSync(quarantine);
+    writeFileSync(join(quarantine, 'payload'), 'displaced data\n');
+    mkdirSync(publication);
+    writeFileSync(temp, 'owned temp\n');
+    writeFileSync(foreignTemp, 'user data\n');
+
+    const artifacts = enumerateRecoveryArtifacts(dir);
+    const displaced = artifacts.find((entry) => entry.path === join(quarantine, 'payload'));
+    assert.ok(displaced);
+    assert.equal(displaced.canonicalPresent, false);
+    assert.equal(displaced.displacedData, true);
+
+    const swept = sweepRecoveryArtifacts(dir, {
+      ownedPublicationPaths: [publication],
+      ownedTempPaths: [temp],
+    });
+    assert.ok(swept.swept.includes(temp));
+    assert.ok(!existsSync(temp));
+    assert.ok(existsSync(foreignTemp), 'unproven temp data must survive');
+    assert.ok(existsSync(join(quarantine, 'payload')));
+    assert.ok(!existsSync(publication), 'empty publication namespace is bounded cleanup');
   });
 });

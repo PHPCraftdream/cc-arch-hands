@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, lstatSync, rmdirSync, mkdtempSync, existsSync, symlinkSync, unlinkSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, lstatSync, rmdirSync, mkdtempSync, existsSync, symlinkSync, unlinkSync, chmodSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
@@ -247,6 +247,37 @@ describe('shared leaf publication', { concurrency: false }, () => {
       await assert.rejects(running, /destination leaf changed concurrently|refusing operation/);
       assert.equal(readFileSync(destination, 'utf8'), 'foreign successor\n');
       if (process.platform !== 'win32') assert.equal(statSync(destination).mode & 0o777, 0o640);
+    });
+  }
+
+  for (const [kind, install, leaf] of [
+    ['commands', (scope) => writeModelCommands(null, scope), ['.claude', 'commands', 'fl.md']],
+    ['agents', (scope) => writeModelAgents(null, scope), ['.claude', 'agents', 'fl.md']],
+    ['codex', (scope) => writeCodexAgents(null, scope), ['.codex', 'agents', 'lt.toml']],
+  ]) {
+    it(`${kind} rejects an in-place same-size edit with restored mtime and mode`, async () => {
+      const dir = tmpDir();
+      const scope = new Scope({ cwd: dir });
+      install(scope);
+      const destination = join(dir, ...leaf);
+      // Use an exact millisecond timestamp so restoring it is deterministic
+      // on Windows as well as POSIX; only the bytes differ at the interlock.
+      const restoredSeconds = 1_700_000_000;
+      utimesSync(destination, restoredSeconds, restoredSeconds);
+      const before = statSync(destination, { bigint: true });
+      const interlock = join(dir, `${kind}-leaf-digest-interlock`);
+      const running = runLeafWriterWorker(kind, dir, interlock);
+      await waitForPath(`${interlock}.ready`);
+      const original = readFileSync(destination);
+      const mutated = Buffer.from(original);
+      mutated[0] = mutated[0] === 0x58 ? 0x59 : 0x58;
+      writeFileSync(destination, mutated);
+      chmodSync(destination, Number(before.mode & 0o777n));
+      utimesSync(destination, restoredSeconds, restoredSeconds);
+      writeFileSync(`${interlock}.go`, 'go');
+
+      await assert.rejects(running, /destination leaf changed concurrently|refusing operation/);
+      assert.deepEqual(readFileSync(destination), mutated);
     });
   }
 });

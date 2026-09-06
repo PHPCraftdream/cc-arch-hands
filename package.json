@@ -19,7 +19,7 @@
     "LICENSE-APACHE"
   ],
   "scripts": {
-    "test": "node --test test/cli.test.js test/installer.test.js test/binstall.test.js test/checkpoint-hint.test.js test/clock.test.js test/stamp.test.js test/transcript-stats.test.js test/probe.test.js test/update-check.test.js test/gen-docs.test.js test/release-contract.test.js",
+    "test": "node --test --test-concurrency=1",
     "gen:docs": "node scripts/gen-docs.js",
     "gen:docs:check": "node scripts/gen-docs.js --check"
   },

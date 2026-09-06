@@ -15,7 +15,7 @@ import { readTranscriptStats, contextWindowLimit, readRateLimitsCache, validCont
 import {
   acquireLease, leaseOwned, pathIdentity, releaseLease, removePathIfUnchanged, samePathIdentity,
 } from '../lib/lease-lock.js';
-import { isOlderThan, sameFileIdentity } from '../lib/fsutil.js';
+import { isOlderThan } from '../lib/fsutil.js';
 
 const THRESHOLD = 0.9;
 const THRESHOLD_PCT = Math.round(THRESHOLD * 100);
@@ -49,14 +49,14 @@ function pruneStaleMarkers(markerDir, nowMs) {
     if (!MARKER_NAME_RE.test(name)) continue;
     const p = join(markerDir, name);
     try {
-      const stat = lstatSync(p, { bigint: true });
-      if (!stat.isFile()) continue;
+      const stat = pathIdentity(p);
+      if (!stat?.isFile) continue;
       if (isOlderThan(stat, nowMs, MARKER_TTL_MS)) {
         const claim = acquireMarkerClaim(p, nowMs);
         if (!claim) continue;
         try {
-          const current = lstatSync(p, { bigint: true });
-          if (current.isFile() && isOlderThan(current, nowMs, MARKER_TTL_MS)) {
+          const current = pathIdentity(p);
+          if (current?.isFile && isOlderThan(current, nowMs, MARKER_TTL_MS)) {
             removePathIfUnchanged(p, current, 'marker-remove');
           }
         } finally {
@@ -72,8 +72,8 @@ function pruneStaleMarkers(markerDir, nowMs) {
     if (!MARKER_NAME_RE.test(name)) continue;
     const p = join(markerDir, name);
     try {
-      const stat = lstatSync(p, { bigint: true });
-      if (stat.isFile()) fresh.push({ path: p, mtimeNs: stat.mtimeNs });
+      const stat = pathIdentity(p);
+      if (stat?.isFile) fresh.push({ path: p, mtimeNs: stat.mtimeNs });
     } catch { /* best effort */ }
   }
   fresh.sort((a, b) => a.mtimeNs === b.mtimeNs ? 0 : a.mtimeNs > b.mtimeNs ? -1 : 1);
@@ -82,8 +82,8 @@ function pruneStaleMarkers(markerDir, nowMs) {
       const claim = acquireMarkerClaim(entry.path, nowMs);
       if (!claim) continue;
       try {
-        const current = lstatSync(entry.path, { bigint: true });
-        if (current.isFile()) removePathIfUnchanged(entry.path, current, 'marker-remove');
+        const current = pathIdentity(entry.path);
+        if (current?.isFile) removePathIfUnchanged(entry.path, current, 'marker-remove');
       } finally {
         releaseMarkerClaim(claim);
       }
@@ -104,8 +104,8 @@ function isSafeCurrentMarkerName(name, prefix, sessionId) {
 
 function removeLegacyIfUnchanged(path, expected) {
   try {
-    const current = lstatSync(path, { bigint: true });
-    if (!current.isFile() || !sameFileIdentity(expected, current)) return false;
+    const current = pathIdentity(path);
+    if (!current?.isFile || !samePathIdentity(expected, current)) return false;
     unlinkSync(path);
     return true;
   } catch {
@@ -154,8 +154,8 @@ function migrateLegacyMarkers(home, markerDir, sessionId) {
     const source = join(legacyDir, name);
     let sourceStat;
     try {
-      sourceStat = lstatSync(source, { bigint: true });
-      if (!sourceStat.isFile()) continue;
+      sourceStat = pathIdentity(source);
+      if (!sourceStat?.isFile) continue;
     } catch {
       continue;
     }
@@ -225,9 +225,9 @@ function claimMarker(markerDir, sessionId, nowMs) {
   try {
     mkdirSync(markerDir, { recursive: true });
     try {
-      const markerStat = lstatSync(marker, { bigint: true });
-      if (!markerStat.isFile()) return null;
-      if (!isOlderThan(markerStat, nowMs, MARKER_TTL_MS)) return null;
+      const markerStat = pathIdentity(marker);
+      if (markerStat && !markerStat.isFile) return null;
+      if (markerStat && !isOlderThan(markerStat, nowMs, MARKER_TTL_MS)) return null;
     } catch (error) {
       if (!error || error.code !== 'ENOENT') return null;
     }
@@ -235,16 +235,16 @@ function claimMarker(markerDir, sessionId, nowMs) {
     if (!claim) return null;
     try {
       try {
-        const markerStat = lstatSync(marker, { bigint: true });
-        if (!markerStat.isFile()) {
+        const markerStat = pathIdentity(marker);
+        if (markerStat && !markerStat.isFile) {
           releaseMarkerClaim(claim);
           return null;
         }
-        if (!isOlderThan(markerStat, nowMs, MARKER_TTL_MS)) {
+        if (markerStat && !isOlderThan(markerStat, nowMs, MARKER_TTL_MS)) {
           releaseMarkerClaim(claim);
           return null;
         }
-        if (!removePathIfUnchanged(marker, markerStat, 'marker-remove')) {
+        if (markerStat && !removePathIfUnchanged(marker, markerStat, 'marker-remove')) {
           releaseMarkerClaim(claim);
           return null;
         }

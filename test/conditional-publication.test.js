@@ -49,8 +49,8 @@ function runWrite(dest, interlock, payload, expected = true) {
   });
 }
 
-describe('conditional publication fence', () => {
-  it('keeps C when it appears in the vacancy and preserves old/temp', async () => {
+describe('conditional atomic publication', () => {
+  it('keeps the old leaf visible until atomic rename, then publishes new', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cah-conditional-'));
     const dest = join(dir, 'leaf');
     const interlock = join(dir, 'interlock');
@@ -58,33 +58,30 @@ describe('conditional publication fence', () => {
 
     const running = runWrite(dest, interlock, 'new\n');
     await waitForPath(`${interlock}.ready`);
-    assert.equal(existsSync(dest), false, 'the expected leaf must be fenced before final publication');
-    writeFileSync(dest, 'C\n');
-    writeFileSync(`${interlock}.go`, 'go');
-
-    const result = await running;
-    assert.equal(result.ok, false);
-    assert.equal(readFileSync(dest, 'utf8'), 'C\n');
-    assert.equal(readFileSync(`${dest}.cah-owned-publish/old`, 'utf8'), 'B\n');
-    assert.ok(readdirSync(dir).some((name) => name.startsWith('.cah-tmp-')));
-    assert.ok(existsSync(`${dest}.cah-owned-publish`));
-  });
-
-  it('does not discard an in-place mutation of the fenced old inode', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-conditional-'));
-    const dest = join(dir, 'leaf');
-    const interlock = join(dir, 'interlock');
-    writeFileSync(dest, 'B\n');
-
-    const running = runWrite(dest, interlock, 'new\n');
-    await waitForPath(`${interlock}.ready`);
-    writeFileSync(`${dest}.cah-owned-publish/old`, 'mutated old\n');
+    assert.equal(readFileSync(dest, 'utf8'), 'B\n', 'publication must not create a canonical vacancy');
     writeFileSync(`${interlock}.go`, 'go');
 
     const result = await running;
     assert.equal(result.ok, true);
     assert.equal(readFileSync(dest, 'utf8'), 'new\n');
-    assert.equal(readFileSync(`${dest}.cah-owned-publish/old`, 'utf8'), 'mutated old\n');
+    assert.equal(readdirSync(dir).some((name) => name.startsWith('.cah-tmp-')), false);
+    assert.equal(existsSync(`${dest}.cah-owned-publish`), false);
+  });
+
+  it('aborts when the expected leaf changes in place before rename', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-conditional-'));
+    const dest = join(dir, 'leaf');
+    const interlock = join(dir, 'interlock');
+    writeFileSync(dest, 'B\n');
+
+    const running = runWrite(dest, interlock, 'new\n');
+    await waitForPath(`${interlock}.ready`);
+    writeFileSync(dest, 'mutated old\n');
+    writeFileSync(`${interlock}.go`, 'go');
+
+    const result = await running;
+    assert.equal(result.ok, false);
+    assert.equal(readFileSync(dest, 'utf8'), 'mutated old\n');
   });
 
   it('does not overwrite C when the expected leaf was missing', async () => {

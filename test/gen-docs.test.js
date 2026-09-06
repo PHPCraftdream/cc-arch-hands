@@ -26,6 +26,19 @@ const EXPECTED_SHARED_LIB_LEAVES = [
   'lib/transcript-stats.js',
   'lib/update-check.js',
 ];
+const EXPECTED_PUBLICATION_ORDER = [
+  'package.json',
+  'lib/sentinel.js',
+  'lib/fs-atomic.js',
+  'lib/fsutil.js',
+  'lib/lease-lock.js',
+  'lib/transcript-stats.js',
+  'lib/update-check.js',
+  'bin/cah-checkpoint-hint.js',
+  'bin/cah-status.js',
+  'bin/cah-stamp.js',
+  'bin/cah-status-probe.js',
+];
 
 function sorted(values) {
   return [...values].sort();
@@ -80,6 +93,18 @@ describe('gen-docs --check', () => {
       assert.ok(CLAUDE.includes(leaf) || CLAUDE.includes(leaf.slice(leaf.indexOf('/') + 1)),
         `CLAUDE.md must name installed runtime leaf ${leaf}`);
     }
+  });
+
+  it('keeps companion publication dependency-first', () => {
+    assert.deepEqual(
+      BinFiles.map((file) => file.dest),
+      EXPECTED_PUBLICATION_ORDER,
+    );
+    assert.match(
+      README,
+      /package\.json[\s\S]*sentinel\.js[\s\S]*fs-atomic\.js[\s\S]*fsutil\.js[\s\S]*lease-lock\.js[\s\S]*transcript-stats\.js[\s\S]*update-check\.js[\s\S]*executable leaves/,
+      'README.md must describe the dependency-first runtime closure',
+    );
   });
 
   it('defines exactly six collision-free Astra Codex agents', () => {

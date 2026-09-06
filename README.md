@@ -40,6 +40,10 @@ The installed companion tree also contains a managed `package.json` with
 `"type": "module"`. This explicit ESM boundary keeps the copied `.js` files
 working on the package's supported Node 18 runtime. A pre-existing foreign
 `~/.claude/cah-bin/package.json` is preserved and reported as foreign.
+Updates publish that package boundary first, then `sentinel.js`, `fs-atomic.js`,
+`fsutil.js`, `lease-lock.js`, `transcript-stats.js` and `update-check.js`, and
+only then replace executable leaves. This dependency-first closure keeps a new
+executable from becoming visible before its complete sibling dependency chain.
 
 The companion runtime bins:
 - **`cah-checkpoint-hint`** — Stop hook bin invoked by `/checkpoint-watch`. Emits one `[hint] Context at 90%…` per session when context fills past 90%.
