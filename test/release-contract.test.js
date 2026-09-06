@@ -19,6 +19,7 @@ function read(name) {
 }
 
 const CHECKPOINT_SKILL = read('templates/skills/ccheckpoint/SKILL.md');
+const RESUME_SKILL = read('templates/skills/resume/SKILL.md');
 const CHECKPOINT_BLOCK = CHECKPOINT_SKILL.match(/```bash\n([\s\S]*?)```/)[1];
 const SAFE_CHECKPOINT_BASENAME = /^[a-z0-9]+(?:-[a-z0-9]+)*\.md$/;
 const BASH = process.platform === 'win32'
@@ -346,9 +347,15 @@ describe('release and generated-doc contracts', () => {
     }
   });
 
-  it('checkpoint and ccheckpoint resolve a linked worktree as the caller repo', () => {
+  it('checkpoint, ccheckpoint, and resume resolve a linked worktree as the caller repo', () => {
     assert.match(CHECKPOINT_SKILL, /git rev-parse --show-toplevel/);
     assert.match(CHECKPOINT_SKILL, /linked worktree's `.git` file/);
+    assert.match(RESUME_SKILL, /git rev-parse --show-toplevel/);
+    assert.match(RESUME_SKILL, /linked worktree's `.git` file/);
+    assert.doesNotMatch(RESUME_SKILL, /if a `.git` directory exists in the current working directory or any parent/);
+    assert.match(RESUME_SKILL, /otherwise \(only when the command fails or returns an empty path/);
+    assert.match(RESUME_SKILL, /Exact filename match \(with or without `\.md`\): take it/);
+    assert.match(RESUME_SKILL, /sort every `\.md` in the directory by filesystem mtime descending/);
 
     const parentRepo = makeCheckpointRepo('cah-ccheckpoint-linked-parent-');
     const worktree = mkdtempSync(join(tmpdir(), 'cah-ccheckpoint-linked-worktree-'));
@@ -378,6 +385,12 @@ describe('release and generated-doc contracts', () => {
       assert.equal(runGit(worktree, ['diff', '--name-only', '--', 'docs/checkpoints/state.md']), '');
       assert.equal(runGit(worktree, ['diff', '--cached', '--name-only', '--', 'docs/checkpoints/state.md']), '');
       assert.equal(existsSync(`${gitPath(worktree, 'index')}.lock`), false);
+
+      const resumeRepoRoot = runGit(worktree, ['rev-parse', '--show-toplevel']);
+      const resumeCheckpoint = join(resumeRepoRoot, 'docs', 'checkpoints', 'state.md');
+      assert.equal(resumeRepoRoot.replaceAll('\\', '/'), worktree.replaceAll('\\', '/'));
+      assert.equal(readFileSync(resumeCheckpoint, 'utf8'), 'linked worktree update\n');
+      assert.equal(readFileSync(join(parentRepo, 'docs', 'checkpoints', 'state.md'), 'utf8'), 'parent must stay untouched\n');
     } finally {
       try {
         runGit(parentRepo, ['worktree', 'remove', '--force', worktree]);

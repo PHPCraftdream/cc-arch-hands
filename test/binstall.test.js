@@ -45,6 +45,7 @@ function fakeSource(root) {
   writeFileSync(join(root, 'lib', 'transcript-stats.js'), 'export const x = 1;\n');
   writeFileSync(join(root, 'lib', 'update-check.js'), 'export const y = 1;\n');
   writeFileSync(join(root, 'lib', 'lease-lock.js'), 'export const lease = 1;\n');
+  writeFileSync(join(root, 'lib', 'marker-state.js'), 'export const marker = 1;\n');
   writeFileSync(join(root, 'lib', 'fsutil.js'), 'export const z = 1;\n');
   writeFileSync(join(root, 'lib', 'fs-atomic.js'), 'export const atomic = 1;\n');
   writeFileSync(join(root, 'lib', 'sentinel.js'), 'export const sentinel = 1;\n');
@@ -83,6 +84,7 @@ function runBinWorker(
   interlock,
   phase = 'prune-before-remove',
   operation = 'writeBins',
+  leaseMs = null,
 ) {
   const moduleUrl = new URL('../lib/binstall.js', import.meta.url).href;
   const source = `
@@ -91,17 +93,40 @@ function runBinWorker(
       process.env.CAH_TEST_ONLY = '1';
       process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK = workerData.interlock;
       process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE = workerData.phase;
+      if (workerData.leaseMs !== null) {
+        process.env.CAH_TEST_ONLY_BIN_LEASE_MS = String(workerData.leaseMs);
+      }
       const { writeBins, removeBins } = await import(workerData.moduleUrl);
       const operation = workerData.operation === 'removeBins' ? removeBins : writeBins;
-      parentPort.postMessage(operation(workerData.dst, workerData.src));
+      try {
+        parentPort.postMessage(operation(workerData.dst, workerData.src));
+      } catch (error) {
+        parentPort.postMessage({
+          __workerError: {
+            name: error?.name,
+            message: error?.message,
+            code: error?.code,
+          },
+        });
+      }
     })().catch((error) => { setImmediate(() => { throw error; }); });
   `;
   return new Promise((resolvePromise, reject) => {
     const worker = new Worker(source, {
       eval: true,
-      workerData: { dst, src, interlock, phase, operation, moduleUrl },
+      workerData: { dst, src, interlock, phase, operation, leaseMs, moduleUrl },
     });
-    worker.once('message', resolvePromise);
+    worker.once('message', (value) => {
+      if (!value?.__workerError) {
+        resolvePromise(value);
+        return;
+      }
+      const error = new Error(value.__workerError.message);
+      error.name = value.__workerError.name || 'Error';
+      if (value.__workerError.code) error.code = value.__workerError.code;
+      if (leaseMs !== null) resolvePromise(error);
+      else reject(error);
+    });
     worker.once('error', reject);
     worker.once('exit', (code) => {
       if (code !== 0) reject(new Error(`bin worker exited with code ${code}`));
@@ -688,6 +713,93 @@ describe('writeBins', () => {
     const result = await removing;
     assert.equal(result.removed, BinFiles.length);
     assert.ok(!existsSync(join(dst, 'package.json')), 'uninstall should finish as one serialized operation');
+  });
+
+  it('aborts an expired install resume with a truthful lost-lease error', async () => {
+    const interlock = join(dst, 'expired-install-resume-interlock');
+    const installing = runBinWorker(
+      dst, src, interlock, 'binstall-after-boundary', 'writeBins', 500,
+    );
+    await waitForPath(`${interlock}.ready`);
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 700));
+    writeFileSync(`${interlock}.go`, 'go');
+
+    const failure = await installing;
+    assert.equal(failure?.code, 'ERR_BIN_LIFECYCLE_LEASE_LOST');
+    assert.match(failure?.message || '', /lease lost/);
+    assert.ok(existsSync(join(dst, 'package.json')), 'expired owner must not roll back its successor boundary');
+    assert.ok(!existsSync(join(dst, 'lib', 'sentinel.js')), 'expired owner must stop before publishing leaves');
+  });
+
+  it('does not roll back a successor uninstall after an expired install pauses', async () => {
+    const interlock = join(dst, 'expired-install-uninstall-interlock');
+    const installing = runBinWorker(
+      dst, src, interlock, 'binstall-after-boundary', 'writeBins', 500,
+    );
+    await waitForPath(`${interlock}.ready`);
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 700));
+    const expiredOwnerPath = join(binLifecycleLockPath(dst), 'owner.json');
+    const expiredOwner = JSON.parse(readFileSync(expiredOwnerPath, 'utf8'));
+    expiredOwner.timestamp = Date.now() - 1000;
+    writeFileSync(expiredOwnerPath, JSON.stringify(expiredOwner) + '\n');
+
+    const priorTestOnly = process.env.CAH_TEST_ONLY;
+    const priorLeaseMs = process.env.CAH_TEST_ONLY_BIN_LEASE_MS;
+    process.env.CAH_TEST_ONLY = '1';
+    process.env.CAH_TEST_ONLY_BIN_LEASE_MS = '500';
+    let successor;
+    for (let attempt = 0; attempt < 8 && !successor; attempt += 1) {
+      try { successor = removeBins(dst); } catch (error) {
+        if (error?.name !== 'BinLifecycleBusyError' || attempt === 7) throw error;
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+      }
+    }
+    if (priorTestOnly === undefined) delete process.env.CAH_TEST_ONLY;
+    else process.env.CAH_TEST_ONLY = priorTestOnly;
+    if (priorLeaseMs === undefined) delete process.env.CAH_TEST_ONLY_BIN_LEASE_MS;
+    else process.env.CAH_TEST_ONLY_BIN_LEASE_MS = priorLeaseMs;
+    assert.equal(successor.removed, 1, 'successor uninstall removes the paused install boundary');
+    writeFileSync(`${interlock}.go`, 'go');
+    const failure = await installing;
+    assert.match(failure?.message || '', /lease lost/);
+    assert.ok(!existsSync(join(dst, 'package.json')), 'successor uninstall must remain authoritative');
+  });
+
+  it('does not remove a successor install after an expired uninstall pauses', async () => {
+    writeBins(dst, src);
+    const interlock = join(dst, 'expired-uninstall-install-interlock');
+    const removing = runBinWorker(
+      dst, src, interlock, 'binstall-before-leaf-remove', 'removeBins', 500,
+    );
+    await waitForPath(`${interlock}.ready`);
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 700));
+    const expiredOwnerPath = join(binLifecycleLockPath(dst), 'owner.json');
+    const expiredOwner = JSON.parse(readFileSync(expiredOwnerPath, 'utf8'));
+    expiredOwner.timestamp = Date.now() - 1000;
+    writeFileSync(expiredOwnerPath, JSON.stringify(expiredOwner) + '\n');
+
+    const priorTestOnly = process.env.CAH_TEST_ONLY;
+    const priorLeaseMs = process.env.CAH_TEST_ONLY_BIN_LEASE_MS;
+    process.env.CAH_TEST_ONLY = '1';
+    process.env.CAH_TEST_ONLY_BIN_LEASE_MS = '500';
+    let successor;
+    for (let attempt = 0; attempt < 8 && !successor; attempt += 1) {
+      try { successor = writeBins(dst, src); } catch (error) {
+        if (error?.name !== 'BinLifecycleBusyError' || attempt === 7) throw error;
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+      }
+    }
+    if (priorTestOnly === undefined) delete process.env.CAH_TEST_ONLY;
+    else process.env.CAH_TEST_ONLY = priorTestOnly;
+    if (priorLeaseMs === undefined) delete process.env.CAH_TEST_ONLY_BIN_LEASE_MS;
+    else process.env.CAH_TEST_ONLY_BIN_LEASE_MS = priorLeaseMs;
+    assert.equal(successor.written, BinFiles.length);
+    writeFileSync(`${interlock}.go`, 'go');
+    const failure = await removing;
+    assert.match(failure?.message || '', /lease lost/);
+    for (const file of BinFiles) {
+      assert.ok(existsSync(join(dst, file.dest)), `${file.dest} from successor install must survive`);
+    }
   });
 
   it('smoke-runs every installed companion binary from the mirrored tree', () => {

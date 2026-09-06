@@ -22,6 +22,7 @@ const EXPECTED_SHARED_LIB_LEAVES = [
   'lib/fs-atomic.js',
   'lib/fsutil.js',
   'lib/lease-lock.js',
+  'lib/marker-state.js',
   'lib/sentinel.js',
   'lib/transcript-stats.js',
   'lib/update-check.js',
@@ -32,6 +33,7 @@ const EXPECTED_PUBLICATION_ORDER = [
   'lib/fs-atomic.js',
   'lib/fsutil.js',
   'lib/lease-lock.js',
+  'lib/marker-state.js',
   'lib/transcript-stats.js',
   'lib/update-check.js',
   'bin/cah-checkpoint-hint.js',
@@ -102,7 +104,7 @@ describe('gen-docs --check', () => {
     );
     assert.match(
       README,
-      /package\.json[\s\S]*sentinel\.js[\s\S]*fs-atomic\.js[\s\S]*fsutil\.js[\s\S]*lease-lock\.js[\s\S]*transcript-stats\.js[\s\S]*update-check\.js[\s\S]*executable leaves/,
+      /package\.json[\s\S]*sentinel\.js[\s\S]*fs-atomic\.js[\s\S]*fsutil\.js[\s\S]*lease-lock\.js[\s\S]*marker-state\.js[\s\S]*transcript-stats\.js[\s\S]*update-check\.js[\s\S]*executable leaves/,
       'README.md must describe the dependency-first runtime closure',
     );
   });

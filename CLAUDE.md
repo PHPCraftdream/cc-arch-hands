@@ -62,7 +62,7 @@ wrong turn.
 **The `bins` install class (since 0.4.0).** `cah install` copies the four
 companion runtime bins and their shared library leaves
 (`lib/transcript-stats.js`, `lib/update-check.js`, `lib/lease-lock.js`,
-`lib/fsutil.js`, `lib/fs-atomic.js`, and `lib/sentinel.js`) into
+`lib/marker-state.js`, `lib/fsutil.js`, `lib/fs-atomic.js`, and `lib/sentinel.js`) into
 `~/.claude/cah-bin/`, mirroring the package's `bin/` + `lib/` layout so
 the bins' relative imports resolve unchanged. `settings.json` then references
 them by absolute path (`node "<HOME>/.claude/cah-bin/bin/cah-status.js"`)
@@ -80,8 +80,9 @@ SKILL.md migrate a pre-0.4.0 bare-name `command` to the absolute path on
 re-run.**
 
 Publication is dependency-first: the managed package boundary, `sentinel.js`,
-`fs-atomic.js`, `fsutil.js`, `lease-lock.js`, `transcript-stats.js`, and
-`update-check.js` are replaced before any executable bin. A new executable is
+`fs-atomic.js`, `fsutil.js`, `lease-lock.js`, `marker-state.js`,
+`transcript-stats.js`, and `update-check.js` are replaced before any executable
+bin. A new executable is
 never exposed before its complete mirrored dependency chain is present.
 
 ## Key files
@@ -101,6 +102,7 @@ never exposed before its complete mirrored dependency chain is present.
 | `lib/fsutil.js` | Read/list/prune helpers plus compatibility re-exports for filesystem primitives |
 | `lib/fs-atomic.js` | Atomic publication, exact BigInt identities, quarantine, and conditional removal |
 | `lib/transcript-stats.js` | Shared transcript walker + status-line formatter for all hook bins |
+| `lib/marker-state.js` | Shared marker migration, claims, and bounded capacity transactions for hook bins |
 | `lib/update-check.js` | `CURRENT_VERSION`, `isNewerVersion`, `getLatestVersion` — TTL-cached npm registry check shared by `cah-status`/`cah-stamp` |
 | `lib/commands.js` | `writeModelCommands` / `removeModelCommands` |
 | `lib/agents.js` | `writeModelAgents` / `removeModelAgents`, git-safety & test-scope clauses |

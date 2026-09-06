@@ -18,7 +18,7 @@ The other half of `/checkpoint`. Reads a saved snapshot of session state and res
 
 ## Behavior
 
-1. **Locate the checkpoint directory.** Use `<repo-root>/docs/checkpoints/` if a `.git` directory exists in the current working directory or any parent; otherwise fall back to `~/.claude/checkpoints/`.
+1. **Locate the checkpoint directory.** From the caller's original working directory, run `git rev-parse --show-toplevel`. If it succeeds with a non-empty path, use that path as `<repo-root>` and read `<repo-root>/docs/checkpoints/`; otherwise (only when the command fails or returns an empty path, meaning the caller is outside any Git repository) fall back to `~/.claude/checkpoints/`. Use Git's repository discovery rather than inspecting `.git` or walking parent directories yourself: this handles both a normal `.git` directory and a linked worktree's `.git` file without accidentally selecting the parent repository.
 2. **`--list` mode.** Read the directory, sort by mtime descending, and print a table: name, size, mtime, first-line title from the file. Then stop — do NOT restore.
 3. **Resolve the target file.** With no argument: sort every `.md` in the directory by filesystem mtime descending and pick the first — the actual disk write time, not any timestamp embedded in the filename (named checkpoints like `pre-refactor.md` carry no filename timestamp at all, so mtime is the only signal that works for both auto-named and named files). With an argument:
    - Exact filename match (with or without `.md`): take it.

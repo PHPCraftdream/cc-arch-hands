@@ -1,12 +1,16 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  existsSync,
+  mkdirSync,
   lstatSync,
   readFileSync,
+  readdirSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
 import {
@@ -204,9 +208,70 @@ describe('readRateLimitsCache', () => {
     assert.equal(a.contextWindowSize, 1_000_000);
     assert.equal(b.contextWindowSize, 200_000);
     assert.equal(b.fiveHour.used, 10);
-    assert.match(rateLimitsContextPath(path, sessionA), /\.context-[a-f0-9]{64}\.json$/);
+    assert.match(rateLimitsContextPath(path, sessionA), /[\\/]rate-context[\\/][a-f0-9]{64}\.json$/);
     assert.notEqual(rateLimitsContextPath(path, sessionA), rateLimitsContextPath(path, sessionB));
     assert.doesNotMatch(rateLimitsContextPath(path, sessionA), /\.\.\/|a{20}/);
+  });
+
+  it('directly migrates the current legacy sidecar and keeps the newer collision', () => {
+    const dir = isolatedDir();
+    const path = join(dir, 'rate-limits.json');
+    const session = 'legacy-current-session';
+    const hash = createHash('sha256').update(`string:${session}`).digest('hex');
+    const legacy = `${path}.context-${hash}.json`;
+    const target = rateLimitsContextPath(path, session);
+    mkdirSync(join(dir, 'rate-context'), { recursive: true });
+
+    writeFileSync(legacy, JSON.stringify({
+      version: 1, contextWindowSize: 1_000_000, capturedAt: 200,
+    }));
+    writeFileSync(target, JSON.stringify({
+      version: 1, contextWindowSize: 200_000, capturedAt: 100,
+    }));
+    const migrated = readRateLimitsCache(path, 201, session);
+    assert.equal(migrated.contextWindowSize, 1_000_000);
+    assert.equal(existsSync(legacy), false, 'newer legacy state must be consumed');
+    assert.equal(JSON.parse(readFileSync(target, 'utf8')).contextWindowSize, 1_000_000);
+
+    writeFileSync(legacy, JSON.stringify({
+      version: 1, contextWindowSize: 1_000_000, capturedAt: 150,
+    }));
+    const retained = readRateLimitsCache(path, 201, session);
+    assert.equal(retained.contextWindowSize, 1_000_000);
+    assert.equal(existsSync(legacy), false, 'older legacy collision must be removed safely');
+    assert.equal(JSON.parse(readFileSync(target, 'utf8')).capturedAt, 200);
+  });
+
+  it('keeps unrelated cache files outside bounded rate-context maintenance', () => {
+    const dir = isolatedDir();
+    const path = join(dir, 'rate-limits.json');
+    for (let i = 0; i < 2_000; i++) {
+      writeFileSync(join(dir, `unrelated-${i}.json`), 'foreign\n');
+    }
+
+    persistRateLimitsCache(path, null, null, null, 1_000_000, 'bounded-session', Date.now());
+
+    assert.equal(readdirSync(dir).filter((name) => name.startsWith('unrelated-')).length, 2_000);
+    assert.equal(readdirSync(join(dir, 'rate-context')).length, 1);
+  });
+
+  it('caps fresh rate-context namespace entries', () => {
+    const dir = isolatedDir();
+    const path = join(dir, 'rate-limits.json');
+    const namespace = join(dir, 'rate-context');
+    const now = Date.now();
+    mkdirSync(namespace, { recursive: true });
+    for (let i = 0; i < 100; i++) {
+      const session = `preexisting-${i}`;
+      const hash = createHash('sha256').update(`string:${session}`).digest('hex');
+      writeFileSync(join(namespace, `${hash}.json`), JSON.stringify({
+        version: 1, contextWindowSize: 200_000, capturedAt: now,
+      }));
+    }
+
+    persistRateLimitsCache(path, null, null, null, 200_000, 'capacity-session', now);
+
+    assert.ok(readdirSync(namespace).length <= 64);
   });
 
   it('expires a rate slot that disappears while preserving session context', () => {
