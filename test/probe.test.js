@@ -55,6 +55,7 @@ async function waitForPath(path) {
 
 function runProbeWorker(action, paths, interlock, phase, fsInterlock = null, fsPhase = null) {
   const probeUrl = new URL('../lib/probe.js', import.meta.url).href;
+  const hooksUrl = new URL('../test-support/interlocks.js', import.meta.url).href;
   const source = `
     const { parentPort, workerData } = require('node:worker_threads');
     (async () => {
@@ -65,9 +66,11 @@ function runProbeWorker(action, paths, interlock, phase, fsInterlock = null, fsP
         process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK = workerData.fsInterlock;
         process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE = workerData.fsPhase;
       }
+      const { makeInterlock } = await import(workerData.hooksUrl);
+      const testInterlock = makeInterlock(process.env);
       const probe = await import(workerData.probeUrl);
       try {
-        const value = probe[workerData.action](workerData.paths);
+        const value = probe[workerData.action](workerData.paths, { testInterlock });
         parentPort.postMessage({ ok: true, value });
       } catch (error) {
         parentPort.postMessage({ ok: false, name: error.name, message: error.message });
@@ -77,7 +80,7 @@ function runProbeWorker(action, paths, interlock, phase, fsInterlock = null, fsP
   return new Promise((resolve, reject) => {
     const worker = new Worker(source, {
       eval: true,
-      workerData: { action, paths, interlock, phase, fsInterlock, fsPhase, probeUrl },
+      workerData: { action, paths, interlock, phase, fsInterlock, fsPhase, probeUrl, hooksUrl },
     });
     worker.once('message', resolve);
     worker.once('error', reject);

@@ -9,22 +9,23 @@ import { createHash } from 'node:crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BIN = join(__dirname, '..', 'bin', 'cah-checkpoint-hint.js');
+const RUNNER = join(__dirname, '..', 'test-support', 'run-companion.js');
 
 // Spawn the bin as a black box: feed `stdinJson` (already a string), point
 // CAH_HINT_HOME at an isolated home, and capture stdout/exit code.
 function runHint(stdin, home, extraEnv = {}) {
-  const res = spawnSync(process.execPath, [BIN], {
+  const res = spawnSync(process.execPath, [RUNNER, 'hint'], {
     input: stdin,
     encoding: 'utf8',
-    env: { ...process.env, CAH_HINT_HOME: home, ...extraEnv },
+    env: { ...process.env, CAH_TEST_ONLY: '0', CAH_HINT_HOME: home, ...extraEnv },
   });
   return { stdout: res.stdout, status: res.status };
 }
 
 function runHintAsync(stdin, home, extraEnv = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [BIN], {
-      env: { ...process.env, CAH_HINT_HOME: home, ...extraEnv },
+    const child = spawn(process.execPath, [RUNNER, 'hint'], {
+      env: { ...process.env, CAH_TEST_ONLY: '0', CAH_HINT_HOME: home, ...extraEnv },
       stdio: ['pipe', 'pipe', 'ignore'],
     });
     let stdout = '';
@@ -159,6 +160,18 @@ describe('cah-checkpoint-hint bin', () => {
     const result = runHint(JSON.stringify({ session_id: 'empty-transaction', transcript_path: tp }), home);
     assert.equal(result.stdout, EXPECTED);
     assert.equal(existsSync(transactionDir), false);
+  });
+
+  it('reconciles an empty crash-left capacity transaction stage directory', () => {
+    const home = isolatedHome();
+    const markerDir = cacheDir(home);
+    mkdirSync(markerDir, { recursive: true });
+    const stageDir = join(dirname(markerDir), '.hint-markers-capacity-transaction-stage-crashed');
+    mkdirSync(stageDir);
+    const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+    const result = runHint(JSON.stringify({ session_id: 'staged-transaction', transcript_path: tp }), home);
+    assert.equal(result.stdout, EXPECTED);
+    assert.equal(existsSync(stageDir), false);
   });
 
   it('preserves unexpected capacity transaction content as indeterminate', () => {
@@ -826,5 +839,23 @@ describe('cah-checkpoint-hint bin', () => {
     assert.equal(result.stdout, EXPECTED);
     assert.equal(readdirSync(root).filter((name) => name.startsWith('unrelated-')).length, 500);
     assert.equal(markerExists(home, 'huge-unrelated-cache'), true);
+  });
+
+  it('does not publish the marker migration sentinel after a truncated legacy scan', () => {
+    const home = isolatedHome();
+    const root = join(home, '.claude', 'cah-bin', 'cache');
+    mkdirSync(root, { recursive: true });
+    for (let i = 0; i < 220; i += 1) writeFileSync(join(root, `legacy-overflow-${i}`), 'foreign');
+    const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+    const first = runHint(JSON.stringify({ session_id: 'bounded-marker-scan-a', transcript_path: tp }), home);
+    assert.equal(first.stdout, EXPECTED);
+    const sentinel = join(cacheDir(home), '.migration-v1');
+    assert.equal(existsSync(sentinel), false);
+    for (const name of readdirSync(root).filter((name) => name.startsWith('legacy-overflow-'))) {
+      unlinkSync(join(root, name));
+    }
+    const second = runHint(JSON.stringify({ session_id: 'bounded-marker-scan-b', transcript_path: tp }), home);
+    assert.equal(second.stdout, EXPECTED);
+    assert.equal(existsSync(sentinel), true);
   });
 });

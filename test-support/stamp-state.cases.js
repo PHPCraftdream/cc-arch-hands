@@ -132,6 +132,52 @@ export function registerStampStateCases() {
     assert.equal(JSON.parse(readFileSync(sidecar, 'utf8')).deliveryState, 'delivered');
   });
 
+  it('does not overwrite a successor when a paused stamp loses its lease', async () => {
+    const dir = isolatedDir();
+    const tp = join(dir, 'transcript.jsonl');
+    writeFileSync(tp, JSON.stringify({
+      type: 'assistant', requestId: 'stale-request',
+      message: { role: 'assistant', model: 'claude-opus-4-7', usage: { input_tokens: 46_000 } },
+    }) + '\n');
+    const throttle = join(dir, 'last-stamp.json');
+    const sessionId = 'stamp-lease-loss-publication';
+    const interlock = join(dir, 'stamp-publication-interlock');
+    const env = {
+      CAH_STAMP_THROTTLE_PATH: throttle,
+      CAH_STAMP_MIN_INTERVAL_MS: '1',
+      CAH_STAMP_OWNER_MAX_LEASE_MS: '100',
+      CAH_TEST_ONLY: '1',
+      CAH_TEST_ONLY_FSUTIL_INTERLOCK: interlock,
+      CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE: 'write-before-final-publication',
+    };
+    const paused = runStampAsync(
+      { session_id: sessionId, transcript_path: tp }, env,
+    );
+    await waitForPath(`${interlock}.ready`);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    writeFileSync(tp, JSON.stringify({
+      type: 'assistant', requestId: 'successor-request',
+      message: { role: 'assistant', model: 'claude-opus-4-7', usage: { input_tokens: 47_000 } },
+    }) + '\n');
+    const successor = runStamp(
+      { session_id: sessionId, transcript_path: tp },
+      {
+        CAH_STAMP_THROTTLE_PATH: throttle,
+        CAH_STAMP_MIN_INTERVAL_MS: '1',
+        CAH_STAMP_OWNER_MAX_LEASE_MS: '100',
+        CAH_TEST_ONLY: '1',
+      },
+    );
+    assert.ok(successor.stdout.trim(), 'successor must publish while the stale hook is paused');
+    writeFileSync(`${interlock}.go`, 'go');
+    const stale = await paused;
+    assert.equal(stale.stdout, '', 'stale hook must stop after losing its lease');
+    const state = JSON.parse(readFileSync(stampSidecarPath(throttle, sessionId), 'utf8'));
+    assert.equal(state.deliveryState, 'delivered');
+    assert.equal(state.lastStampedRequestId,
+      createHash('sha256').update('successor-request', 'utf8').digest('hex'));
+  });
+
   it('per-message dedup: different requestId → new stamp emits (past throttle)', () => {
     const dir = isolatedDir();
     const tp = join(dir, 'transcript.jsonl');
@@ -278,6 +324,29 @@ export function registerStampStateCases() {
     const result = await running;
     assert.ok(result.stdout.trim());
     assert.equal(readFileSync(capacityTarget, 'utf8'), 'fresh-capacity-successor');
+  });
+
+  it('does not publish the stamp migration sentinel after a truncated legacy scan', () => {
+    const dir = isolatedDir();
+    const throttle = join(dir, 'last-stamp.json');
+    const tp = writeTranscript(dir, 'claude-opus-4-7', 46_000);
+    for (let i = 0; i < 220; i += 1) writeFileSync(join(dir, `stamp-legacy-overflow-${i}`), 'foreign');
+    const first = runStamp(
+      { session_id: 'bounded-stamp-scan-a', transcript_path: tp },
+      { CAH_STAMP_THROTTLE_PATH: throttle, CAH_STAMP_HINT_HOME: dir, CAH_STAMP_MIN_INTERVAL_MS: '1' },
+    );
+    assert.ok(first.stdout.trim());
+    const sentinel = join(dir, 'stamp-state', '.migration-v1');
+    assert.equal(existsSync(sentinel), false);
+    for (const name of readdirSync(dir).filter((name) => name.startsWith('stamp-legacy-overflow-'))) {
+      unlinkSync(join(dir, name));
+    }
+    const second = runStamp(
+      { session_id: 'bounded-stamp-scan-b', transcript_path: tp },
+      { CAH_STAMP_THROTTLE_PATH: throttle, CAH_STAMP_HINT_HOME: dir, CAH_STAMP_MIN_INTERVAL_MS: '1' },
+    );
+    assert.ok(second.stdout.trim());
+    assert.equal(existsSync(sentinel), true);
   });
 
   it('sidecar pruning ignores directories, links, and multiply-linked files', (t) => {

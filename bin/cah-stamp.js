@@ -3,6 +3,7 @@
 
 import { readFileSync, writeFileSync, writeSync, mkdirSync, statSync, lstatSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import {
@@ -11,7 +12,7 @@ import {
 } from '../lib/transcript-stats.js';
 import { CURRENT_VERSION, getLatestVersion, isNewerVersion } from '../lib/update-check.js';
 import { captureRegularFileSnapshot, isOlderThan, writeFileAtomic } from '../lib/fsutil.js';
-import { acquireLease, leaseOwned, pathIdentity, releaseLease, streamDirectoryEntries,
+import { acquireLease, leaseOwned, renewLease, pathIdentity, releaseLease, streamDirectoryEntries,
   removePathIfUnchangedRecoverable } from '../lib/lease-lock.js';
 import {
   sessionHash, markerNamespace, migrateMarkerState, pruneMarkers, claimMarker,
@@ -53,11 +54,12 @@ function stampNamespace(path) {
   return basename(parent) === STAMP_NAMESPACE ? parent : join(parent, STAMP_NAMESPACE);
 }
 
-function markerOptions(markerDir) {
+function markerOptions(markerDir, testHooks = {}) {
   return { markerDir, namespace: UPDATE_MARKER_NAMESPACE, prefix: UPDATE_MARKER_PREFIX,
     ttlMs: UPDATE_MARKER_TTL_MS, claimTtlMs: UPDATE_MARKER_CLAIM_TTL_MS,
     maxSessions: UPDATE_MARKER_MAX_SESSIONS, scanCap: UPDATE_MARKER_SCAN_CAP,
-    markerNameRe: UPDATE_MARKER_NAME_RE, ownerTestEnv: 'CAH_UPDATE_OWNER_MAX_LEASE_MS' };
+    markerNameRe: UPDATE_MARKER_NAME_RE, ownerTestEnv: 'CAH_UPDATE_OWNER_MAX_LEASE_MS',
+    testInterlock: testHooks.testInterlock };
 }
 
 function sessionKey(sessionId) { return typeof sessionId === 'string' ? sessionId : FALLBACK_SESSION_KEY; }
@@ -97,10 +99,11 @@ function readLastStamp(path, sessionId) {
   } catch { return stampRecord(null); }
 }
 
-function pruneStampSidecars(path, nowMs) {
+function pruneStampSidecars(path, nowMs, lease, testInterlock = null) {
   const stateDir = stampNamespace(path);
   const prefix = basename(path) + STAMP_STATE_PREFIX;
   const candidates = [];
+  let owned = true;
   const scan = streamDirectoryEntries(stateDir, MAX_STAMP_SESSIONS * 2 + 8, (entry) => {
     if (!entry.name.startsWith(prefix) || !entry.name.endsWith('.json')) return;
     const sidecar = join(stateDir, entry.name);
@@ -110,42 +113,56 @@ function pruneStampSidecars(path, nowMs) {
       const identity = pathIdentity(sidecar);
       if (!identity) return;
       if (isOlderThan(identity, nowMs, STAMP_STATE_TTL_MS)) {
-        removePathIfUnchangedRecoverable(sidecar, identity, 'sidecar-prune');
+        if (!renewLease(lease)) owned = false;
+        else {
+          testInterlock?.('sidecar-prune', 'prune-rate-context-before-remove');
+          removePathIfUnchangedRecoverable(sidecar, identity, 'sidecar-prune', { testInterlock });
+        }
       } else candidates.push({ path: sidecar, identity, mtimeNs: identity.mtimeNs });
     } catch { /* preserve indeterminate state */ }
   });
-  if (!scan.complete) return;
+  if (!scan.complete || !owned) return owned;
   candidates.sort((a, b) => a.mtimeNs === b.mtimeNs ? 0 : a.mtimeNs > b.mtimeNs ? -1 : 1);
   for (const entry of candidates.slice(MAX_STAMP_SESSIONS)) {
-    try { removePathIfUnchangedRecoverable(entry.path, entry.identity, 'sidecar-prune-capacity'); } catch { /* best effort */ }
+    try {
+      if (!renewLease(lease)) return false;
+      testInterlock?.('sidecar-prune-capacity', 'prune-rate-context-before-remove');
+      removePathIfUnchangedRecoverable(entry.path, entry.identity, 'sidecar-prune-capacity', { testInterlock });
+    } catch { /* best effort */ }
   }
+  return renewLease(lease);
 }
 
-function writeLastStamp(path, sessionId, ts, requestId, fingerprint, deliveryState) {
+function writeLastStamp(path, sessionId, ts, requestId, fingerprint, deliveryState, lease,
+  testInterlock = null) {
   const sidecar = sessionStatePath(path, sessionId);
   try {
     if (process.env.CAH_TEST_ONLY === '1'
         && (process.env.CAH_TEST_ONLY_STAMP_STATE_WRITE_FAILURE === '1'
           || process.env.CAH_TEST_ONLY_STATE_WRITE_FAILURE === '1'
           || process.env.CAH_TEST_ONLY_STAMP_STATE_WRITE_ERROR === '1')) return false;
+    if (!renewLease(lease)) return false;
     const expectedDestination = captureRegularFileSnapshot(sidecar).expectedDestination;
     writeFileAtomic(sidecar, JSON.stringify({ version: 3, requestIdEncoding: 'sha256',
       lastStampedAt: ts, lastStampedRequestId: typeof requestId === 'string' ? requestIdDigest(requestId) : null,
       lastStampedTranscript: typeof fingerprint === 'string' ? fingerprint.slice(0, MAX_FINGERPRINT_LENGTH) : null,
-      deliveryState: deliveryState === 'pending' ? 'pending' : 'delivered' }) + '\n', { expectedDestination });
-    pruneStampSidecars(path, ts);
-    return true;
+      deliveryState: deliveryState === 'pending' ? 'pending' : 'delivered' }) + '\n', {
+      expectedDestination, testInterlock,
+      assertOwnership: () => renewLease(lease),
+    });
+    return pruneStampSidecars(path, ts, lease, testInterlock);
   } catch { return false; }
 }
 
 function stampLockPath(path, sessionId) { return `${sessionStatePath(path, sessionId)}.lock`; }
-function acquireStampLock(path, sessionId, nowMs) {
+function acquireStampLock(path, sessionId, nowMs, testInterlock = null) {
   const token = randomUUID();
   return acquireLease(stampLockPath(path, sessionId), {
     nowMs, owner: { pid: process.pid, token, nonce: token, timestamp: nowMs, startedAt: nowMs },
     staleAfterMs: STAMP_LOCK_CLAIM_TTL_MS, fenceSuffix: '.taken-',
     interlockPhase: 'lock-reclaim', releaseInterlockPhase: 'lock-release',
     testLeaseEnv: 'CAH_STAMP_OWNER_MAX_LEASE_MS',
+    testInterlock,
   });
 }
 
@@ -155,7 +172,7 @@ function transcriptFingerprint(path) {
 
 function updateMarkerClaimOwned(claim) { return markerClaimOwned(claim); }
 function releaseUpdateMarkerClaim(claim) { return releaseMarkerClaim(claim); }
-function markUpdateDelivered(claim, markerDir) {
+function markUpdateDelivered(claim, markerDir, testHooks = {}) {
   if (!markerClaimOwned(claim)) return false;
   if (process.env.CAH_TEST_ONLY === '1'
       && (process.env.CAH_TEST_ONLY_MARKER_CRASH === 'before-durable'
@@ -166,22 +183,21 @@ function markUpdateDelivered(claim, markerDir) {
   }
   const ok = publishMarker(claim,
     JSON.stringify({ nonce: claim.owner.nonce || claim.owner.token, deliveredAt: Date.now() }) + '\n',
-    markerOptions(markerDir));
+    markerOptions(markerDir, testHooks));
   if (ok && process.env.CAH_TEST_ONLY === '1'
       && (process.env.CAH_TEST_ONLY_CAPACITY_CRASH === 'after-marker-publish'
         || process.env.CAH_TEST_ONLY_MARKER_CRASH === 'after-marker-publish')) process.exit(94);
   return ok;
 }
 
-function buildUpdateNotice(payload, nowMs) {
+function buildUpdateNotice(payload, nowMs, testHooks = {}) {
   if (!payload.session_id || payload.hook_event_name !== 'Stop') return null;
   const home = process.env.CAH_STAMP_HINT_HOME || homedir();
   const markerDir = markerNamespace(home, UPDATE_MARKER_NAMESPACE);
-  const options = markerOptions(markerDir);
+  const options = markerOptions(markerDir, testHooks);
   const migration = migrateMarkerState({ ...options, home, sessionId: payload.session_id });
   if (migration?.blocked) return null;
-  const protectedMarker = process.env.CAH_TEST_ONLY === '1'
-    && process.env.CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE === 'marker-remove'
+  const protectedMarker = testHooks.protectMarker
     ? null : join(markerDir, `${UPDATE_MARKER_PREFIX}${sessionHash(payload.session_id)}`);
   pruneMarkers({ ...options, nowMs, protectedMarker });
   let latest;
@@ -193,17 +209,18 @@ function buildUpdateNotice(payload, nowMs) {
     '  local:  npm install cc-arch-hands@latest && npx cah reinstall --local' } : null;
 }
 
-function settleUpdateNotice(notice) {
-  if (!notice || !updateMarkerClaimOwned(notice.claim)) return;
+function settleUpdateNotice(notice, lease, testHooks = {}) {
+  if (!notice || !renewLease(lease) || !updateMarkerClaimOwned(notice.claim)) return false;
   try {
-    if (markUpdateDelivered(notice.claim, notice.markerDir)) {
+    if (markUpdateDelivered(notice.claim, notice.markerDir, testHooks)) {
       finishMarkerTransaction(notice.claim);
       pruneMarkers({ ...markerOptions(notice.markerDir), nowMs: Date.now() });
     } else abortMarkerTransaction(notice.claim);
+    return true;
   } finally { releaseUpdateMarkerClaim(notice.claim); }
 }
 
-function main() {
+export function main(testHooks = {}) {
   let payload;
   try { payload = JSON.parse(readFileSync(0, 'utf8')); } catch { return; }
   if (payload.stop_hook_active === true || !payload.transcript_path) return;
@@ -221,12 +238,13 @@ function main() {
     ownerTestEnv: 'CAH_STAMP_OWNER_MAX_LEASE_MS',
   });
   if (stampMigration?.blocked) return;
-  const lock = acquireStampLock(STAMP_THROTTLE_PATH, payload.session_id, nowMs);
+  const lock = acquireStampLock(STAMP_THROTTLE_PATH, payload.session_id, nowMs,
+    testHooks.testInterlock);
   if (!lock) return;
   let notice = null;
   try {
     const fingerprint = transcriptFingerprint(payload.transcript_path);
-    try { notice = buildUpdateNotice(payload, nowMs); } catch { notice = null; }
+    try { notice = buildUpdateNotice(payload, nowMs, testHooks); } catch { notice = null; }
     const last = readLastStamp(STAMP_THROTTLE_PATH, payload.session_id);
     const age = last.ts !== null && nowMs >= last.ts ? nowMs - last.ts : null;
     const pendingFresh = last.deliveryState === 'pending' && age !== null && age <= STAMP_PENDING_TTL_MS;
@@ -240,13 +258,14 @@ function main() {
       && age !== null && (pendingFresh || (last.deliveryState === 'delivered' && age <= ANONYMOUS_CLAIM_TTL_MS));
     if (timeSuppressed || requestSuppressed || anonymousSuppressed) {
       if (notice?.claim && updateMarkerClaimOwned(notice.claim)) {
+        if (!renewLease(lock)) return;
         writeSync(1, JSON.stringify({ continue: true, systemMessage: notice.text }) + '\n');
-        settleUpdateNotice(notice); notice = null;
+        if (settleUpdateNotice(notice, lock, testHooks)) notice = null;
       }
       return;
     }
     let cached = null;
-    try { cached = readRateLimitsCache(RATE_LIMITS_CACHE, Date.now(), payload.session_id); } catch { /* best effort */ }
+    try { cached = readRateLimitsCache(RATE_LIMITS_CACHE, Date.now(), payload.session_id, testHooks); } catch { /* best effort */ }
     let envelopeLimit = null;
     try { envelopeLimit = validContextWindowSize(payload.context_window?.context_window_size); } catch { /* ignore */ }
     const limit = stats?.modelId ? contextWindowLimit(stats.modelId, envelopeLimit || cached?.contextWindowSize) : null;
@@ -256,15 +275,21 @@ function main() {
       fiveHour: cached?.fiveHour || null, sevenDay: cached?.sevenDay || null, bars: false });
     if (notice && !updateMarkerClaimOwned(notice.claim)) { notice = null; }
     const out = JSON.stringify({ continue: true, systemMessage: line + (notice ? notice.text : '') });
-    if (!writeLastStamp(STAMP_THROTTLE_PATH, payload.session_id, nowMs, requestId, fingerprint, 'pending')) return;
+    if (!writeLastStamp(STAMP_THROTTLE_PATH, payload.session_id, nowMs, requestId, fingerprint,
+      'pending', lock, testHooks.testInterlock)) return;
+    if (!renewLease(lock)) return;
     writeSync(1, out + '\n');
-    if (notice) { settleUpdateNotice(notice); notice = null; }
-    writeLastStamp(STAMP_THROTTLE_PATH, payload.session_id, nowMs, requestId, fingerprint, 'delivered');
+    if (!renewLease(lock)) return;
+    if (notice && settleUpdateNotice(notice, lock, testHooks)) notice = null;
+    writeLastStamp(STAMP_THROTTLE_PATH, payload.session_id, nowMs, requestId, fingerprint,
+      'delivered', lock, testHooks.testInterlock);
   } finally {
     if (notice) { abortMarkerTransaction(notice.claim); releaseUpdateMarkerClaim(notice.claim); }
     releaseLease(lock);
   }
 }
 
-try { main(); } catch { /* fail-silent */ }
-process.exit(0);
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  try { main(); } catch { /* fail-silent */ }
+  process.exit(0);
+}

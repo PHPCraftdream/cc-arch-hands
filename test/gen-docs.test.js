@@ -19,6 +19,7 @@ const EXPECTED_RUNTIME_BINS = [
   'bin/cah-status.js',
 ];
 const EXPECTED_SHARED_LIB_LEAVES = [
+  'lib/fs-atomic-identity.js',
   'lib/fs-atomic.js',
   'lib/fsutil.js',
   'lib/lease-lock.js',
@@ -30,6 +31,7 @@ const EXPECTED_SHARED_LIB_LEAVES = [
 const EXPECTED_PUBLICATION_ORDER = [
   'package.json',
   'lib/sentinel.js',
+  'lib/fs-atomic-identity.js',
   'lib/fs-atomic.js',
   'lib/fsutil.js',
   'lib/lease-lock.js',
@@ -118,7 +120,7 @@ describe('gen-docs --check', () => {
         { name: 'la', model: 'gpt-6-astra', effort: 'low', display: 'Astra - low' },
         { name: 'ma', model: 'gpt-6-astra', effort: 'medium', display: 'Astra - medium' },
         { name: 'ha', model: 'gpt-6-astra', effort: 'high', display: 'Astra - high' },
-        { name: 'xa', model: 'gpt-6-astra', effort: 'extra', display: 'Astra - extra' },
+        { name: 'xa', model: 'gpt-6-astra', effort: 'xhigh', display: 'Astra - Extra High' },
         { name: 'xxa', model: 'gpt-6-astra', effort: 'max', display: 'Astra - max' },
         { name: 'ua', model: 'gpt-6-astra', effort: 'ultra', display: 'Astra - ultra' },
       ],
@@ -137,5 +139,22 @@ describe('gen-docs --check', () => {
       ['gpt-5.6-sol', 6],
       ['gpt-6-astra', 6],
     ]);
+  });
+
+  it('uses official xhigh for every Extra High Codex tier and excludes obsolete GPT models', () => {
+    assert.deepEqual(
+      AllCodexAgents.filter((agent) => ['xt', 'xl', 'xs', 'xa'].includes(agent.name)),
+      [
+        { name: 'xt', model: 'gpt-5.6-terra', effort: 'xhigh', display: 'Terra - Extra High' },
+        { name: 'xl', model: 'gpt-5.6-luna', effort: 'xhigh', display: 'Luna - Extra High' },
+        { name: 'xs', model: 'gpt-5.6-sol', effort: 'xhigh', display: 'Sol - Extra High' },
+        { name: 'xa', model: 'gpt-6-astra', effort: 'xhigh', display: 'Astra - Extra High' },
+      ],
+    );
+    assert.deepEqual(
+      AllCodexAgents.filter((agent) => agent.model === 'gpt-6-astra').map((agent) => agent.name),
+      ['la', 'ma', 'ha', 'xa', 'xxa', 'ua'],
+    );
+    assert.ok(AllCodexAgents.every((agent) => !['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'].includes(agent.model)));
   });
 });

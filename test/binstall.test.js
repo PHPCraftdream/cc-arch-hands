@@ -47,6 +47,7 @@ function fakeSource(root) {
   writeFileSync(join(root, 'lib', 'lease-lock.js'), 'export const lease = 1;\n');
   writeFileSync(join(root, 'lib', 'marker-state.js'), 'export const marker = 1;\n');
   writeFileSync(join(root, 'lib', 'fsutil.js'), 'export const z = 1;\n');
+  writeFileSync(join(root, 'lib', 'fs-atomic-identity.js'), 'export const identity = 1;\n');
   writeFileSync(join(root, 'lib', 'fs-atomic.js'), 'export const atomic = 1;\n');
   writeFileSync(join(root, 'lib', 'sentinel.js'), 'export const sentinel = 1;\n');
   writeFileSync(
@@ -60,7 +61,7 @@ function fakeSource(root) {
   );
 }
 
-function waitForPath(path, timeoutMs = 5000) {
+function waitForPath(path, timeoutMs = 10000) {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolvePromise, reject) => {
     const poll = () => {
@@ -87,19 +88,31 @@ function runBinWorker(
   leaseMs = null,
 ) {
   const moduleUrl = new URL('../lib/binstall.js', import.meta.url).href;
+  const hooksUrl = new URL('../test-support/interlocks.js', import.meta.url).href;
   const source = `
     const { parentPort, workerData } = require('node:worker_threads');
     (async () => {
       process.env.CAH_TEST_ONLY = '1';
-      process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK = workerData.interlock;
-      process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE = workerData.phase;
+      delete process.env.CAH_TEST_ONLY_OWNER_INTERLOCK;
+      delete process.env.CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE;
+      delete process.env.CAH_TEST_ONLY_UPDATE_LOCK_INTERLOCK;
+      delete process.env.CAH_TEST_ONLY_UPDATE_LOCK_INTERLOCK_PHASE;
+      const { makeInterlock } = await import(workerData.hooksUrl);
+      const testInterlock = makeInterlock({ ...process.env,
+        CAH_TEST_ONLY_OWNER_INTERLOCK: undefined,
+        CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: undefined,
+        CAH_TEST_ONLY_UPDATE_LOCK_INTERLOCK: undefined,
+        CAH_TEST_ONLY_UPDATE_LOCK_INTERLOCK_PHASE: undefined,
+        CAH_TEST_ONLY_FSUTIL_INTERLOCK: workerData.interlock,
+        CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE: workerData.phase,
+      });
       if (workerData.leaseMs !== null) {
         process.env.CAH_TEST_ONLY_BIN_LEASE_MS = String(workerData.leaseMs);
       }
       const { writeBins, removeBins } = await import(workerData.moduleUrl);
       const operation = workerData.operation === 'removeBins' ? removeBins : writeBins;
       try {
-        parentPort.postMessage(operation(workerData.dst, workerData.src));
+        parentPort.postMessage(operation(workerData.dst, workerData.src, { testInterlock }));
       } catch (error) {
         parentPort.postMessage({
           __workerError: {
@@ -114,7 +127,7 @@ function runBinWorker(
   return new Promise((resolvePromise, reject) => {
     const worker = new Worker(source, {
       eval: true,
-      workerData: { dst, src, interlock, phase, operation, leaseMs, moduleUrl },
+      workerData: { dst, src, interlock, phase, operation, leaseMs, moduleUrl, hooksUrl },
     });
     worker.once('message', (value) => {
       if (!value?.__workerError) {

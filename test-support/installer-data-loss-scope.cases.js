@@ -273,15 +273,19 @@ describe('skill data-loss protection', { concurrency: false }, () => {
     const before = statSync(orphan, { bigint: true });
     const interlock = join(dir, 'orphan-prune-interlock');
     const fsutilUrl = new URL('../lib/fsutil.js', import.meta.url).href;
+    const hooksUrl = new URL('./interlocks.js', import.meta.url).href;
     const source = `
       const { parentPort, workerData } = require('node:worker_threads');
       (async () => {
         process.env.CAH_TEST_ONLY = '1';
-        process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK = workerData.interlock;
-        process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE = 'prune-before-remove';
+        const { makeInterlock } = await import(workerData.hooksUrl);
+        const testInterlock = makeInterlock({ ...process.env,
+          CAH_TEST_ONLY_FSUTIL_INTERLOCK: workerData.interlock,
+          CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE: 'prune-before-remove',
+        });
         const fsutil = await import(workerData.fsutilUrl);
         const { SetForSkill } = await import(workerData.sentinelUrl);
-        const result = fsutil.pruneOrphans(workerData.dir, new Set(), SetForSkill);
+        const result = fsutil.pruneOrphans(workerData.dir, new Set(), SetForSkill, { testInterlock });
         parentPort.postMessage(result);
       })().catch((error) => { setImmediate(() => { throw error; }); });
     `;
@@ -289,7 +293,7 @@ describe('skill data-loss protection', { concurrency: false }, () => {
       eval: true,
       workerData: {
         dir, interlock, fsutilUrl,
-        sentinelUrl: new URL('../lib/sentinel.js', import.meta.url).href,
+        sentinelUrl: new URL('../lib/sentinel.js', import.meta.url).href, hooksUrl,
       },
     });
     const resultPromise = new Promise((resolve, reject) => {

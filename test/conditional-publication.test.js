@@ -21,17 +21,22 @@ function waitForPath(path) {
 
 function runWrite(dest, interlock, payload, expected = true) {
   const fsutilUrl = new URL('../lib/fsutil.js', import.meta.url).href;
+  const hooksUrl = new URL('../test-support/interlocks.js', import.meta.url).href;
   const source = `
     const { parentPort, workerData } = require('node:worker_threads');
     (async () => {
       process.env.CAH_TEST_ONLY = '1';
-      process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK = workerData.interlock;
-      process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE = 'write-before-final-publication';
+      const { makeInterlock } = await import(workerData.hooksUrl);
+      const testInterlock = makeInterlock({ ...process.env,
+        CAH_TEST_ONLY_FSUTIL_INTERLOCK: workerData.interlock,
+        CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE: 'write-before-final-publication',
+      });
       const fs = await import(workerData.fsutilUrl);
       try {
         const snapshot = fs.captureRegularFileSnapshot(workerData.dest);
         const publication = fs.writeFileAtomic(workerData.dest, workerData.payload, {
           expectedDestination: workerData.expected ? snapshot.expectedDestination : { exists: false, identity: null },
+          testInterlock,
         });
         parentPort.postMessage({ ok: true, publication });
       } catch (error) {
@@ -41,7 +46,7 @@ function runWrite(dest, interlock, payload, expected = true) {
   `;
   const worker = new Worker(source, {
     eval: true,
-    workerData: { dest, expected, fsutilUrl, interlock, payload },
+    workerData: { dest, expected, fsutilUrl, interlock, payload, hooksUrl },
   });
   return new Promise((resolve, reject) => {
     worker.once('message', resolve);

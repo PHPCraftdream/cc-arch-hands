@@ -24,7 +24,7 @@ const CLAUDE_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 // "Opus 4.8 (1M) – low" -> "Opus 4.8 (1M)" ; "GPT-5.5 - low" -> "GPT-5.5"
 function stripEffortSuffix(display) {
-  return display.replace(/\s*[–-]\s*(low|medium|high|xhigh|extra|max|ultra)\s*$/i, '').trim();
+  return display.replace(/\s*[–-]\s*(low|medium|high|xhigh|extra(?:\s+high)?|max|ultra)\s*$/i, '').trim();
 }
 
 // "Fable (top, 1M)" -> "**Fable** (top, 1M)" ; "Opus 4.8 (1M)" unchanged —

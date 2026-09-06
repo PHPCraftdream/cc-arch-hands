@@ -103,6 +103,7 @@ describe('writeFileAtomic', { concurrency: false }, () => {
     const workerSource = `
       const { parentPort, workerData } = require('node:worker_threads');
       (async () => {
+        process.env.CAH_TEST_ONLY = '1';
         const { writeFileAtomic } = await import(workerData.moduleUrl);
         const state = new Int32Array(workerData.barrier);
         Atomics.add(state, 0, 1);
@@ -137,17 +138,21 @@ describe('writeFileAtomic', { concurrency: false }, () => {
     const payload = 'byte-identical successor\n';
     writeFileSync(dest, 'old body\n');
     const fsutilUrl = new URL('../lib/fsutil.js', import.meta.url).href;
+    const hooksUrl = new URL('./interlocks.js', import.meta.url).href;
     const source = `
       const { parentPort, workerData } = require('node:worker_threads');
       (async () => {
         process.env.CAH_TEST_ONLY = '1';
-        process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK = workerData.interlock;
-        process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE = 'write-after-rename';
+        const { makeInterlock } = await import(workerData.hooksUrl);
+        const testInterlock = makeInterlock({ ...process.env,
+          CAH_TEST_ONLY_FSUTIL_INTERLOCK: workerData.interlock,
+          CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE: 'write-after-rename',
+        });
         const fsutil = await import(workerData.fsutilUrl);
         const before = fsutil.captureRegularFileSnapshot(workerData.dest);
         try {
           fsutil.writeFileAtomic(workerData.dest, workerData.payload, {
-            expectedDestination: before.expectedDestination,
+            expectedDestination: before.expectedDestination, testInterlock,
           });
           parentPort.postMessage({ ok: true });
         } catch (error) {
@@ -157,7 +162,7 @@ describe('writeFileAtomic', { concurrency: false }, () => {
     `;
     const worker = new Worker(source, {
       eval: true,
-      workerData: { dest, fsutilUrl, interlock, payload },
+      workerData: { dest, fsutilUrl, interlock, payload, hooksUrl },
     });
     const resultPromise = new Promise((resolve, reject) => {
       worker.once('message', resolve);
@@ -188,17 +193,20 @@ describe('writeFileAtomic', { concurrency: false }, () => {
     const interlock = join(dir, 'mode-successor-interlock');
     writeFileSync(dest, 'old body\n', { mode: 0o640 });
     const fsutilUrl = new URL('../lib/fsutil.js', import.meta.url).href;
+    const hooksUrl = new URL('./interlocks.js', import.meta.url).href;
     const source = `
       const { parentPort, workerData } = require('node:worker_threads');
       (async () => {
-        process.env.CAH_TEST_ONLY = '1';
-        process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK = workerData.interlock;
-        process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE = 'write-before-final-publication';
+        const { makeInterlock } = await import(workerData.hooksUrl);
+        const testInterlock = makeInterlock({ ...process.env,
+          CAH_TEST_ONLY_FSUTIL_INTERLOCK: workerData.interlock,
+          CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE: 'write-before-final-publication',
+        });
         const fsutil = await import(workerData.fsutilUrl);
         const snapshot = fsutil.captureRegularFileSnapshot(workerData.dest);
         try {
           fsutil.writeFileAtomic(workerData.dest, 'new body\\n', {
-            expectedDestination: snapshot.expectedDestination,
+            expectedDestination: snapshot.expectedDestination, testInterlock,
           });
           parentPort.postMessage({ ok: true });
         } catch (error) {
@@ -208,7 +216,7 @@ describe('writeFileAtomic', { concurrency: false }, () => {
     `;
     const worker = new Worker(source, {
       eval: true,
-      workerData: { dest, fsutilUrl, interlock },
+      workerData: { dest, fsutilUrl, interlock, hooksUrl },
     });
     const resultPromise = new Promise((resolve, reject) => {
       worker.once('message', resolve);
@@ -268,6 +276,44 @@ describe('writeFileAtomic', { concurrency: false }, () => {
     }
     assert.ok(!existsSync(dest));
     assert.deepEqual(readdirSync(dir).filter((name) => name.includes('.cah-owned-remove-')), []);
+  });
+
+  it('releases an empty quarantine after ownership is lost following payload unlink', async () => {
+    const dir = tmpDir();
+    const dest = join(dir, 'lease-loss-after-unlink.txt');
+    const interlock = join(dir, 'lease-loss-after-unlink-interlock');
+    const ownershipLoss = join(dir, 'ownership-lost');
+    writeFileSync(dest, 'owned\n');
+
+    const running = runOwnedRemovalWorker(
+      dest, interlock, 'remove-after-unlink', undefined, ownershipLoss,
+    );
+    await waitForPath(`${interlock}.ready`);
+    writeFileSync(ownershipLoss, 'lease replaced\n');
+    writeFileSync(`${interlock}.go`, 'go');
+
+    assert.equal(await running, true);
+    assert.equal(existsSync(dest), false);
+    assert.equal(existsSync(`${dest}.cah-owned-remove`), false);
+  });
+
+  it('preserves a successor added to the empty quarantine reservation', async () => {
+    const dir = tmpDir();
+    const dest = join(dir, 'successor-after-unlink.txt');
+    const interlock = join(dir, 'successor-after-unlink-interlock');
+    const payload = join(`${dest}.cah-owned-remove`, 'payload');
+    writeFileSync(dest, 'owned\n');
+
+    const running = runOwnedRemovalWorker(dest, interlock, 'remove-after-unlink');
+    await waitForPath(`${interlock}.ready`);
+    writeFileSync(payload, 'successor data\n');
+    writeFileSync(`${interlock}.go`, 'go');
+
+    const result = await running;
+    assert.equal(result.removed, false);
+    assert.equal(result.preservedPath, payload);
+    assert.equal(readFileSync(payload, 'utf8'), 'successor data\n');
+    assert.equal(existsSync(dest), false);
   });
 
   it('reserves an occupied quarantine namespace before touching the canonical leaf', () => {

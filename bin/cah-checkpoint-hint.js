@@ -3,6 +3,7 @@
 
 import { readFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { readTranscriptStats, contextWindowLimit, readRateLimitsCache, validContextWindowSize } from '../lib/transcript-stats.js';
 import {
@@ -27,11 +28,12 @@ const MARKER_NAMESPACE = 'hint-markers';
 const RATE_LIMITS_CACHE = process.env.CAH_RATE_LIMITS_CACHE
   || join(homedir(), '.claude', 'cah-bin', 'cache', 'rate-limits.json');
 
-function markerOptions(markerDir) {
+function markerOptions(markerDir, testHooks = {}) {
   return { markerDir, namespace: MARKER_NAMESPACE, prefix: MARKER_PREFIX,
     ttlMs: MARKER_TTL_MS, claimTtlMs: MARKER_CLAIM_TTL_MS,
     maxSessions: MARKER_MAX_SESSIONS, scanCap: MARKER_SCAN_CAP,
-    markerNameRe: MARKER_NAME_RE, ownerTestEnv: 'CAH_HINT_OWNER_MAX_LEASE_MS' };
+    markerNameRe: MARKER_NAME_RE, ownerTestEnv: 'CAH_HINT_OWNER_MAX_LEASE_MS',
+    testInterlock: testHooks.testInterlock };
 }
 
 function markDelivered(claim, markerDir) {
@@ -52,7 +54,7 @@ function markDelivered(claim, markerDir) {
   return ok;
 }
 
-function main() {
+export function main(testHooks = {}) {
   let payload;
   try { payload = JSON.parse(readFileSync(0, 'utf8')); } catch { return; }
   if (payload.stop_hook_active === true) return;
@@ -62,11 +64,10 @@ function main() {
 
   const home = process.env.CAH_HINT_HOME || homedir();
   const markerDir = markerNamespace(home, MARKER_NAMESPACE);
-  const options = markerOptions(markerDir);
+  const options = markerOptions(markerDir, testHooks);
   const migration = migrateMarkerState({ ...options, home, sessionId });
   if (migration?.blocked) return;
-  const protectedMarker = process.env.CAH_TEST_ONLY === '1'
-    && process.env.CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE === 'marker-remove'
+  const protectedMarker = testHooks.protectMarker
     ? null : join(markerDir, `${MARKER_PREFIX}${sessionHash(sessionId)}`);
   pruneMarkers({ ...options, nowMs: Date.now(), protectedMarker });
 
@@ -81,7 +82,7 @@ function main() {
   } catch { /* malformed envelope */ }
   let cachedLimit = null;
   try {
-    const cached = readRateLimitsCache(RATE_LIMITS_CACHE, Date.now(), sessionId);
+    const cached = readRateLimitsCache(RATE_LIMITS_CACHE, Date.now(), sessionId, testHooks);
     cachedLimit = cached?.contextWindowSize;
   } catch { /* best effort */ }
   const limit = stats.modelId === null
@@ -100,5 +101,7 @@ function main() {
   } finally { releaseMarkerClaim(claim); }
 }
 
-try { main(); } catch { /* fail-silent Stop hook */ }
-process.exit(0);
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  try { main(); } catch { /* fail-silent Stop hook */ }
+  process.exit(0);
+}

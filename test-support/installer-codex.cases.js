@@ -43,6 +43,26 @@ describe('writeCodexAgents', { concurrency: false }, () => {
     }
   });
 
+  it('writes the official xhigh value while retaining the Extra High display label', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    writeCodexAgents(null, scope);
+    const agentsDir = join(dir, '.codex', 'agents');
+
+    for (const [name, model, display] of [
+      ['xt', 'gpt-5.6-terra', 'Terra - Extra High'],
+      ['xl', 'gpt-5.6-luna', 'Luna - Extra High'],
+      ['xs', 'gpt-5.6-sol', 'Sol - Extra High'],
+      ['xa', 'gpt-6-astra', 'Astra - Extra High'],
+    ]) {
+      const data = readFileSync(join(agentsDir, `${name}.toml`), 'utf8');
+      assert.ok(data.includes(`model = "${model}"`));
+      assert.ok(data.includes('model_reasoning_effort = "xhigh"'));
+      assert.ok(data.includes(`(${display})`));
+      assert.ok(!data.includes('model_reasoning_effort = "extra"'));
+    }
+  });
+
   it('foreign Codex agent is preserved and skipped', () => {
     const dir = tmpDir();
     const scope = new Scope({ cwd: dir });

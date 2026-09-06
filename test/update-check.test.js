@@ -56,6 +56,7 @@ async function resolveWithin(promise, timeoutMs, label) {
 
 function runUpdateWorker(cachePath, nowMs, fetchSpecPath, env = {}) {
   const updateCheckUrl = new URL('../lib/update-check.js', import.meta.url).href;
+  const hooksUrl = new URL('../test-support/interlocks.js', import.meta.url).href;
   const source = `
     const { parentPort, workerData } = require('node:worker_threads');
     (async () => {
@@ -63,6 +64,8 @@ function runUpdateWorker(cachePath, nowMs, fetchSpecPath, env = {}) {
       process.env.CAH_TEST_ONLY = '1';
       for (const [key, value] of Object.entries(workerData.env)) process.env[key] = value;
       const { getLatestVersion } = await import(workerData.updateCheckUrl);
+      const { makeInterlock } = await import(workerData.hooksUrl);
+      const testInterlock = makeInterlock(process.env);
       const readSpec = () => {
         try { return JSON.parse(readFileSync(workerData.fetchSpecPath, 'utf8')); } catch { return null; }
       };
@@ -85,7 +88,7 @@ function runUpdateWorker(cachePath, nowMs, fetchSpecPath, env = {}) {
         return typeof spec.result === 'string' ? spec.result : null;
       };
       const result = getLatestVersion(workerData.cachePath, workerData.ttlMs, workerData.nowMs,
-        { fetchLatestVersion });
+        { fetchLatestVersion, testInterlock });
       parentPort.postMessage(result);
     })().catch((error) => {
       setImmediate(() => { throw error; });
@@ -98,6 +101,7 @@ function runUpdateWorker(cachePath, nowMs, fetchSpecPath, env = {}) {
         cachePath,
         fetchSpecPath,
         nowMs,
+        hooksUrl,
         ttlMs: 10_000,
         updateCheckUrl,
         env,

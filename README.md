@@ -184,10 +184,10 @@ Generated agent names use effort prefix + model suffix. Terra (`t`), Luna (`l`),
 <!--gen:table:codex-agents (run `npm run gen:docs` after editing lib/manifest.js) -->
 | Model | Agents by effort |
 |---|---|
-| Terra | `lt` low · `mt` medium · `ht` high · `xt` extra · `xxt` max · `ut` ultra |
-| Luna | `ll` low · `ml` medium · `hl` high · `xl` extra · `xxl` max · `ul` ultra |
-| Sol | `ls` low · `ms` medium · `hs` high · `xs` extra · `xxs` max · `us` ultra |
-| Astra | `la` low · `ma` medium · `ha` high · `xa` extra · `xxa` max · `ua` ultra |
+| Terra | `lt` low · `mt` medium · `ht` high · `xt` xhigh · `xxt` max · `ut` ultra |
+| Luna | `ll` low · `ml` medium · `hl` high · `xl` xhigh · `xxl` max · `ul` ultra |
+| Sol | `ls` low · `ms` medium · `hs` high · `xs` xhigh · `xxs` max · `us` ultra |
+| Astra | `la` low · `ma` medium · `ha` high · `xa` xhigh · `xxa` max · `ua` ultra |
 <!--/gen:table:codex-agents-->
 
 ### 4. Skills (11)
@@ -395,7 +395,7 @@ npx cah install --only bins                         # companion bins (cah-status
                                                     #   cah-checkpoint-hint, cah-status-probe,
                                                     #   + shared lib leaves: transcript-stats.js,
                                                     #     update-check.js, lease-lock.js, marker-state.js, fsutil.js,
-                                                    #     fs-atomic.js,
+                                                    #     fs-atomic-identity.js, fs-atomic.js,
                                                     #     sentinel.js)
 
 # One example per skill (every installable artefact has its own line).
@@ -522,6 +522,7 @@ cc-arch-hands/
 │   ├── scope.js                 # global vs local target dir resolution
 │   ├── templates.js             # bundled / disk template abstraction
 │   ├── fsutil.js                # readFileMaybe + orphan-prune helpers
+│   ├── fs-atomic-identity.js    # exact filesystem identity and snapshot helpers
 │   ├── fs-atomic.js             # atomic publication, identity, quarantine helpers
 │   ├── transcript-stats.js      # shared: stats, formatStatusLine, makeBar, reset formatters
 │   ├── commands.js              # render + install + remove (44 .md bodies)

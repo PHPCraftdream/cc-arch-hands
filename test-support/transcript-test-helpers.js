@@ -27,14 +27,19 @@ export function waitForPath(path, timeoutMs = 5000) {
 
 export function runRateCacheWorker(cachePath, nowMs, interlock) {
   const transcriptStatsUrl = new URL('../lib/transcript-stats.js', import.meta.url).href;
+  const hooksUrl = new URL('./interlocks.js', import.meta.url).href;
   const source = `
     const { parentPort, workerData } = require('node:worker_threads');
     (async () => {
       process.env.CAH_TEST_ONLY = '1';
-      process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK = workerData.interlock;
-      process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE = 'prune-rate-context-before-remove';
+      const { makeInterlock } = await import(workerData.hooksUrl);
+      const testInterlock = makeInterlock({ ...process.env,
+        CAH_TEST_ONLY_FSUTIL_INTERLOCK: workerData.interlock,
+        CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE: 'prune-rate-context-before-remove',
+      });
       const { persistRateLimitsCache } = await import(workerData.transcriptStatsUrl);
-      persistRateLimitsCache(workerData.cachePath, null, null, null, null, 'cleanup', workerData.nowMs);
+      persistRateLimitsCache(workerData.cachePath, null, null, null, null, 'cleanup', workerData.nowMs,
+        { testInterlock });
       parentPort.postMessage('done');
     })().catch((error) => {
       setImmediate(() => { throw error; });
@@ -43,7 +48,7 @@ export function runRateCacheWorker(cachePath, nowMs, interlock) {
   return new Promise((resolve, reject) => {
     const worker = new Worker(source, {
       eval: true,
-      workerData: { cachePath, interlock, nowMs, transcriptStatsUrl },
+      workerData: { cachePath, interlock, nowMs, transcriptStatsUrl, hooksUrl },
     });
     worker.once('message', resolve);
     worker.once('error', reject);

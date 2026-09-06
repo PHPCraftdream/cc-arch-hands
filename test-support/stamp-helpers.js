@@ -9,6 +9,7 @@ import { createHash } from 'node:crypto';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BIN = join(__dirname, '..', 'bin', 'cah-stamp.js');
+const RUNNER = join(__dirname, 'run-companion.js');
 
 export function stampInvocationEnv(env = {}) {
   const hintHome = env.CAH_STAMP_HINT_HOME
@@ -29,7 +30,10 @@ export function stampInvocationEnv(env = {}) {
     updateCacheOverride,
     env: {
       ...process.env,
+      CAH_TEST_ONLY: '0',
       ...env,
+      HOME: hintHome,
+      USERPROFILE: hintHome,
       CAH_STAMP_HINT_HOME: hintHome,
       CAH_RATE_LIMITS_CACHE: cacheOverride,
       CAH_STAMP_THROTTLE_PATH: throttleOverride,
@@ -41,7 +45,7 @@ export function stampInvocationEnv(env = {}) {
 export function runStamp(stdinData, env) {
   const input = typeof stdinData === 'string' ? stdinData : JSON.stringify(stdinData);
   const invocation = stampInvocationEnv(env);
-  const res = spawnSync(process.execPath, [BIN], {
+  const res = spawnSync(process.execPath, [RUNNER, 'stamp'], {
     input,
     encoding: 'utf8',
     env: invocation.env,
@@ -60,7 +64,7 @@ export function runStampAsync(stdinData, env) {
   const input = typeof stdinData === 'string' ? stdinData : JSON.stringify(stdinData);
   const invocation = stampInvocationEnv(env);
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [BIN], {
+    const child = spawn(process.execPath, [RUNNER, 'stamp'], {
       env: invocation.env,
       stdio: ['pipe', 'pipe', 'ignore'],
     });
