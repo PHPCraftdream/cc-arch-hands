@@ -144,7 +144,7 @@ export function registerStampUpdateCases() {
       const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
       const oldTime = Date.now() / 1000 - 60 * 60;
-      for (let i = 0; i < 70; i++) {
+      for (let i = 0; i < 64; i++) {
         const marker = join(markerDir, `cah-update-shown-${i.toString(16).padStart(64, '0')}`);
         writeFileSync(marker, '');
         utimesSync(marker, oldTime, oldTime);
@@ -234,6 +234,28 @@ export function registerStampUpdateCases() {
       );
       const parsed = JSON.parse(stdout.trim());
       assert.ok(!parsed.systemMessage.includes(String.fromCodePoint(0x1F535)));
+    });
+
+    it('Stop with no newer version preserves all 64 fresh markers at capacity', () => {
+      const dir = isolatedDir();
+      const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
+      const updateCache = freshUpdateCache(dir, '0.0.1');
+      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const markerDir = updateMarkerDir(hintHome);
+      mkdirSync(markerDir, { recursive: true });
+      for (let i = 0; i < 64; i += 1) {
+        writeFileSync(join(markerDir, `cah-update-shown-${i.toString(16).padStart(64, '0')}`), `fresh-${i}`);
+      }
+      const result = runStamp(
+        { session_id: 'update-at-capacity-none', transcript_path: tp, hook_event_name: 'Stop' },
+        {
+          CAH_UPDATE_CHECK_CACHE: updateCache,
+          CAH_STAMP_HINT_HOME: hintHome,
+          CAH_STAMP_THROTTLE_PATH: join(dir, 'capacity-none-throttle.json'),
+        },
+      );
+      assert.ok(!JSON.parse(result.stdout.trim()).systemMessage.includes(String.fromCodePoint(0x1F535)));
+      assert.equal(readdirSync(markerDir).filter((name) => /^cah-update-shown-[a-f0-9]{64}$/.test(name)).length, 64);
     });
 
     it('24 concurrent Stop calls emit at most one update notice', async () => {

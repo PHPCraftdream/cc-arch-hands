@@ -237,6 +237,19 @@ describe('cah-checkpoint-hint bin', () => {
     assert.equal(markerExists(home, 's-half'), false);
   });
 
+  it('below threshold preserves all 64 fresh markers at capacity', () => {
+    const home = isolatedHome();
+    const markerDir = cacheDir(home);
+    mkdirSync(markerDir, { recursive: true });
+    for (let i = 0; i < 64; i += 1) {
+      writeFileSync(join(markerDir, `cah-hint-shown-${i.toString(16).padStart(64, '0')}`), `fresh-${i}`);
+    }
+    const tp = writeTranscript(home, 'claude-opus-4-8', 500_000);
+    const result = runHint(JSON.stringify({ session_id: 's-at-capacity-low', transcript_path: tp }), home);
+    assert.equal(result.stdout, '');
+    assert.equal(readdirSync(markerDir).filter((name) => /^cah-hint-shown-[a-f0-9]{64}$/.test(name)).length, 64);
+  });
+
   it('Opus at 0.95 (950k / 1M) → emits hint, creates marker', () => {
     const home = isolatedHome();
     const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
@@ -259,6 +272,19 @@ describe('cah-checkpoint-hint bin', () => {
     assert.equal(stdout, EXPECTED);
     assert.equal(status, 0);
     assert.equal(markerExists(home, 's-sonnet'), true);
+  });
+
+  it('eligible session at 64 fresh markers stays within capacity', () => {
+    const home = isolatedHome();
+    const markerDir = cacheDir(home);
+    mkdirSync(markerDir, { recursive: true });
+    for (let i = 0; i < 64; i += 1) {
+      writeFileSync(join(markerDir, `cah-hint-shown-${i.toString(16).padStart(64, '0')}`), `fresh-${i}`);
+    }
+    const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+    const result = runHint(JSON.stringify({ session_id: 's-at-capacity-high', transcript_path: tp }), home);
+    assert.equal(result.stdout, EXPECTED);
+    assert.equal(readdirSync(markerDir).filter((name) => /^cah-hint-shown-[a-f0-9]{64}$/.test(name)).length, 64);
   });
 
   it('0.50 then 0.95 same session: first silent, second emits once', () => {

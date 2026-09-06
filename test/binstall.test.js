@@ -12,6 +12,7 @@ import { tmpdir, homedir } from 'node:os';
 
 import { SentinelBin } from '../lib/sentinel.js';
 import { writeBins, removeBins, BinFiles } from '../lib/binstall.js';
+import { enumerateRecoveryArtifacts } from '../lib/fs-atomic.js';
 import { Scope } from '../lib/scope.js';
 
 function tmpDir() {
@@ -374,6 +375,51 @@ describe('writeBins', () => {
     assert.ok(existsSync(join(dst, 'unknown-root-dir')), 'unknown root dir must survive removal');
     assert.ok(!removed.skipped.includes('cache'), 'reserved cache must stay silent on removal');
     assert.ok(removed.skipped.includes('unknown-root-dir'));
+  });
+
+  it('keeps install and uninstall successful when cache enumeration is unreadable', () => {
+    const cache = join(dst, 'cache');
+    mkdirSync(cache, { recursive: true });
+    const priorTest = process.env.CAH_TEST_ONLY;
+    const priorFailure = process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
+    process.env.CAH_TEST_ONLY = '1';
+    process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = 'opendir';
+    try {
+      const installed = writeBins(dst, src);
+      assert.equal(installed.written, BinFiles.length);
+      assert.equal(installed.maintenance.incomplete, true);
+      assert.equal(installed.maintenance.truncated, false);
+      const removed = removeBins(dst);
+      assert.equal(removed.maintenance.incomplete, true);
+    } finally {
+      if (priorTest === undefined) delete process.env.CAH_TEST_ONLY;
+      else process.env.CAH_TEST_ONLY = priorTest;
+      if (priorFailure === undefined) delete process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
+      else process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = priorFailure;
+    }
+  });
+
+  it('bounds streamed recovery visits while giving displaced data its own budget', () => {
+    const cache = join(dst, 'cache');
+    const quarantine = join(cache, 'lost.txt.cah-owned-remove');
+    mkdirSync(quarantine, { recursive: true });
+    writeFileSync(join(quarantine, 'payload'), 'displaced\n');
+    for (let i = 0; i < 1500; i++) writeFileSync(join(cache, `.cah-tmp-noise-${i}`), 'x');
+    const artifacts = enumerateRecoveryArtifacts(cache, {
+      displacedVisitLimit: 2048, namespaceVisitLimit: 16, tempVisitLimit: 16,
+    });
+    assert.ok(artifacts.some((artifact) => artifact.path === join(quarantine, 'payload')));
+    assert.ok(artifacts.visits <= 2080, `unexpected recovery visits: ${artifacts.visits}`);
+    assert.equal(artifacts.truncated, true);
+  });
+
+  it('does not call a zero recovery budget truncated', () => {
+    mkdirSync(join(dst, 'cache'), { recursive: true });
+    writeFileSync(join(dst, 'cache', '.cah-tmp-unvisited'), 'x');
+    const artifacts = enumerateRecoveryArtifacts(join(dst, 'cache'), { visitLimit: 0 });
+    assert.equal(artifacts.visits, 0);
+    assert.equal(artifacts.truncated, false);
+    assert.equal(artifacts.length, 0);
   });
 
   it('refuses a foreign successor at the publication leaf and preserves its mode', async () => {

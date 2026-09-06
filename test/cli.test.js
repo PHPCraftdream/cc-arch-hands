@@ -399,6 +399,29 @@ describe('run install/uninstall --only bins', () => {
     }
   });
 
+  it('warns but does not fail when cache maintenance cannot enumerate', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
+    const priorTest = process.env.CAH_TEST_ONLY;
+    const priorFailure = process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
+    try {
+      withHome(home, () => {
+        mkdirSync(join(home, '.claude', 'cah-bin', 'cache'), { recursive: true });
+        process.env.CAH_TEST_ONLY = '1';
+        process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = 'opendir';
+        const installed = captureStdout(() => assert.equal(run(['install', '--only', 'bins']), 0));
+        assert.match(installed, /warning: cache maintenance incomplete/);
+        const removed = captureStdout(() => assert.equal(run(['uninstall', '--only', 'bins']), 0));
+        assert.match(removed, /warning: cache maintenance incomplete/);
+      });
+    } finally {
+      if (priorTest === undefined) delete process.env.CAH_TEST_ONLY;
+      else process.env.CAH_TEST_ONLY = priorTest;
+      if (priorFailure === undefined) delete process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
+      else process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = priorFailure;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('bare uninstall preserves shared bins; explicit bins removal warns', () => {
     const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
     try {

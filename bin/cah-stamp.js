@@ -159,14 +159,13 @@ function migrateLegacyMarkers(home, markerDir, sessionId) {
   }
 }
 
-function pruneStaleMarkers(markerDir, nowMs, protectedMarker = null) {
+function pruneStaleMarkers(markerDir, nowMs) {
   let entries;
   try {
     entries = readdirSync(markerDir);
   } catch {
     return;
   }
-  const candidates = [];
   for (const name of entries) {
     if (!UPDATE_MARKER_NAME_RE.test(name)) continue;
     const p = join(markerDir, name);
@@ -186,25 +185,50 @@ function pruneStaleMarkers(markerDir, nowMs, protectedMarker = null) {
         }
         continue;
       }
-      candidates.push({ path: p, identity: stat, mtimeNs: stat.mtimeNs });
     } catch {
       // ignore individual failures — best-effort hygiene
     }
   }
-  candidates.sort((a, b) => a.mtimeNs === b.mtimeNs ? 0 : a.mtimeNs > b.mtimeNs ? -1 : 1);
-  // Leave one slot for the session that is about to claim a marker.
-  const capacity = candidates.filter((entry) => entry.path !== protectedMarker);
-  for (const entry of capacity.slice(Math.max(0, UPDATE_MARKER_MAX_SESSIONS - 1))) {
+}
+
+// Capacity is a reservation, not hygiene. The caller has already acquired
+// the new session's marker claim, so a competing caller for that session fails
+// without evicting an unrelated fresh marker.
+function reserveUpdateMarkerCapacity(markerDir, nowMs, protectedMarker = null) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let entries;
     try {
-      const claim = acquireUpdateMarkerClaim(entry.path, nowMs);
+      entries = readdirSync(markerDir);
+    } catch {
+      return true;
+    }
+    const fresh = [];
+    for (const name of entries) {
+      if (!UPDATE_MARKER_NAME_RE.test(name)) continue;
+      const p = join(markerDir, name);
+      if (p === protectedMarker) continue;
+      try {
+        const stat = pathIdentity(p);
+        if (stat?.isFile && !isOlderThan(stat, nowMs, UPDATE_MARKER_TTL_MS)) {
+          fresh.push({ path: p, mtimeNs: stat.mtimeNs });
+        }
+      } catch { /* best effort */ }
+    }
+    if (fresh.length < UPDATE_MARKER_MAX_SESSIONS) return true;
+    fresh.sort((a, b) => a.mtimeNs === b.mtimeNs ? 0 : a.mtimeNs < b.mtimeNs ? -1 : 1);
+    for (const entry of fresh) {
+      let claim;
+      try { claim = acquireUpdateMarkerClaim(entry.path, nowMs); } catch { claim = null; }
       if (!claim) continue;
       try {
-        removePathIfUnchanged(entry.path, entry.identity, 'marker-capacity');
-      } finally {
-        releaseUpdateMarkerClaim(claim);
-      }
-    } catch { /* best effort */ }
+        const current = pathIdentity(entry.path);
+        if (!current?.isFile || isOlderThan(current, nowMs, UPDATE_MARKER_TTL_MS)) continue;
+        if (removePathIfUnchanged(entry.path, current, 'marker-capacity')) return true;
+      } catch { /* try another candidate or rescan */ }
+      finally { releaseUpdateMarkerClaim(claim); }
+    }
   }
+  return false;
 }
 
 function sessionHash(sessionId) {
@@ -231,12 +255,30 @@ function acquireUpdateMarkerClaim(marker, nowMs) {
   return lease ? { marker, claimPath, owner: lease.owner, lease } : null;
 }
 
+function acquireUpdateMarkerCapacityLease(markerDir, nowMs) {
+  return acquireLease(join(markerDir, '.cah-marker-capacity-update'), {
+    nowMs,
+    staleAfterMs: UPDATE_MARKER_CLAIM_TTL_MS,
+    fenceSuffix: '.taken-',
+    interlockPhase: 'marker-capacity-lease-reclaim',
+    releaseInterlockPhase: 'marker-capacity-lease-release',
+    testLeaseEnv: 'CAH_UPDATE_OWNER_MAX_LEASE_MS',
+  });
+}
+
 function updateMarkerClaimOwned(claim) {
   return Boolean(claim?.lease && leaseOwned(claim.lease));
 }
 
 function releaseUpdateMarkerClaim(claim) {
-  if (claim?.lease) releaseLease(claim.lease);
+  if (!claim?.lease) return;
+  const capacityLease = claim.capacityLease;
+  claim.capacityLease = null;
+  try {
+    releaseLease(claim.lease);
+  } finally {
+    if (capacityLease) releaseLease(capacityLease);
+  }
 }
 
 function markUpdateDelivered(claim) {
@@ -268,6 +310,12 @@ function claimUpdateMarker(markerDir, sessionId, nowMs) {
     const claim = acquireUpdateMarkerClaim(marker, nowMs);
     if (!claim) return null;
     try {
+      const capacityLease = acquireUpdateMarkerCapacityLease(markerDir, nowMs);
+      if (!capacityLease) {
+        releaseUpdateMarkerClaim(claim);
+        return null;
+      }
+      claim.capacityLease = capacityLease;
       try {
         const markerStat = pathIdentity(marker);
         if (markerStat && !markerStat.isFile) {
@@ -287,6 +335,10 @@ function claimUpdateMarker(markerDir, sessionId, nowMs) {
           releaseUpdateMarkerClaim(claim);
           return null;
         }
+      }
+      if (!reserveUpdateMarkerCapacity(markerDir, nowMs, marker)) {
+        releaseUpdateMarkerClaim(claim);
+        return null;
       }
       return claim;
     } catch {
@@ -310,9 +362,7 @@ function buildUpdateNotice(payload, nowMs) {
   const home = process.env.CAH_STAMP_HINT_HOME || homedir();
   const markerDir = join(home, '.claude', 'cah-bin', 'cache');
   migrateLegacyMarkers(home, markerDir, sessionId);
-  pruneStaleMarkers(
-    markerDir, nowMs, join(markerDir, `${UPDATE_MARKER_PREFIX}${sessionHash(sessionId)}`),
-  );
+  pruneStaleMarkers(markerDir, nowMs);
 
   let latest = null;
   try {
