@@ -17,7 +17,9 @@ function runHint(stdin, home, extraEnv = {}) {
   const res = spawnSync(process.execPath, [RUNNER, 'hint'], {
     input: stdin,
     encoding: 'utf8',
-    env: { ...process.env, CAH_TEST_ONLY: '0', CAH_HINT_HOME: home, ...extraEnv },
+    env: {
+      ...process.env, CAH_TEST_ONLY: '0', CAH_HINT_HOME: home, HOME: home, USERPROFILE: home, ...extraEnv,
+    },
   });
   return { stdout: res.stdout, status: res.status };
 }
@@ -25,7 +27,9 @@ function runHint(stdin, home, extraEnv = {}) {
 function runHintAsync(stdin, home, extraEnv = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [RUNNER, 'hint'], {
-      env: { ...process.env, CAH_TEST_ONLY: '0', CAH_HINT_HOME: home, ...extraEnv },
+      env: {
+        ...process.env, CAH_TEST_ONLY: '0', CAH_HINT_HOME: home, HOME: home, USERPROFILE: home, ...extraEnv,
+      },
       stdio: ['pipe', 'pipe', 'ignore'],
     });
     let stdout = '';
@@ -438,6 +442,31 @@ describe('cah-checkpoint-hint bin', () => {
       })));
     assert.equal(results.filter((result) => result.stdout === EXPECTED).length, 1);
     assert.ok(results.every((result) => result.status === 0));
+  });
+
+  it('does not overwrite a successor installed at the final atomic publication boundary', async () => {
+    const home = isolatedHome();
+    const sessionId = 'hint-final-publication-boundary';
+    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const marker = join(cacheDir(home), `cah-hint-shown-${hash}`);
+    const interlock = join(home, 'hint-final-publication-interlock');
+    const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+    const running = runHintAsync(
+      JSON.stringify({ session_id: sessionId, transcript_path: tp }),
+      home,
+      {
+        CAH_TEST_ONLY: '1',
+        CAH_TEST_ONLY_FSUTIL_INTERLOCK: interlock,
+        CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE: 'write-before-final-publication',
+      },
+    );
+    await waitForPath(`${interlock}.ready`);
+    writeFileSync(marker, 'successor-marker\n');
+    writeFileSync(`${interlock}.go`, 'go');
+    const result = await running;
+    assert.equal(result.stdout, EXPECTED);
+    assert.equal(readFileSync(marker, 'utf8'), 'successor-marker\n');
+    assert.equal(readdirSync(cacheDir(home)).some((name) => name.startsWith('.cah-tmp-')), false);
   });
 
   it('24 concurrent claims recover one expired marker without double delivery', async () => {

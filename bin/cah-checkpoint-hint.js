@@ -36,7 +36,7 @@ function markerOptions(markerDir, testHooks = {}) {
     testInterlock: testHooks.testInterlock };
 }
 
-function markDelivered(claim, markerDir) {
+function markDelivered(claim, markerDir, testHooks = {}) {
   if (!markerClaimOwned(claim)) return false;
   if (process.env.CAH_TEST_ONLY === '1'
       && (process.env.CAH_TEST_ONLY_MARKER_CRASH === 'before-durable'
@@ -47,7 +47,7 @@ function markDelivered(claim, markerDir) {
   }
   const ok = publishMarker(claim,
     JSON.stringify({ nonce: claim.owner.nonce || claim.owner.token, deliveredAt: Date.now() }) + '\n',
-    markerOptions(markerDir));
+    markerOptions(markerDir, testHooks));
   if (ok && process.env.CAH_TEST_ONLY === '1'
       && (process.env.CAH_TEST_ONLY_CAPACITY_CRASH === 'after-marker-publish'
         || process.env.CAH_TEST_ONLY_MARKER_CRASH === 'after-marker-publish')) process.exit(94);
@@ -94,7 +94,7 @@ export function main(testHooks = {}) {
   try {
     if (!markerClaimOwned(claim)) return;
     writeSync(1, MESSAGE + '\n');
-    if (markDelivered(claim, markerDir)) {
+    if (markDelivered(claim, markerDir, testHooks)) {
       finishMarkerTransaction(claim);
       pruneMarkers({ ...options, nowMs: Date.now() });
     } else abortMarkerTransaction(claim);

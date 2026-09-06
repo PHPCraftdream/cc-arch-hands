@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   isn't inside a git repo). Never touches anything else that happens to be
   dirty or staged in the working tree.
 - Added six optional Astra Codex agents: `la`, `ma`, `ha`, `xa`, `xxa`, and
-  `ua`, using `gpt-6-astra` with `low`, `medium`, `high`, `extra`, `max`,
+  `ua`, using `gpt-6-astra` with `low`, `medium`, `high`, `xhigh`, `max`,
   and `ultra` reasoning efforts.
 
 ### Changed
@@ -151,9 +151,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Added six optional Codex custom agents for Terra and Luna: `xt`, `xxt`, `ut`,
-  `xl`, `xxl`, and `ul`, using `extra`, `max`, and `ultra` reasoning efforts.
+  `xl`, `xxl`, and `ul`, using `xhigh`, `max`, and `ultra` reasoning efforts.
 - Added six optional Sol agents: `ls`, `ms`, `hs`, `xs`, `xxs`, and `us`, using
-  the full `low`/`medium`/`high`/`extra`/`max`/`ultra` effort range.
+  the full `low`/`medium`/`high`/`xhigh`/`max`/`ultra` effort range.
 - Added the standard `low`/`medium`/`high` agents for Terra (`lt`, `mt`, `ht`)
   and Luna (`ll`, `ml`, `hl`).
 

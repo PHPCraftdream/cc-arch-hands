@@ -41,8 +41,10 @@ The installed companion tree also contains a managed `package.json` with
 `"type": "module"`. This explicit ESM boundary keeps the copied `.js` files
 working on the package's supported Node >=18.19.0 runtime. A pre-existing foreign
 `~/.claude/cah-bin/package.json` is preserved and reported as foreign.
-Updates publish that package boundary first, then `sentinel.js`, `fs-atomic.js`,
-`fsutil.js`, `lease-lock.js`, `marker-state.js`, `transcript-stats.js` and `update-check.js`, and
+Updates publish that package boundary first, then `sentinel.js`,
+`fs-atomic-identity.js`, `fs-atomic-publication.js`, `lease-lock.js`,
+`fs-atomic.js`, `fsutil.js`, `marker-capacity-stage.js`, `marker-state.js`,
+`transcript-stats.js` and `update-check.js`, and
 only then replace executable leaves. This dependency-first closure keeps a new
 executable from becoming visible before its complete sibling dependency chain.
 
@@ -179,7 +181,7 @@ npx cah reinstall --codex-agents
 npx cah uninstall --codex-agents
 ```
 
-Generated agent names use effort prefix + model suffix. Terra (`t`), Luna (`l`), Sol (`s`) and Astra (`a`) use all six levels: `l/m/h` for `low/medium/high` and `x/xx/u` for `extra/max/ultra`. Their full Codex model IDs are `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.6-sol`, and `gpt-6-astra`. They write TOML custom-agent files for Codex under `~/.codex/agents/`.
+Generated agent names use effort prefix + model suffix. Terra (`t`), Luna (`l`), Sol (`s`) and Astra (`a`) use all six levels: `l/m/h` for `low/medium/high` and `x/xx/u` for `xhigh/max/ultra`. Their full Codex model IDs are `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.6-sol`, and `gpt-6-astra`. They write TOML custom-agent files for Codex under `~/.codex/agents/`.
 
 <!--gen:table:codex-agents (run `npm run gen:docs` after editing lib/manifest.js) -->
 | Model | Agents by effort |
@@ -523,6 +525,8 @@ cc-arch-hands/
 │   ├── templates.js             # bundled / disk template abstraction
 │   ├── fsutil.js                # readFileMaybe + orphan-prune helpers
 │   ├── fs-atomic-identity.js    # exact filesystem identity and snapshot helpers
+│   ├── fs-atomic-publication.js # generation-fenced no-overwrite publication
+│   ├── marker-capacity-stage.js  # bounded marker transaction staging/recovery
 │   ├── fs-atomic.js             # atomic publication, identity, quarantine helpers
 │   ├── transcript-stats.js      # shared: stats, formatStatusLine, makeBar, reset formatters
 │   ├── commands.js              # render + install + remove (44 .md bodies)

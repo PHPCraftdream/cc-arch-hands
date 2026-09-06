@@ -10,6 +10,7 @@ import { BinFiles } from '../lib/binstall.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(__dirname, '..', 'scripts', 'gen-docs.js');
 const README = readFileSync(join(__dirname, '..', 'README.md'), 'utf8');
+const CHANGELOG = readFileSync(join(__dirname, '..', 'CHANGELOG.md'), 'utf8');
 const CLAUDE = readFileSync(join(__dirname, '..', 'CLAUDE.md'), 'utf8');
 
 const EXPECTED_RUNTIME_BINS = [
@@ -20,9 +21,11 @@ const EXPECTED_RUNTIME_BINS = [
 ];
 const EXPECTED_SHARED_LIB_LEAVES = [
   'lib/fs-atomic-identity.js',
+  'lib/fs-atomic-publication.js',
   'lib/fs-atomic.js',
   'lib/fsutil.js',
   'lib/lease-lock.js',
+  'lib/marker-capacity-stage.js',
   'lib/marker-state.js',
   'lib/sentinel.js',
   'lib/transcript-stats.js',
@@ -32,9 +35,11 @@ const EXPECTED_PUBLICATION_ORDER = [
   'package.json',
   'lib/sentinel.js',
   'lib/fs-atomic-identity.js',
+  'lib/fs-atomic-publication.js',
+  'lib/lease-lock.js',
   'lib/fs-atomic.js',
   'lib/fsutil.js',
-  'lib/lease-lock.js',
+  'lib/marker-capacity-stage.js',
   'lib/marker-state.js',
   'lib/transcript-stats.js',
   'lib/update-check.js',
@@ -106,7 +111,7 @@ describe('gen-docs --check', () => {
     );
     assert.match(
       README,
-      /package\.json[\s\S]*sentinel\.js[\s\S]*fs-atomic\.js[\s\S]*fsutil\.js[\s\S]*lease-lock\.js[\s\S]*marker-state\.js[\s\S]*transcript-stats\.js[\s\S]*update-check\.js[\s\S]*executable leaves/,
+      /package\.json[\s\S]*sentinel\.js[\s\S]*fs-atomic-identity\.js[\s\S]*fs-atomic-publication\.js[\s\S]*lease-lock\.js[\s\S]*fs-atomic\.js[\s\S]*fsutil\.js[\s\S]*marker-capacity-stage\.js[\s\S]*marker-state\.js[\s\S]*transcript-stats\.js[\s\S]*update-check\.js[\s\S]*executable leaves/,
       'README.md must describe the dependency-first runtime closure',
     );
   });
@@ -156,5 +161,25 @@ describe('gen-docs --check', () => {
       ['la', 'ma', 'ha', 'xa', 'xxa', 'ua'],
     );
     assert.ok(AllCodexAgents.every((agent) => !['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'].includes(agent.model)));
+  });
+
+  it('keeps non-generated Codex prose on xhigh and the generated Astra row aligned', () => {
+    const releaseStart = CHANGELOG.indexOf('## [0.8.0]');
+    const nextRelease = CHANGELOG.indexOf('\n## [', releaseStart + 1);
+    const currentRelease = CHANGELOG.slice(releaseStart, nextRelease === -1 ? undefined : nextRelease);
+
+    assert.match(
+      README,
+      /`x\/xx\/u` for `xhigh\/max\/ultra`\.[\s\S]*`gpt-6-astra`/,
+      'README prose must use the official xhigh effort key and exact Astra model id',
+    );
+    assert.doesNotMatch(README, /`x\/xx\/u` for `extra\/max\/ultra`/);
+    assert.match(currentRelease, /`gpt-6-astra` with `low`, `medium`, `high`, `xhigh`, `max`,/);
+    assert.doesNotMatch(currentRelease, /`extra`/);
+
+    assert.ok(
+      README.includes('| Astra | `la` low · `ma` medium · `ha` high · `xa` xhigh · `xxa` max · `ua` ultra |'),
+      'generated Codex table must keep all Astra aliases aligned',
+    );
   });
 });

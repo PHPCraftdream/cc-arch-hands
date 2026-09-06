@@ -6,6 +6,7 @@ import {
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
+import { captureRegularFileSnapshot, writeFileAtomic } from '../lib/fs-atomic.js';
 
 function waitForPath(path) {
   const deadline = Date.now() + 10_000;
@@ -102,5 +103,25 @@ describe('conditional atomic publication', () => {
     const result = await running;
     assert.equal(result.ok, false);
     assert.equal(readFileSync(dest, 'utf8'), 'C\n');
+  });
+
+  it('cannot overwrite a successor that appears after the generation fence moves the old leaf', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-conditional-'));
+    const dest = join(dir, 'leaf');
+    writeFileSync(dest, 'B\n');
+    const snapshot = captureRegularFileSnapshot(dest);
+    let successorWritten = false;
+
+    assert.throws(() => writeFileAtomic(dest, 'new\n', {
+      expectedDestination: snapshot.expectedDestination,
+      testInterlock: (phase) => {
+        if (phase === 'write-before-final-rename' && !successorWritten) {
+          successorWritten = true;
+          writeFileSync(dest, 'C\n');
+        }
+      },
+    }), /changed concurrently|refusing operation/);
+    assert.equal(readFileSync(dest, 'utf8'), 'C\n');
+    assert.equal(existsSync(`${dest}.cah-owned-publish`), false);
   });
 });
