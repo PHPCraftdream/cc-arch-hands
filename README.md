@@ -523,7 +523,7 @@ cc-arch-hands/
 ├── bin/cah-status-probe.js      # diagnostic statusLine bin used by `cah probe statusline`
 ├── lib/
 │   ├── cli.js                   # dispatch, arg parsing (node:util parseArgs), --only resolver
-│   ├── manifest.js              # AllModelCommands (44 definitions), AllCodexAgents (24), AllSkills (11), SkillDeps
+│   ├── manifest.js              # AllModelCommands (44 definitions), AllCodexAgents (23), AllSkills (11), SkillDeps
 │   ├── sentinel.js              # new + legacy markers, ownership classifier
 │   ├── scope.js                 # global vs local target dir resolution
 │   ├── templates.js             # bundled / disk template abstraction

@@ -6,7 +6,10 @@ import { join, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { runConcurrentBatches } from '../test-support/process-batches.js';
+import {
+  armChildDeadline, timeoutError, DEFAULT_CHILD_DEADLINE_MS, TERMINATION_GRACE_MS,
+  runConcurrentBatches,
+} from '../test-support/process-batches.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BIN = join(__dirname, '..', 'bin', 'cah-checkpoint-hint.js');
@@ -19,26 +22,36 @@ function runHint(stdin, home, extraEnv = {}) {
     input: stdin,
     encoding: 'utf8',
     env: {
-      ...process.env, CAH_TEST_ONLY: '0', CAH_HINT_HOME: home, HOME: home, USERPROFILE: home, ...extraEnv,
+      ...process.env, CAH_TEST_ONLY: '0', ...extraEnv,
+      CAH_HINT_HOME: home, HOME: home, USERPROFILE: home,
     },
   });
   return { stdout: res.stdout, status: res.status };
 }
 
-function runHintAsync(stdin, home, extraEnv = {}) {
+function runHintAsync(
+  stdin,
+  home,
+  extraEnv = {},
+  { timeoutMs = DEFAULT_CHILD_DEADLINE_MS, graceMs = TERMINATION_GRACE_MS, signal } = {},
+) {
   return new Promise((resolve) => {
     let child;
     const result = { stdout: '', status: null, error: null };
     let settled = false;
+    let terminationError = null;
+    let deadline;
     const finish = (status, error = null) => {
       if (settled) return;
       settled = true;
+      deadline?.clear();
       resolve({ ...result, status, error });
     };
     try {
       child = spawn(process.execPath, [RUNNER, 'hint'], {
         env: {
-          ...process.env, CAH_TEST_ONLY: '0', CAH_HINT_HOME: home, HOME: home, USERPROFILE: home, ...extraEnv,
+          ...process.env, CAH_TEST_ONLY: '0', ...extraEnv,
+          CAH_HINT_HOME: home, HOME: home, USERPROFILE: home,
         },
         stdio: ['pipe', 'pipe', 'ignore'],
       });
@@ -47,12 +60,34 @@ function runHintAsync(stdin, home, extraEnv = {}) {
       return;
     }
     let stdout = '';
+    const onSignalAbort = () => {
+      terminationError = timeoutError('checkpoint-hint child');
+      deadline?.terminate();
+    };
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.stdout.on('error', (error) => finish(null, error));
+    child.stdout.on('error', (error) => { if (!terminationError) terminationError = error; });
     child.stdin.on('error', () => { /* close reports the child result */ });
-    child.on('error', (error) => finish(null, error));
-    child.on('close', (status) => { result.stdout = stdout; finish(status); });
+    child.on('error', (error) => { if (!terminationError) terminationError = error; });
+    child.on('close', (status) => {
+      result.stdout = stdout;
+      const error = terminationError;
+      child.stdout.removeAllListeners();
+      child.stdin.removeAllListeners();
+      child.stdout.destroy();
+      child.stdin.destroy();
+      if (signal) signal.removeEventListener('abort', onSignalAbort);
+      finish(status, error);
+    });
+    deadline = armChildDeadline(child, {
+      timeoutMs,
+      graceMs,
+      onTimeout: () => { terminationError = timeoutError('checkpoint-hint child'); },
+    });
+    if (signal) {
+      if (signal.aborted) onSignalAbort();
+      else signal.addEventListener('abort', onSignalAbort, { once: true });
+    }
     child.stdin.end(stdin);
   });
 }
@@ -138,6 +173,19 @@ describe('cah-checkpoint-hint bin', () => {
     const { stdout, status } = runHint('{not json', home);
     assert.equal(stdout, '');
     assert.equal(status, 0);
+  });
+
+  it('terminates a deterministically hung child after its deadline', async (t) => {
+    const home = isolatedHome();
+    t.after(() => rmSync(home, { recursive: true, force: true }));
+    const started = Date.now();
+    const result = await runHintAsync('', home, { CAH_TEST_ONLY_HANG: '1' }, {
+      timeoutMs: 50,
+      graceMs: 25,
+    });
+    assert.equal(result.error?.code, 'ETIMEDOUT');
+    assert.ok(Date.now() - started < 2_000, 'hung child must be bounded');
+    assert.ok(existsSync(home), 'fixture remains available to the caller after close');
   });
 
   it('marker already exists → silent, no duplicate hint', () => {
@@ -454,10 +502,10 @@ describe('cah-checkpoint-hint bin', () => {
     t.after(() => rmSync(home, { recursive: true, force: true }));
     const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
     const input = JSON.stringify({ session_id: 'parallel-hint', transcript_path: tp });
-    const results = await runConcurrentBatches(24, () =>
+    const results = await runConcurrentBatches(24, (_, { signal }) =>
       runHintAsync(input, home, {
         CAH_RATE_LIMITS_CACHE: join(home, 'missing-rate-limits.json'),
-      }));
+      }, { signal }));
     assert.equal(results.filter((result) => result.stdout === EXPECTED).length, 1);
     assert.ok(results.every((result) => result.status === 0),
       results.filter((result) => result.status !== 0).map((result) => result.error?.code).join(', '));
@@ -500,7 +548,8 @@ describe('cah-checkpoint-hint bin', () => {
     utimesSync(marker, old, old);
     const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
     const input = JSON.stringify({ session_id: sessionId, transcript_path: tp });
-    const results = await runConcurrentBatches(24, () => runHintAsync(input, home));
+    const results = await runConcurrentBatches(24, (_, { signal }) =>
+      runHintAsync(input, home, {}, { signal }));
     assert.equal(results.filter((result) => result.stdout === EXPECTED).length, 1);
     assert.ok(results.every((result) => result.status === 0));
   });

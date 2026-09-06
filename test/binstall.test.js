@@ -17,6 +17,9 @@ import {
 } from '../lib/binstall.js';
 import { enumerateRecoveryArtifacts, maintainRecoveryArtifacts } from '../lib/fs-atomic.js';
 import { Scope } from '../lib/scope.js';
+import {
+  armWorkerDeadline, timeoutError, DEFAULT_WORKER_DEADLINE_MS, TERMINATION_GRACE_MS,
+} from '../test-support/process-batches.js';
 
 function tmpDir() {
   return mkdtempSync(join(tmpdir(), 'cah-bin-test-'));
@@ -68,21 +71,32 @@ function fakeSource(root) {
 
 // Worker startup can be scheduler-delayed on a loaded Windows host; keep the
 // readiness bound finite but separate from the interlock's race semantics.
-function waitForPath(path, timeoutMs = 60000) {
+function waitForPath(path, timeoutMs = 60000, failurePromise = null) {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolvePromise, reject) => {
+    let timer = null;
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      callback(value);
+    };
     const poll = () => {
       if (existsSync(path)) {
-        resolvePromise();
+        finish(resolvePromise);
         return;
       }
       if (Date.now() >= deadline) {
-        reject(new Error(`timed out waiting for ${path}`));
+        finish(reject, new Error(`timed out waiting for ${path}`));
         return;
       }
-      setTimeout(poll, 10);
+      timer = setTimeout(poll, 10);
     };
     poll();
+    if (failurePromise) {
+      Promise.resolve(failurePromise).catch((error) => finish(reject, error));
+    }
   });
 }
 
@@ -93,6 +107,7 @@ function runBinWorker(
   phase = 'prune-before-remove',
   operation = 'writeBins',
   leaseMs = null,
+  { timeoutMs = DEFAULT_WORKER_DEADLINE_MS, graceMs = TERMINATION_GRACE_MS, hang = false } = {},
 ) {
   const moduleUrl = new URL('../lib/binstall.js', import.meta.url).href;
   const hooksUrl = new URL('../test-support/interlocks.js', import.meta.url).href;
@@ -116,6 +131,14 @@ function runBinWorker(
       if (workerData.leaseMs !== null) {
         process.env.CAH_TEST_ONLY_BIN_LEASE_MS = String(workerData.leaseMs);
       }
+      if (workerData.hang) {
+        await new Promise((resolve) => {
+          parentPort.once('message', (message) => {
+            if (message?.__testShutdown) resolve();
+          });
+        });
+        return;
+      }
       const { writeBins, removeBins } = await import(workerData.moduleUrl);
       const operation = workerData.operation === 'removeBins' ? removeBins : writeBins;
       try {
@@ -134,29 +157,46 @@ function runBinWorker(
   return new Promise((resolvePromise, reject) => {
     const worker = new Worker(source, {
       eval: true,
-      workerData: { dst, src, interlock, phase, operation, leaseMs, moduleUrl, hooksUrl },
+      workerData: {
+        dst, src, interlock, phase, operation, leaseMs, hang, moduleUrl, hooksUrl,
+      },
     });
-    let settled = false;
-    const finish = (callback, value) => {
-      if (settled) return;
-      settled = true;
-      callback(value);
-      worker.terminate().catch(() => {});
+    let finishing = false;
+    let deadline;
+    let timeoutFailure = null;
+    const finish = async (callback, value) => {
+      if (finishing) return;
+      finishing = true;
+      deadline?.clear();
+      try {
+        await worker.terminate();
+        callback(value);
+      } catch (error) {
+        reject(error);
+      }
     };
     worker.once('message', (value) => {
       if (!value?.__workerError) {
-        finish(resolvePromise, value);
+        void finish(timeoutFailure ? reject : resolvePromise, timeoutFailure || value);
         return;
       }
       const error = new Error(value.__workerError.message);
       error.name = value.__workerError.name || 'Error';
       if (value.__workerError.code) error.code = value.__workerError.code;
-      if (leaseMs !== null) finish(resolvePromise, error);
-      else finish(reject, error);
+      if (leaseMs !== null) void finish(resolvePromise, error);
+      else void finish(reject, error);
     });
-    worker.once('error', (error) => finish(reject, error));
+    worker.once('error', (error) => void finish(reject, error));
     worker.once('exit', (code) => {
-      if (!settled && code !== 0) finish(reject, new Error(`bin worker exited with code ${code}`));
+      if (!finishing && code !== 0) {
+        void finish(reject, new Error(`bin worker exited with code ${code}`));
+      }
+    });
+    deadline = armWorkerDeadline(worker, {
+      timeoutMs,
+      graceMs,
+      onTimeout: () => { timeoutFailure = timeoutError('binstall worker'); },
+      onForce: () => void finish(reject, timeoutFailure),
     });
   });
 }
@@ -187,6 +227,20 @@ describe('writeBins', () => {
     if (process.platform !== 'win32') {
       assert.equal(statSync(join(dst, 'bin', 'cah-status.js')).mode & 0o777, 0o755);
     }
+  });
+
+  it('terminates a deterministically hung worker before resolving', async () => {
+    const started = Date.now();
+    await assert.rejects(
+      runBinWorker(dst, src, join(dst, 'hung-worker-interlock'), 'unused', 'writeBins', null, {
+        timeoutMs: 50,
+        graceMs: 25,
+        hang: true,
+      }),
+      (error) => error?.code === 'ETIMEDOUT',
+    );
+    assert.ok(Date.now() - started < 2_000, 'hung worker must be bounded');
+    assert.ok(existsSync(src), 'fixtures remain until the worker has terminated');
   });
 
   it('keeps a deterministic dependency-first order for every frozen generation', () => {
@@ -396,7 +450,7 @@ describe('writeBins', () => {
     writeFileSync(orphan, `#!/usr/bin/env node\n${SentinelBin}\nold\n`);
 
     const running = runBinWorker(dst, src, interlock);
-    await waitForPath(`${interlock}.ready`);
+    await waitForPath(`${interlock}.ready`, 60000, running);
     rmSync(orphan);
     writeFileSync(orphan, 'foreign successor\n');
     writeFileSync(`${interlock}.go`, 'go');
@@ -602,7 +656,7 @@ describe('writeBins', () => {
     const destination = join(dst, 'lib', 'sentinel.js');
     const interlock = join(dst, 'write-successor-interlock');
     const running = runBinWorker(dst, src, interlock, 'binstall-before-leaf-write');
-    await waitForPath(`${interlock}.ready`);
+    await waitForPath(`${interlock}.ready`, 60000, running);
     rmSync(destination);
     writeFileSync(destination, 'foreign successor\n', { mode: 0o640 });
     writeFileSync(`${interlock}.go`, 'go');
@@ -615,7 +669,7 @@ describe('writeBins', () => {
     const packagePath = join(dst, 'package.json');
     const interlock = join(dst, 'boundary-successor-interlock');
     const running = runBinWorker(dst, src, interlock, 'binstall-after-first-leaf');
-    await waitForPath(`${interlock}.ready`);
+    await waitForPath(`${interlock}.ready`, 60000, running);
 
     rmSync(packagePath);
     const foreignPackage = JSON.stringify({ type: 'commonjs', owner: 'user' }) + '\n';
@@ -645,12 +699,12 @@ describe('writeBins', () => {
       'binstall-after-first-leaf,binstall-rollback-before-final',
     );
 
-    await waitForPath(`${interlock}.binstall-after-first-leaf.ready`);
+    await waitForPath(`${interlock}.binstall-after-first-leaf.ready`, 60000, running);
     const successorLeaf = join(dst, 'lib', 'fs-atomic-identity.js');
     rmSync(successorLeaf);
     writeFileSync(successorLeaf, 'foreign successor during rollback\n');
     writeFileSync(`${interlock}.binstall-after-first-leaf.go`, 'go');
-    await waitForPath(`${interlock}.binstall-rollback-before-final.ready`);
+    await waitForPath(`${interlock}.binstall-rollback-before-final.ready`, 60000, running);
     assert.equal(readFileSync(packagePath, 'utf8'), oldBoundary,
       'rollback must keep the old boundary visible until replacement');
     const successor = JSON.stringify({ owner: 'C' }) + '\n';
@@ -1062,7 +1116,7 @@ describe('writeBins', () => {
 
     const interlock = join(dst, 'dependency-boundary-interlock');
     const running = runBinWorker(dst, src, interlock, 'binstall-after-dependencies');
-    await waitForPath(`${interlock}.ready`);
+    await waitForPath(`${interlock}.ready`, 60000, running);
 
     assert.ok(existsSync(join(dst, 'package.json')));
     for (const file of BinFiles.filter((entry) => entry.dest.startsWith('lib/'))) {
@@ -1094,7 +1148,7 @@ describe('writeBins', () => {
       'binstall-before-boundary-remove',
       'removeBins',
     );
-    await waitForPath(`${interlock}.ready`);
+    await waitForPath(`${interlock}.ready`, 60000, running);
 
     assert.ok(existsSync(join(dst, 'package.json')), 'Node 18 ESM boundary must be last');
     assert.equal(JSON.parse(readFileSync(join(dst, 'package.json'), 'utf8')).type, 'module');
@@ -1115,7 +1169,7 @@ describe('writeBins', () => {
   it('holds one lease across install preflight and rejects a concurrent uninstall', async () => {
     const interlock = join(dst, 'lifecycle-install-interlock');
     const installing = runBinWorker(dst, src, interlock, 'binstall-after-lease', 'writeBins');
-    await waitForPath(`${interlock}.ready`);
+    await waitForPath(`${interlock}.ready`, 60000, installing);
 
     await assert.rejects(
       runBinWorker(dst, src, join(dst, 'unused-remove-interlock'), 'binstall-after-lease', 'removeBins'),
@@ -1132,7 +1186,7 @@ describe('writeBins', () => {
     writeBins(dst, src);
     const interlock = join(dst, 'lifecycle-remove-interlock');
     const removing = runBinWorker(dst, src, interlock, 'binstall-after-lease', 'removeBins');
-    await waitForPath(`${interlock}.ready`);
+    await waitForPath(`${interlock}.ready`, 60000, removing);
 
     await assert.rejects(
       runBinWorker(dst, src, join(dst, 'unused-install-interlock'), 'binstall-after-lease', 'writeBins'),
@@ -1150,7 +1204,7 @@ describe('writeBins', () => {
     const installing = runBinWorker(
       dst, src, interlock, 'binstall-after-boundary', 'writeBins', 500,
     );
-    await waitForPath(`${interlock}.ready`);
+    await waitForPath(`${interlock}.ready`, 60000, installing);
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 700));
     writeFileSync(`${interlock}.go`, 'go');
 
@@ -1166,7 +1220,7 @@ describe('writeBins', () => {
     const installing = runBinWorker(
       dst, src, interlock, 'binstall-after-boundary', 'writeBins', 500,
     );
-    await waitForPath(`${interlock}.ready`);
+    await waitForPath(`${interlock}.ready`, 60000, installing);
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 700));
     const expiredOwnerPath = join(binLifecycleLockPath(dst), 'owner.json');
     const expiredOwner = JSON.parse(readFileSync(expiredOwnerPath, 'utf8'));
@@ -1201,7 +1255,7 @@ describe('writeBins', () => {
     const removing = runBinWorker(
       dst, src, interlock, 'binstall-before-leaf-remove', 'removeBins', 500,
     );
-    await waitForPath(`${interlock}.ready`);
+    await waitForPath(`${interlock}.ready`, 60000, removing);
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 700));
     const expiredOwnerPath = join(binLifecycleLockPath(dst), 'owner.json');
     const expiredOwner = JSON.parse(readFileSync(expiredOwnerPath, 'utf8'));

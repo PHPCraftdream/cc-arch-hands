@@ -11,6 +11,7 @@
 // never has to guess where prose ends and generated content begins:
 //   <!--gen:table:KEY ...--> ... <!--/gen:table:KEY-->
 //   <!--gen:count:KEY-->N<!--/gen-->
+// Literal registry annotations are also regenerated from the manifest.
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -92,6 +93,16 @@ const COUNTS = {
   'codex-agents': AllCodexAgents.length,
 };
 
+// Keep literal registry annotations in the README inside the same generated
+// count contract as prose counts. These locations are deliberately plain
+// text because one of them lives inside the fenced layout diagram.
+const LITERAL_COUNT_ANNOTATIONS = {
+  'codex-agents': {
+    pattern: /AllCodexAgents \(\d+\)/g,
+    render: () => `AllCodexAgents (${COUNTS['codex-agents']})`,
+  },
+};
+
 function substituteTables(content) {
   return content.replace(
     /(<!--gen:table:(\S+)[^>]*-->\n)[\s\S]*?(\n<!--\/gen:table:\2-->)/g,
@@ -108,6 +119,18 @@ function substituteCounts(content) {
     if (!(key in COUNTS)) throw new Error(`gen-docs: unknown count key "${key}" in README.md`);
     return `<!--gen:count:${key}-->${COUNTS[key]}<!--/gen-->`;
   });
+}
+
+function substituteLiteralCounts(content) {
+  let updated = content;
+  for (const [key, { pattern, render }] of Object.entries(LITERAL_COUNT_ANNOTATIONS)) {
+    const matches = updated.match(pattern) ?? [];
+    if (matches.length !== 1) {
+      throw new Error(`gen-docs: expected exactly one generated literal count annotation for "${key}"`);
+    }
+    updated = updated.replace(pattern, render);
+  }
+  return updated;
 }
 
 function validateMarkers(content) {
@@ -128,13 +151,19 @@ function validateMarkers(content) {
   for (const key of Object.keys(COUNTS)) {
     if (!seenCounts.has(key)) throw new Error(`gen-docs: missing generated count marker for "${key}"`);
   }
+  for (const [key, { pattern }] of Object.entries(LITERAL_COUNT_ANNOTATIONS)) {
+    const matches = content.match(pattern) ?? [];
+    if (matches.length !== 1) {
+      throw new Error(`gen-docs: expected exactly one generated literal count annotation for "${key}"`);
+    }
+  }
 }
 
 function main() {
   const check = process.argv.includes('--check');
   const original = readFileSync(README_PATH, 'utf8');
   validateMarkers(original);
-  const updated = substituteCounts(substituteTables(original));
+  const updated = substituteLiteralCounts(substituteCounts(substituteTables(original)));
 
   if (updated === original) {
     console.log('README.md is already in sync with lib/manifest.js.');

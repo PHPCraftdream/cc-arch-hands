@@ -275,7 +275,8 @@ export function registerStampUpdateCases() {
         CAH_RATE_LIMITS_CACHE: join(dir, 'missing-rate-limits.json'),
       };
       const payload = { session_id: 'parallel-update', transcript_path: tp, hook_event_name: 'Stop' };
-      const results = await runConcurrentBatches(24, () => runStampAsync(payload, env));
+      const results = await runConcurrentBatches(24, (_, { signal }) =>
+        runStampAsync(payload, env, { signal }));
       assert.equal(results.filter((result) => result.stdout.includes('99.0.0')).length, 1);
       assert.ok(results.every((result) => result.status === 0),
         results.filter((result) => result.status !== 0).map((result) => result.error?.code).join(', '));

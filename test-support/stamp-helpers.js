@@ -6,6 +6,7 @@ import { join, dirname, basename } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+import { armChildDeadline, timeoutError, DEFAULT_CHILD_DEADLINE_MS, TERMINATION_GRACE_MS } from './process-batches.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BIN = join(__dirname, '..', 'bin', 'cah-stamp.js');
@@ -60,7 +61,11 @@ export function runStamp(stdinData, env) {
   };
 }
 
-export function runStampAsync(stdinData, env) {
+export function runStampAsync(
+  stdinData,
+  env = {},
+  { timeoutMs = DEFAULT_CHILD_DEADLINE_MS, graceMs = TERMINATION_GRACE_MS, signal } = {},
+) {
   const input = typeof stdinData === 'string' ? stdinData : JSON.stringify(stdinData);
   const invocation = stampInvocationEnv(env);
   const ownsHintHome = !env.CAH_STAMP_HINT_HOME;
@@ -68,10 +73,16 @@ export function runStampAsync(stdinData, env) {
     let child;
     const result = { stdout: '', status: null, error: null };
     let settled = false;
+    let closed = false;
+    let terminationError = null;
+    let deadline;
     const finish = (status, error = null) => {
       if (settled) return;
       settled = true;
-      if (ownsHintHome) rmSync(invocation.hintHome, { recursive: true, force: true });
+      deadline?.clear();
+      if (ownsHintHome && (!child || closed)) {
+        rmSync(invocation.hintHome, { recursive: true, force: true });
+      }
       resolve({ ...result, status, error,
         hintHome: invocation.hintHome,
         cachePath: invocation.cacheOverride,
@@ -88,12 +99,35 @@ export function runStampAsync(stdinData, env) {
       return;
     }
     let stdout = '';
+    const onSignalAbort = () => {
+      terminationError = timeoutError('stamp child');
+      deadline?.terminate();
+    };
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.stdout.on('error', (error) => finish(null, error));
+    child.stdout.on('error', (error) => { if (!terminationError) terminationError = error; });
     child.stdin.on('error', () => { /* close reports the child result */ });
-    child.on('error', (error) => finish(null, error));
-    child.on('close', (status) => { result.stdout = stdout; finish(status); });
+    child.on('error', (error) => { if (!terminationError) terminationError = error; });
+    child.on('close', (status) => {
+      closed = true;
+      result.stdout = stdout;
+      const error = terminationError;
+      child.stdout.removeAllListeners();
+      child.stdin.removeAllListeners();
+      child.stdout.destroy();
+      child.stdin.destroy();
+      if (signal) signal.removeEventListener('abort', onSignalAbort);
+      finish(status, error);
+    });
+    deadline = armChildDeadline(child, {
+      timeoutMs,
+      graceMs,
+      onTimeout: () => { terminationError = timeoutError('stamp child'); },
+    });
+    if (signal) {
+      if (signal.aborted) onSignalAbort();
+      else signal.addEventListener('abort', onSignalAbort, { once: true });
+    }
     child.stdin.end(input);
   });
 }

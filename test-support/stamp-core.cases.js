@@ -1,14 +1,26 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync, utimesSync, mkdirSync, unlinkSync, rmdirSync, symlinkSync, lstatSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync, utimesSync, mkdirSync, unlinkSync, rmdirSync, symlinkSync, lstatSync, rmSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { runStamp, isolatedDir, writeTranscript, updateMarkerDir, stampSidecarPath, TIME_RE } from './stamp-helpers.js';
+import { runStamp, runStampAsync, isolatedDir, writeTranscript, updateMarkerDir, stampSidecarPath, TIME_RE } from './stamp-helpers.js';
 
 export function registerStampCoreCases() {
+  it('terminates a deterministically hung child after its deadline', async () => {
+    const started = Date.now();
+    const result = await runStampAsync('', { CAH_TEST_ONLY_HANG: '1' }, {
+      timeoutMs: 50,
+      graceMs: 25,
+    });
+    assert.equal(result.error?.code, 'ETIMEDOUT');
+    assert.ok(Date.now() - started < 2_000, 'hung child must be bounded');
+    assert.ok(!existsSync(result.hintHome), 'owned fixture is removed only after close');
+    rmSync(result.hintHome, { recursive: true, force: true });
+  });
+
   it('empty stdin → no output, exit 0', () => {
     const { stdout, status } = runStamp('');
     assert.equal(stdout, '');

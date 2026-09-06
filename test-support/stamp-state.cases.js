@@ -462,7 +462,8 @@ export function registerStampStateCases() {
       CAH_UPDATE_CHECK_CACHE: join(dir, 'missing-update-cache.json'),
     };
     const payload = { session_id: 'parallel-stamp', transcript_path: tp };
-    const results = await runConcurrentBatches(24, () => runStampAsync(payload, env));
+    const results = await runConcurrentBatches(24, (_, { signal }) =>
+      runStampAsync(payload, env, { signal }));
     assert.equal(results.filter((result) => result.stdout.trim()).length, 1);
     assert.ok(results.every((result) => result.status === 0),
       results.filter((result) => result.status !== 0).map((result) => result.error?.code).join(', '));

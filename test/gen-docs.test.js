@@ -57,6 +57,11 @@ describe('gen-docs --check', () => {
     assert.match(README, /<!--gen:count:model-commands-->44<!--\/gen-->/);
     assert.match(README, /<!--gen:count:model-bodies-->88<!--\/gen--> command\+agent bodies/);
     assert.match(README, /<!--gen:count:codex-agents-->23<!--\/gen-->/);
+    assert.match(
+      README,
+      /AllCodexAgents \(23\)/,
+      'README layout annotation must use the manifest Codex-agent count',
+    );
     assert.match(CLAUDE, /44 current Claude model definitions[\s\S]*88 installed bodies total/);
     assert.match(CLAUDE, /current `AllCodexAgents` registry contains 23 optional Codex agents/);
 
