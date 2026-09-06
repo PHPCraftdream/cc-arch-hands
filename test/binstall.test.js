@@ -13,6 +13,7 @@ import { tmpdir, homedir } from 'node:os';
 import { SentinelBin } from '../lib/sentinel.js';
 import {
   writeBins, removeBins, BinFiles, binLifecycleLockPath,
+  deriveBinFilePublicationOrder, getBinFileImportGraph,
 } from '../lib/binstall.js';
 import { enumerateRecoveryArtifacts, maintainRecoveryArtifacts } from '../lib/fs-atomic.js';
 import { Scope } from '../lib/scope.js';
@@ -50,6 +51,7 @@ function fakeSource(root) {
   writeFileSync(join(root, 'lib', 'fs-atomic-identity.js'), 'export const identity = 1;\n');
   writeFileSync(join(root, 'lib', 'fs-atomic-publication.js'), 'export const publication = 1;\n');
   writeFileSync(join(root, 'lib', 'marker-capacity-stage.js'), 'export const stage = 1;\n');
+  writeFileSync(join(root, 'lib', 'marker-capacity-recovery.js'), 'export const recovery = 1;\n');
   writeFileSync(join(root, 'lib', 'marker-capacity-ops.js'), 'export const ops = 1;\n');
   writeFileSync(join(root, 'lib', 'fs-atomic.js'), 'export const atomic = 1;\n');
   writeFileSync(join(root, 'lib', 'sentinel.js'), 'export const sentinel = 1;\n');
@@ -176,6 +178,20 @@ describe('writeBins', () => {
     if (process.platform !== 'win32') {
       assert.equal(statSync(join(dst, 'bin', 'cah-status.js')).mode & 0o777, 0o755);
     }
+  });
+
+  it('keeps a deterministic dependency-first order for every frozen generation', () => {
+    const first = deriveBinFilePublicationOrder(BinFiles, src).map((file) => file.dest);
+    const second = deriveBinFilePublicationOrder(BinFiles, src).map((file) => file.dest);
+    const graph = getBinFileImportGraph(BinFiles, src);
+    assert.deepEqual(first, second);
+    for (const [importer, dependencies] of graph) {
+      for (const dependency of dependencies) {
+        assert.ok(first.indexOf(dependency) < first.indexOf(importer),
+          `${dependency} must precede ${importer}`);
+      }
+    }
+    assert.equal(first[0], 'package.json', 'the synthetic ESM boundary remains first');
   });
 
   it('rejects any foreign package boundary before any bin mutation', () => {
@@ -753,6 +769,70 @@ describe('writeBins', () => {
       'a dependent restored before its failed dependency must be republished');
     assert.match(readFileSync(join(dst, 'bin', 'cah-status.js'), 'utf8'), /console\.log\('new'/);
     assert.match(readFileSync(join(dst, 'lib', 'transcript-stats.js'), 'utf8'), /x = 2/);
+  });
+
+  it('converges a failed executable repair after exact post-publication success', () => {
+    writeBins(dst, src);
+    writeFileSync(
+      join(src, 'bin', 'cah-status.js'),
+      "#!/usr/bin/env node\nimport { x } from '../lib/transcript-stats.js';\nconsole.log('new', x);\n",
+    );
+    writeFileSync(join(src, 'lib', 'transcript-stats.js'), 'export const x = 2;\n');
+
+    let failedForward = false;
+    let failDependencyRollback = false;
+    let threwDependencyRollback = false;
+    let postRepairStatus = false;
+    let threwPostRepair = false;
+    let failure;
+    try {
+      writeBins(dst, src, {
+        testInterlock: (phase, dest) => {
+          if (phase === 'binstall-before-leaf-write'
+              && dest === 'bin/cah-status-probe.js' && !failedForward) {
+            failedForward = true;
+            throw new Error('test-only convergence forward failure');
+          }
+          if (phase === 'binstall-before-rollback'
+              && dest === 'lib/transcript-stats.js') {
+            failDependencyRollback = true;
+          }
+          if (phase === 'write-before-final-operation'
+              && failDependencyRollback && !threwDependencyRollback) {
+            threwDependencyRollback = true;
+            throw new Error('test-only dependency rollback failure');
+          }
+          if (phase === 'binstall-before-rollback-republish'
+              && dest === 'bin/cah-status.js' && !postRepairStatus) {
+            postRepairStatus = true;
+          }
+          if (phase === 'write-after-rename' && postRepairStatus && !threwPostRepair) {
+            threwPostRepair = true;
+            throw new Error('test-only post-publication executable failure');
+          }
+        },
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    assert.ok(failure);
+    assert.equal(threwPostRepair, true);
+    assert.ok(failure.rollback.republished.includes('bin/cah-status.js'));
+    const smokeHome = tmpDir();
+    try {
+      const result = spawnSync(process.execPath, [join(dst, 'bin', 'cah-status.js')], {
+        cwd: smokeHome,
+        env: { ...process.env, HOME: smokeHome, USERPROFILE: smokeHome },
+        encoding: 'utf8',
+        timeout: 10_000,
+      });
+      assert.equal(result.error, undefined, result.error?.message);
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /new 2/);
+    } finally {
+      rmSync(smokeHome, { recursive: true, force: true });
+    }
   });
 
   it('freezes one source generation for graph, publication, and repair', () => {

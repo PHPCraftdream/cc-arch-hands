@@ -28,6 +28,7 @@ const EXPECTED_SHARED_LIB_LEAVES = [
   'lib/fsutil.js',
   'lib/lease-lock.js',
   'lib/marker-capacity-ops.js',
+  'lib/marker-capacity-recovery.js',
   'lib/marker-capacity-stage.js',
   'lib/marker-state.js',
   'lib/sentinel.js',
@@ -131,7 +132,7 @@ describe('gen-docs --check', () => {
     );
     assert.match(
       README,
-      /package\.json[\s\S]*sentinel\.js[\s\S]*fs-atomic-identity\.js[\s\S]*fs-atomic-publication\.js[\s\S]*fs-atomic\.js[\s\S]*fsutil\.js[\s\S]*lease-lock\.js[\s\S]*marker-capacity-ops\.js[\s\S]*marker-capacity-stage\.js[\s\S]*marker-state\.js[\s\S]*transcript-stats\.js[\s\S]*update-check\.js[\s\S]*executable leaves/,
+      /package\.json[\s\S]*sentinel\.js[\s\S]*fs-atomic-identity\.js[\s\S]*fs-atomic-publication\.js[\s\S]*fs-atomic\.js[\s\S]*fsutil\.js[\s\S]*lease-lock\.js[\s\S]*marker-capacity-ops\.js[\s\S]*marker-capacity-stage\.js[\s\S]*marker-capacity-recovery\.js[\s\S]*marker-state\.js[\s\S]*transcript-stats\.js[\s\S]*update-check\.js[\s\S]*executable leaves/,
       'README.md must describe the dependency-first runtime closure',
     );
   });

@@ -44,7 +44,7 @@ working on the package's supported Node >=18.19.0 runtime. A pre-existing foreig
 Updates publish that package boundary first, then `sentinel.js`,
 `fs-atomic-identity.js`, `fs-atomic-publication.js`, `fs-atomic.js`,
 `fsutil.js`, `lease-lock.js`, `marker-capacity-ops.js`,
-`marker-capacity-stage.js`, `marker-state.js`,
+`marker-capacity-stage.js`, `marker-capacity-recovery.js`, `marker-state.js`,
 `transcript-stats.js` and `update-check.js`, and
 only then replace executable leaves. This dependency-first closure keeps a new
 executable from becoming visible before its complete sibling dependency chain.
@@ -398,6 +398,7 @@ npx cah install --only bins                         # companion bins (cah-status
                                                     #   cah-checkpoint-hint, cah-status-probe,
                                                     #   + shared lib leaves: transcript-stats.js,
                                                     #     update-check.js, lease-lock.js, marker-capacity-ops.js,
+                                                    #     marker-capacity-recovery.js,
                                                     #     marker-state.js, fsutil.js,
                                                     #     fs-atomic-identity.js, fs-atomic.js,
                                                     #     sentinel.js)
@@ -530,6 +531,7 @@ cc-arch-hands/
 │   ├── fs-atomic-publication.js # generation-fenced no-overwrite publication
 │   ├── marker-capacity-ops.js    # durable capacity transitions and victim CAS
 │   ├── marker-capacity-stage.js  # bounded marker transaction staging/recovery
+│   ├── marker-capacity-recovery.js # generation-aware transaction retirement/recovery
 │   ├── fs-atomic.js             # atomic publication, identity, quarantine helpers
 │   ├── transcript-stats.js      # shared: stats, formatStatusLine, makeBar, reset formatters
 │   ├── commands.js              # render + install + remove (44 .md bodies)

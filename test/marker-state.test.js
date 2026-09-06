@@ -333,6 +333,84 @@ describe('marker capacity staging', () => {
     assert.equal(readFileSync(victim, 'utf8'), 'victim\n');
   });
 
+  it('recovers a retired transaction when the canonical state is absent', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-marker-retirement-crash-'));
+    const markerDir = join(home, 'cache', 'markers');
+    mkdirSync(markerDir, { recursive: true });
+    const victim = join(markerDir, `marker-${sessionHash('retirement-victim')}`);
+    writeFileSync(victim, 'victim\n');
+    const markerUrl = new URL('../lib/marker-state.js', import.meta.url).href;
+    const script = `
+      import { abortMarkerTransaction, claimMarker, releaseMarkerClaim } from ${JSON.stringify(markerUrl)};
+      const cfg = { markerDir: process.env.CAH_TEST_MARKER_DIR, namespace: 'marker-tests',
+        prefix: 'marker-', ttlMs: 86400000, maxSessions: 1, scanCap: 128, claimTtlMs: 30000,
+        ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS', markerNameRe: /^marker-[a-f0-9]{64}$/ };
+      const claim = claimMarker({ ...cfg, sessionId: process.env.CAH_TEST_RECOVER ? 'retire-recover' : 'retire-crash', nowMs: Date.now() });
+      if (!claim || !abortMarkerTransaction(claim)) process.exit(3);
+      releaseMarkerClaim(claim);
+    `;
+    const env = { ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
+      CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+      CAH_TEST_ONLY_CAPACITY_CRASH: 'after-transaction-retirement' };
+    const crashed = spawnSync(process.execPath, ['--input-type=module', '-e', script], { env });
+    assert.notEqual(crashed.status, 0);
+    const txDir = join(home, 'cache', '.markers-capacity-transaction');
+    assert.ok(readdirSync(txDir).some((name) => name.startsWith('.cah-retired-')));
+    unlinkSync(join(txDir, 'transaction.json'));
+    const recovered = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      encoding: 'utf8', env: { ...env, CAH_TEST_RECOVER: '1', CAH_TEST_ONLY_CAPACITY_CRASH: undefined },
+    });
+    assert.equal(recovered.status, 0, recovered.stderr);
+    assert.equal(existsSync(join(home, 'cache', '.markers-capacity-transaction')), false);
+    assert.equal(readFileSync(victim, 'utf8'), 'victim\n');
+  });
+
+  it('preserves a successor transaction when the retiring owner loses its lease', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-marker-retirement-successor-'));
+    const markerDir = join(home, 'cache', 'markers');
+    mkdirSync(markerDir, { recursive: true });
+    writeFileSync(join(markerDir, `marker-${sessionHash('retirement-successor-victim')}`), 'victim\n');
+    const markerUrl = new URL('../lib/marker-state.js', import.meta.url).href;
+    const leaseUrl = new URL('../lib/lease-lock.js', import.meta.url).href;
+    const interlocksUrl = new URL('../test-support/interlocks.js', import.meta.url).href;
+    const script = `
+      import { abortMarkerTransaction, claimMarker } from ${JSON.stringify(markerUrl)};
+      import { makeInterlock } from ${JSON.stringify(interlocksUrl)};
+      const cfg = { markerDir: process.env.CAH_TEST_MARKER_DIR, namespace: 'marker-tests',
+        prefix: 'marker-', ttlMs: 86400000, maxSessions: 1, scanCap: 128, claimTtlMs: 100,
+        ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS', markerNameRe: /^marker-[a-f0-9]{64}$/ };
+      const claim = claimMarker({ ...cfg, sessionId: 'retirement-pause', nowMs: Date.now(),
+        testInterlock: makeInterlock() });
+      if (!claim) process.exit(3);
+      if (abortMarkerTransaction(claim)) process.exit(0);
+      process.exit(7);
+    `;
+    const env = { ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
+      CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+      CAH_TEST_ONLY_OWNER_INTERLOCK: join(home, 'retirement-interlock'),
+      CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'marker-capacity-transaction-retire-before-unlink' };
+    const paused = spawn(process.execPath, ['--input-type=module', '-e', script], {
+      env, stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    await waitForPath(join(home, 'retirement-interlock.ready'));
+    await new Promise((resolve) => setTimeout(resolve, 180));
+    const txPath = join(home, 'cache', '.markers-capacity-transaction', 'transaction.json');
+    const successor = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { acquireLease, releaseLease } from ${JSON.stringify(leaseUrl)};
+      import { unlinkSync, writeFileSync } from 'node:fs';
+      const path = ${JSON.stringify(join(markerDir, '.cah-marker-capacity-marker-tests'))};
+      const tx = ${JSON.stringify(txPath)};
+      const lease = acquireLease(path, { staleAfterMs: 100, testLeaseEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS' });
+      if (!lease) process.exit(2);
+      try { unlinkSync(tx); writeFileSync(tx, 'successor-transaction\\n'); } finally { releaseLease(lease); }
+    `], { encoding: 'utf8', env });
+    assert.equal(successor.status, 0, successor.stderr);
+    writeFileSync(join(home, 'retirement-interlock.go'), 'go');
+    const status = await new Promise((resolve) => paused.on('close', resolve));
+    assert.notEqual(status, 0);
+    assert.equal(readFileSync(txPath, 'utf8'), 'successor-transaction\n');
+  });
+
   it('aborts a crash-left eviction without removing a newer canonical successor', () => {
     const home = mkdtempSync(join(tmpdir(), 'cah-marker-abort-successor-'));
     const markerDir = join(home, 'cache', 'markers');
