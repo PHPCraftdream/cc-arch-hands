@@ -35,11 +35,49 @@ The codebase has two layers: a thin CLI (`lib/cli.js`) that does arg parsing and
 
 **Templates.** `lib/templates.js` resolves skill trees from either the bundled `templates/` directory (relative to package root via `import.meta.url`) or from an arbitrary disk path via `--templates <dir>`.
 
-**Companion bins.** Four companion runtime bins are installed under the shared bin root: `/checkpoint-watch` → `cah-checkpoint-hint`, `/clock` → `cah-status` (statusLine) + `cah-stamp` (Stop+PostToolUse hook), and the opt-in probe → `cah-status-probe`. The checkpoint, status, and stamp bins share `lib/transcript-stats.js` for transcript JSONL walking, cache-aware token sum (`input_tokens + cache_creation_input_tokens + cache_read_input_tokens`), model→limit mapping, per-turn `requestId` extraction (used by `cah-stamp` for per-message dedup so a long turn produces one chat stamp, not many), and the `HH:MM · <model> [effort] · X% (Nk/Mk)` formatter. **Don't recompute these values inline in any new bin — extend `transcript-stats.js`.** The `effort` level (`low/medium/high/xhigh/max`) is rendered as a one-letter bracketed suffix matching the slash-command convention (`/sl /sm /sh /sx /sxx` → `[l] [m] [h] [x] [xx]`); models without effort support render the bare name. The statusLine envelope carries `effort.level` directly, so `cah-status` renders it live and accurately every render. **`cah-stamp` never renders effort** — Claude Code exposes `effort.level` only in the statusLine envelope, never in the transcript or the Stop/PostToolUse hook payload, so the only way to get it into the chat stamp would be to echo the cached value `cah-status` last wrote, which can lag one turn behind a model/effort switch (e.g. right after `/oxx`). Omitting it in the stamp avoids showing a misleading effort for the wrong turn.
+**Companion bins.** Four companion runtime bins are installed under the shared bin root:
+`/checkpoint-watch` → `cah-checkpoint-hint`, `/clock` → `cah-status`
+(statusLine) + `cah-stamp` (Stop+PostToolUse hook), and the opt-in probe →
+`cah-status-probe`. The checkpoint, status, and stamp bins share
+`lib/transcript-stats.js` for transcript JSONL walking, cache-aware token sum
+(`input_tokens + cache_creation_input_tokens + cache_read_input_tokens`),
+model→limit mapping, per-turn `requestId` extraction (used by `cah-stamp` for
+per-message dedup so a long turn produces one chat stamp, not many), and the
+`HH:MM · <model> [effort] · X% (Nk/Mk)` formatter. **Don't recompute these
+values inline in any new bin — extend `transcript-stats.js`.** The `effort`
+level (`low/medium/high/xhigh/max`) is rendered as a one-letter bracketed
+suffix matching the slash-command convention (`/sl /sm /sh /sx /sxx` →
+`[l] [m] [h] [x] [xx]`); models without effort support render the bare name.
+The statusLine envelope carries `effort.level` directly, so `cah-status`
+renders it live and accurately every render. **`cah-stamp` never renders
+effort** — Claude Code exposes `effort.level` only in the statusLine envelope,
+never in the transcript or the Stop/PostToolUse hook payload, so the only way to
+get it into the chat stamp would be to echo the cached value `cah-status` last
+wrote, which can lag one turn behind a model/effort switch (e.g. right after
+`/oxx`). Omitting it in the stamp avoids showing a misleading effort for the
+wrong turn.
 
 **Update check (`lib/update-check.js`, since 0.5.3).** Both `cah-status` and `cah-stamp` check whether a newer `cc-arch-hands` is published on npm, sharing a TTL-cached (`24h`) registry read at `~/.claude/cah-bin/cache/update-check.json` — whichever bin runs first populates it, so the actual network call (`curl` against `registry.npmjs.org`, 1.5s timeout, fully fail-silent) happens at most once a day, never on every render. `cah-status` appends `· 🔵 vX.Y.Z` to the statusLine when a newer version is cached. `cah-stamp` emits a one-shot **per-session** notice (marker file, same pattern as `cah-checkpoint-hint`) appended to the chat stamp — but **only on a real `Stop` event** (`payload.hook_event_name === 'Stop'`), never on `PostToolUse`, since that fires once per tool call and would spam the chat. `CURRENT_VERSION` in `lib/update-check.js` is a hardcoded literal kept in sync with `package.json`'s `version` by `test/update-check.test.js` — bump both together on release.
 
-**The `bins` install class (since 0.4.0).** `cah install` copies the four companion runtime bins and their shared library leaves (`lib/transcript-stats.js`, `lib/update-check.js`, `lib/lease-lock.js`, `lib/fsutil.js`, `lib/fs-atomic.js`, and `lib/sentinel.js`) into `~/.claude/cah-bin/`, mirroring the package's `bin/` + `lib/` layout so the bins' relative imports resolve unchanged. `settings.json` then references them by absolute path (`node "<HOME>/.claude/cah-bin/bin/cah-status.js"`) instead of a bare PATH name. This decouples `/clock` and `/checkpoint-watch` from where the npm package lives — moving, relinking, or uninstalling the package no longer breaks the statusLine/hooks. Each copied file carries the `// cah-bin:v1` sentinel (rides the line after the shebang); install does a wipe-and-prune of orphans, foreign files are never touched. The bins are **always written to the global `~/.claude/cah-bin/`** regardless of scope flags (`Scope.resolveBinDir()` ignores `--local`/`--cwd`) — there is one stable copy, and even project-local `settings.json` points at it. The npm package still declares the bins in `package.json` `bin` for backward compat, but the skills no longer rely on PATH resolution. **The `/clock` and `/checkpoint-watch` SKILL.md migrate a pre-0.4.0 bare-name `command` to the absolute path on re-run.**
+**The `bins` install class (since 0.4.0).** `cah install` copies the four
+companion runtime bins and their shared library leaves
+(`lib/transcript-stats.js`, `lib/update-check.js`, `lib/lease-lock.js`,
+`lib/fsutil.js`, `lib/fs-atomic.js`, and `lib/sentinel.js`) into
+`~/.claude/cah-bin/`, mirroring the package's `bin/` + `lib/` layout so
+the bins' relative imports resolve unchanged. `settings.json` then references
+them by absolute path (`node "<HOME>/.claude/cah-bin/bin/cah-status.js"`)
+instead of a bare PATH name. This decouples `/clock` and
+`/checkpoint-watch` from where the npm package lives — moving, relinking, or
+uninstalling the package no longer breaks the statusLine/hooks. Each copied file
+carries the `// cah-bin:v1` sentinel (rides the line after the shebang); install
+does a wipe-and-prune of orphans, foreign files are never touched. The bins are
+**always written to the global `~/.claude/cah-bin/`** regardless of scope flags
+(`Scope.resolveBinDir()` ignores `--local`/`--cwd`) — there is one stable
+copy, and even project-local `settings.json` points at it. The npm package still
+declares the bins in `package.json` `bin` for backward compat, but the skills
+no longer rely on PATH resolution. **The `/clock` and `/checkpoint-watch`
+SKILL.md migrate a pre-0.4.0 bare-name `command` to the absolute path on
+re-run.**
 
 Publication is dependency-first: the managed package boundary, `sentinel.js`,
 `fs-atomic.js`, `fsutil.js`, `lease-lock.js`, `transcript-stats.js`, and
@@ -86,4 +124,19 @@ never exposed before its complete mirrored dependency chain is present.
 - **`parseOnly` returns `{classes, skills}`, not a flat array.** When wiring a new subcommand that takes `--only`, use `resolveDeps(parseOnly(vals.only))` and pass `skillsSubset` into `writeSkills` / `removeSkills` so subset installs/uninstalls leave foreign skills untouched.
 - **Never recursively delete a skill directory based only on the `SKILL.md` sentinel.** `writeSkills`/`removeSkills`/`pruneOrphanDirs` must classify per-file: anything beyond the owned template tree is user data — preserve it and report via the `preserved` list. All file writes that carry an end-of-body sentinel go through `writeFileAtomic` (tmp + rename) so a torn write can't strand a file in `foreign` state.
 - **`cah doctor` exits non-zero when unhealthy** — 2 if any `foreign` files block a clean install, 1 if expected files are `missing`, 0 only when fully healthy. It is a CI/script health gate; don't regress it back to always-0.
-- **Opt-in classes (`codex-agents`, `commands`) share one flag-handling path.** `lib/cli.js`'s `OPT_IN_FLAG_CLASSES` + `applyOptInFlags()` is the single place that implements "`--<flag>` alone replaces the default class set; `--<flag>` combined with `--only` adds to it." Add a new opt-in class here rather than hand-rolling another `applyXFlag` function. Opt-in classes are listed in `VALID_CLASSES` but never in `SELECTOR_CLASSES` (the default-install set) — that's what keeps a bare `cah install` from touching them. `enumerate()`/`cmdDoctor()` also gate their rows: an opt-in class with zero installed items is excluded from the health count entirely (absence isn't a health problem for something that's opt-in), matching the existing `hasCodexAgents`/`hasModelCommands` pattern. `commands` joined the opt-in set because Claude Code's interactive TUI path silently ignores the per-command `model:`/`effort:` frontmatter override these files rely on ([anthropics/claude-code#81318](https://github.com/anthropics/claude-code/issues/81318)) — the `agents` half of the same registry is unaffected (the `Agent`-tool dispatch path honors the override) and stays in the default set.
+- **Opt-in classes (`codex-agents`, `commands`) share one flag-handling path.**
+  `lib/cli.js`'s `OPT_IN_FLAG_CLASSES` + `applyOptInFlags()` is the single
+  place that implements "`--<flag>` alone replaces the default class set;
+  `--<flag>` combined with `--only` adds to it." Add a new opt-in class here
+  rather than hand-rolling another `applyXFlag` function. Opt-in classes are
+  listed in `VALID_CLASSES` but never in `SELECTOR_CLASSES` (the
+  default-install set) — that's what keeps a bare `cah install` from touching
+  them. `enumerate()`/`cmdDoctor()` also gate their rows: an opt-in class with
+  zero installed items is excluded from the health count entirely (absence isn't
+  a health problem for something that's opt-in), matching the existing
+  `hasCodexAgents`/`hasModelCommands` pattern. `commands` joined the opt-in
+  set because Claude Code's interactive TUI path silently ignores the per-command
+  `model:`/`effort:` frontmatter override these files rely on
+  ([anthropics/claude-code#81318](https://github.com/anthropics/claude-code/issues/81318))
+  — the `agents` half of the same registry is unaffected (the `Agent`-tool
+  dispatch path honors the override) and stays in the default set.

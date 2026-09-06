@@ -7,15 +7,16 @@
 // missing input, or filesystem hiccup results in `exit 0` with no stdout, so it
 // can never break the user's session.
 
-import { mkdirSync, openSync, closeSync, readFileSync, readdirSync, lstatSync, unlinkSync, writeSync, writeFileSync } from 'node:fs';
+import { mkdirSync, openSync, closeSync, readFileSync, lstatSync, unlinkSync, writeSync, writeFileSync, renameSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { readTranscriptStats, contextWindowLimit, readRateLimitsCache, validContextWindowSize } from '../lib/transcript-stats.js';
 import {
-  acquireLease, leaseOwned, pathIdentity, releaseLease, removePathIfUnchanged, samePathIdentity,
+  acquireLease, leaseOwned, pathIdentity, releaseLease, samePathIdentity,
 } from '../lib/lease-lock.js';
-import { isOlderThan } from '../lib/fsutil.js';
+import { captureRegularFileSnapshot, isOlderThan, writeFileAtomic } from '../lib/fsutil.js';
+import { streamDirectoryEntries, removePathIfUnchangedRecoverable } from '../lib/lease-lock.js';
 
 const THRESHOLD = 0.9;
 const THRESHOLD_PCT = Math.round(THRESHOLD * 100);
@@ -33,31 +34,32 @@ const MARKER_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MARKER_CLAIM_TTL_MS = 30_000;
 const MARKER_MAX_SESSIONS = 64;
 const MARKER_NAME_RE = /^cah-hint-shown-[a-f0-9]{64}$/;
-const LEGACY_MARKER_PREFIXES = ['cah-hint-shown-', 'cah-update-shown-'];
+const MARKER_SCAN_CAP = MARKER_MAX_SESSIONS * 3 + 8;
+const MIGRATION_SCAN_CAP = 256;
+const MARKER_NAMESPACE = 'hint-markers';
 const RATE_LIMITS_CACHE =
   process.env.CAH_RATE_LIMITS_CACHE ||
   join(homedir(), '.claude', 'cah-bin', 'cache', 'rate-limits.json');
 
-function pruneStaleMarkers(markerDir, nowMs) {
-  let entries;
-  try {
-    entries = readdirSync(markerDir);
-  } catch {
-    return;
-  }
-  for (const name of entries) {
-    if (!MARKER_NAME_RE.test(name)) continue;
+function cacheRoot(home) { return join(home, '.claude', 'cah-bin', 'cache'); }
+function markerNamespace(home) { return join(cacheRoot(home), MARKER_NAMESPACE); }
+
+function pruneStaleMarkers(markerDir, nowMs, protectedMarker = null) {
+  streamDirectoryEntries(markerDir, MARKER_SCAN_CAP, (entry) => {
+    const name = entry.name;
+    if (!MARKER_NAME_RE.test(name) || !entry.isFile()) return;
     const p = join(markerDir, name);
+    if (p === protectedMarker) return;
     try {
       const stat = pathIdentity(p);
-      if (!stat?.isFile) continue;
+      if (!stat?.isFile) return;
       if (isOlderThan(stat, nowMs, MARKER_TTL_MS)) {
         const claim = acquireMarkerClaim(p, nowMs);
-        if (!claim) continue;
+        if (!claim) return;
         try {
           const current = pathIdentity(p);
           if (current?.isFile && isOlderThan(current, nowMs, MARKER_TTL_MS)) {
-            removePathIfUnchanged(p, current, 'marker-remove');
+            removePathIfUnchangedRecoverable(p, current, 'marker-remove');
           }
         } finally {
           releaseMarkerClaim(claim);
@@ -66,52 +68,46 @@ function pruneStaleMarkers(markerDir, nowMs) {
     } catch {
       // ignore individual failures — best-effort hygiene
     }
-  }
+  });
 }
 
 // Capacity is a reservation, not hygiene. The caller has already acquired
 // the new session's marker claim, so a competing caller for that session fails
 // without evicting an unrelated fresh marker.
 function reserveMarkerCapacity(markerDir, nowMs, protectedMarker = null) {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    let entries;
+  let count = 0;
+  let oldest = null;
+  streamDirectoryEntries(markerDir, MARKER_SCAN_CAP, (entry) => {
+    if (!MARKER_NAME_RE.test(entry.name) || !entry.isFile()) return;
+    const p = join(markerDir, entry.name);
+    if (p === protectedMarker) return;
     try {
-      entries = readdirSync(markerDir);
-    } catch {
-      return true;
-    }
-    const fresh = [];
-    for (const name of entries) {
-      if (!MARKER_NAME_RE.test(name)) continue;
-      const p = join(markerDir, name);
-      if (p === protectedMarker) continue;
-      try {
-        const stat = pathIdentity(p);
-        if (stat?.isFile && !isOlderThan(stat, nowMs, MARKER_TTL_MS)) {
-          fresh.push({ path: p, mtimeNs: stat.mtimeNs });
-        }
-      } catch { /* best effort */ }
-    }
-    if (fresh.length < MARKER_MAX_SESSIONS) return true;
-    fresh.sort((a, b) => a.mtimeNs === b.mtimeNs ? 0 : a.mtimeNs < b.mtimeNs ? -1 : 1);
-    for (const entry of fresh) {
-      let claim;
-      try { claim = acquireMarkerClaim(entry.path, nowMs); } catch { claim = null; }
-      if (!claim) continue;
-      try {
-        const current = pathIdentity(entry.path);
-        if (!current?.isFile || isOlderThan(current, nowMs, MARKER_TTL_MS)) continue;
-        if (removePathIfUnchanged(entry.path, current, 'marker-capacity')) return true;
-      } catch { /* try another candidate or rescan */ }
-      finally { releaseMarkerClaim(claim); }
-    }
+      const stat = pathIdentity(p);
+      if (stat?.isFile && !isOlderThan(stat, nowMs, MARKER_TTL_MS)) {
+        count += 1;
+        if (!oldest || stat.mtimeNs < oldest.mtimeNs) oldest = { path: p, identity: stat };
+      }
+    } catch { /* best effort */ }
+  });
+  if (count < MARKER_MAX_SESSIONS || !oldest) return true;
+  let victimClaim;
+  try { victimClaim = acquireMarkerClaim(oldest.path, nowMs); } catch { victimClaim = null; }
+  if (!victimClaim) return false;
+  try {
+    const current = pathIdentity(oldest.path);
+    if (!current?.isFile || isOlderThan(current, nowMs, MARKER_TTL_MS)) return true;
+    return removePathIfUnchangedRecoverable(oldest.path, current, 'marker-capacity').ok;
+  } catch {
+    return false;
+  } finally {
+    releaseMarkerClaim(victimClaim);
   }
-  return false;
 }
 
 function directLegacyMarkerPrefix(name) {
   if (typeof name !== 'string' || name.includes('/') || name.includes('\\') || name.includes('\0')) return null;
-  return LEGACY_MARKER_PREFIXES.find((prefix) => name.startsWith(prefix) && name.length > prefix.length) || null;
+  return name.startsWith(MARKER_PREFIX) && name.length > MARKER_PREFIX.length
+    ? MARKER_PREFIX : null;
 }
 
 function isSafeCurrentMarkerName(name, prefix, sessionId) {
@@ -156,38 +152,67 @@ function migrateLegacyFile(source, target, sourceStat) {
   }
 }
 
+function migrateLegacyClaim(source, target) {
+  try {
+    if (pathIdentity(target)) return;
+    const sourceStat = pathIdentity(source);
+    if (!sourceStat?.isDirectory) return;
+    renameSync(source, target);
+  } catch { /* best effort; a live claim remains authoritative */ }
+}
+
 function migrateLegacyMarkers(home, markerDir, sessionId) {
   const legacyDir = join(home, '.claude');
-  if (legacyDir === markerDir) return;
-  let entries;
-  try {
-    entries = readdirSync(legacyDir);
-    mkdirSync(markerDir, { recursive: true });
-  } catch {
-    return;
-  }
-  for (const name of entries) {
-    const prefix = directLegacyMarkerPrefix(name);
-    if (!prefix) continue;
-    const source = join(legacyDir, name);
-    let sourceStat;
+  const flatDir = cacheRoot(home);
+  try { mkdirSync(markerDir, { recursive: true }); } catch { return; }
+  const hashName = `${MARKER_PREFIX}${sessionHash(sessionId)}`;
+  const rawName = typeof sessionId === 'string' && sessionId.length > 0
+    && !sessionId.includes('/') && !sessionId.includes('\\') && !sessionId.includes('\0')
+    ? `${MARKER_PREFIX}${sessionId}` : null;
+  const direct = [
+    join(flatDir, hashName), join(legacyDir, hashName),
+    ...(rawName ? [join(legacyDir, rawName)] : []),
+  ];
+  for (const source of direct) {
+    const name = basename(source);
+    const targetName = name === rawName ? hashName : name;
     try {
-      sourceStat = pathIdentity(source);
-      if (!sourceStat?.isFile) continue;
-    } catch {
-      continue;
-    }
-
-    const isCurrentSession = isSafeCurrentMarkerName(name, prefix, sessionId);
-    const suffix = name.slice(prefix.length);
-    const isLegacyHash = /^[a-f0-9]{64}$/.test(suffix);
-    if (!isCurrentSession && !isLegacyHash) continue;
-
-    const targetName = isCurrentSession
-      ? `${prefix}${sessionHash(sessionId)}`
-      : name;
-    migrateLegacyFile(source, join(markerDir, targetName), sourceStat);
+      const sourceStat = pathIdentity(source);
+      if (sourceStat?.isFile) migrateLegacyFile(source, join(markerDir, targetName), sourceStat);
+      else if (sourceStat?.isDirectory && name.startsWith('.cah-marker-claim-')) {
+        migrateLegacyClaim(source, join(markerDir, name));
+      }
+    } catch { /* best effort */ }
   }
+
+  // The compatibility sweep runs once per namespace and is bounded. Future
+  // hooks only inspect the owned namespace, so unrelated cache entries never
+  // become routine hook work.
+  const sentinel = join(markerDir, '.migration-v1');
+  if (pathIdentity(sentinel)) return;
+  streamDirectoryEntries(flatDir, MIGRATION_SCAN_CAP, (entry) => {
+    const name = entry.name;
+    const suffix = name.startsWith(MARKER_PREFIX) ? name.slice(MARKER_PREFIX.length) : null;
+    const claimPrefix = `.cah-marker-claim-${MARKER_PREFIX}`;
+    const claimSuffix = name.startsWith(claimPrefix) ? name.slice(claimPrefix.length) : null;
+    if (suffix !== null && /^[a-f0-9]{64}$/.test(suffix) && entry.isFile()) {
+      const source = join(flatDir, name);
+      const stat = pathIdentity(source);
+      if (stat?.isFile) migrateLegacyFile(source, join(markerDir, name), stat);
+    } else if (claimSuffix !== null && /^[a-f0-9]{64}$/.test(claimSuffix) && entry.isDirectory()) {
+      migrateLegacyClaim(join(flatDir, name), join(markerDir, name));
+    }
+  });
+  streamDirectoryEntries(legacyDir, MIGRATION_SCAN_CAP, (entry) => {
+    const name = entry.name;
+    const suffix = name.startsWith(MARKER_PREFIX) ? name.slice(MARKER_PREFIX.length) : null;
+    if (suffix !== null && /^[a-f0-9]{64}$/.test(suffix) && entry.isFile()) {
+      const source = join(legacyDir, name);
+      const stat = pathIdentity(source);
+      if (stat?.isFile) migrateLegacyFile(source, join(markerDir, name), stat);
+    }
+  });
+  try { writeFileSync(sentinel, 'v1\n', { flag: 'wx' }); } catch { /* another hook won */ }
 }
 
 function sessionHash(sessionId) {
@@ -241,17 +266,25 @@ function releaseMarkerClaim(claim) {
 
 function markDelivered(claim) {
   if (!markerClaimOwned(claim)) return false;
-  try {
-    const fd = openSync(claim.marker, 'wx');
-    try {
-      writeSync(fd, JSON.stringify({ nonce: claim.owner.nonce, deliveredAt: Date.now() }));
-    } finally {
-      closeSync(fd);
-    }
-    return true;
-  } catch (error) {
-    return Boolean(error && error.code === 'EEXIST');
+  if (process.env.CAH_TEST_ONLY === '1'
+      && (process.env.CAH_TEST_ONLY_MARKER_CRASH === 'before-durable'
+        || process.env.CAH_TEST_ONLY_MARKER_CRASH === 'before-marker'
+        || process.env.CAH_TEST_ONLY_MARKER_WRITE_FAILURE === 'crash')) {
+    process.exit(91);
   }
+  try {
+    const expectedDestination = captureRegularFileSnapshot(claim.marker).expectedDestination;
+    if (expectedDestination.exists && !isOlderThan(expectedDestination.identity, Date.now(), MARKER_TTL_MS)) return false;
+    if (process.env.CAH_TEST_ONLY === '1'
+        && (process.env.CAH_TEST_ONLY_MARKER_WRITE_FAILURE === '1'
+          || process.env.CAH_TEST_ONLY_MARKER_STATE_WRITE_FAILURE === '1')) return false;
+    writeFileAtomic(
+      claim.marker,
+      JSON.stringify({ nonce: claim.owner.nonce, deliveredAt: Date.now() }) + '\n',
+      { expectedDestination },
+    );
+    return true;
+  } catch { return false; }
 }
 
 // The marker is durable delivered state. A separate nonce-owned claim gates
@@ -286,19 +319,11 @@ function claimMarker(markerDir, sessionId, nowMs) {
           releaseMarkerClaim(claim);
           return null;
         }
-        if (markerStat && !removePathIfUnchanged(marker, markerStat, 'marker-remove')) {
-          releaseMarkerClaim(claim);
-          return null;
-        }
       } catch (error) {
         if (!error || error.code !== 'ENOENT') {
           releaseMarkerClaim(claim);
           return null;
         }
-      }
-      if (!reserveMarkerCapacity(markerDir, nowMs, marker)) {
-        releaseMarkerClaim(claim);
-        return null;
       }
       return claim;
     } catch {
@@ -337,9 +362,12 @@ function main() {
   if (!sessionId || !transcriptPath) return;
 
   const home = process.env.CAH_HINT_HOME || homedir();
-  const markerDir = join(home, '.claude', 'cah-bin', 'cache');
+  const markerDir = markerNamespace(home);
   migrateLegacyMarkers(home, markerDir, sessionId);
-  pruneStaleMarkers(markerDir, Date.now());
+  const protectedMarker = process.env.CAH_TEST_ONLY === '1'
+    && process.env.CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE === 'marker-remove'
+    ? null : join(markerDir, `${MARKER_PREFIX}${sessionHash(sessionId)}`);
+  pruneStaleMarkers(markerDir, Date.now(), protectedMarker);
 
   let usedTokens = null;
   let modelId = null;
@@ -383,7 +411,10 @@ function main() {
   try {
     if (!markerClaimOwned(claim)) return;
     writeSync(1, MESSAGE + '\n');
-    markDelivered(claim);
+    if (markDelivered(claim)) {
+      reserveMarkerCapacity(markerDir, Date.now(), claim.marker);
+      pruneStaleMarkers(markerDir, Date.now());
+    }
   } finally {
     releaseMarkerClaim(claim);
   }

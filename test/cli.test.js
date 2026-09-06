@@ -5,13 +5,12 @@ import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-
 import { run, resolveScope, parseOnly, resolveDeps, classifyPath } from '../lib/cli.js';
-import { BinFiles } from '../lib/binstall.js';
+import { BinFiles, binLifecycleLockPath } from '../lib/binstall.js';
+import { LEASE_MAX_MS } from '../lib/lease-lock.js';
 import { AllCodexAgents } from '../lib/manifest.js';
 import { Scope } from '../lib/scope.js';
 import { SentinelBin, SentinelCodexAgent, SetForModelCommand } from '../lib/sentinel.js';
-
 // os.homedir() reads $HOME / %USERPROFILE% on each call, so we can sandbox the
 // always-global bin directory to a temp dir for the duration of a test.
 function withHome(home, fn) {
@@ -26,7 +25,6 @@ function withHome(home, fn) {
     if (op === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = op;
   }
 }
-
 function captureStdout(fn) {
   const orig = process.stdout.write;
   let out = '';
@@ -38,7 +36,6 @@ function captureStdout(fn) {
   }
   return out;
 }
-
 function captureStderr(fn) {
   const orig = process.stderr.write;
   let out = '';
@@ -50,49 +47,41 @@ function captureStderr(fn) {
   }
   return out;
 }
-
 // ---------------------------------------------------------------------------
 // resolveScope
 // ---------------------------------------------------------------------------
-
 describe('resolveScope', () => {
   it('default (no flags) is global', () => {
     const scope = resolveScope({ global: false, local: false, cwd: '' });
     assert.equal(scope.global, true);
   });
-
   it('--global explicit is global', () => {
     const scope = resolveScope({ global: true, local: false, cwd: '' });
     assert.equal(scope.global, true);
   });
-
   it('--local is strict local', () => {
     const scope = resolveScope({ global: false, local: true, cwd: '' });
     assert.equal(scope.global, false);
     assert.equal(scope.strict, true);
   });
-
   it('--cwd implies local non-strict', () => {
     const scope = resolveScope({ global: false, local: false, cwd: '/tmp/x' });
     assert.equal(scope.global, false);
     assert.equal(scope.strict, false);
     assert.equal(scope.cwd, '/tmp/x');
   });
-
   it('--local --cwd is strict at cwd', () => {
     const scope = resolveScope({ global: false, local: true, cwd: '/tmp/x' });
     assert.equal(scope.global, false);
     assert.equal(scope.strict, true);
     assert.equal(scope.cwd, '/tmp/x');
   });
-
   it('--global --local throws', () => {
     assert.throws(
       () => resolveScope({ global: true, local: true, cwd: '' }),
       /mutually exclusive/,
     );
   });
-
   it('--global --cwd throws', () => {
     assert.throws(
       () => resolveScope({ global: true, local: false, cwd: '/tmp' }),
@@ -104,54 +93,43 @@ describe('resolveScope', () => {
 // ---------------------------------------------------------------------------
 // parseOnly
 // ---------------------------------------------------------------------------
-
 describe('parseOnly', () => {
   it('empty returns all classes in order, no individual skills', () => {
     assert.deepEqual(parseOnly(''), { classes: ['agents', 'skills', 'bins'], skills: [] });
     assert.deepEqual(parseOnly(undefined), { classes: ['agents', 'skills', 'bins'], skills: [] });
   });
-
   it('single class', () => {
     assert.deepEqual(parseOnly('skills'), { classes: ['skills'], skills: [] });
   });
-
   it('comma-separated classes preserve canonical order', () => {
     assert.deepEqual(parseOnly('skills,commands'), { classes: ['commands', 'skills'], skills: [] });
   });
-
   it('deduplicates', () => {
     assert.deepEqual(parseOnly('agents,agents'), { classes: ['agents'], skills: [] });
   });
-
   it('individual skill name', () => {
     assert.deepEqual(parseOnly('clock'), { classes: [], skills: ['clock'] });
   });
-
   it('multiple skill names sorted', () => {
     assert.deepEqual(parseOnly('clock,babysit'), { classes: [], skills: ['babysit', 'clock'] });
   });
-
   it('mix of class and skill names', () => {
     assert.deepEqual(
       parseOnly('commands,clock,bins'),
       { classes: ['commands', 'bins'], skills: ['clock'] },
     );
   });
-
   it('unknown name throws and lists valid options', () => {
     assert.throws(() => parseOnly('foo'), /unknown name "foo"/);
     assert.throws(() => parseOnly('clock,foo'), /unknown name "foo"/);
   });
-
   it('rejects the extracted agent-tree selector', () => {
     assert.throws(() => parseOnly('agent-tree'), /unknown name "agent-tree"/);
   });
-
   it('all-blank resolves to no classes and throws', () => {
     assert.throws(() => parseOnly(' , , '), /no classes/);
   });
 });
-
 describe('resolveDeps', () => {
   it('passes through when no skill triggers a dep', () => {
     const r = resolveDeps({ classes: ['commands'], skills: [] });
@@ -159,20 +137,17 @@ describe('resolveDeps', () => {
     assert.deepEqual(r.skills, []);
     assert.deepEqual(r.notices, []);
   });
-
   it('auto-adds bins when clock is selected by name', () => {
     const r = resolveDeps({ classes: [], skills: ['clock'] });
     assert.ok(r.classes.includes('bins'));
     assert.equal(r.notices.length, 1);
     assert.match(r.notices[0], /auto-added 'bins'.*clock/);
   });
-
   it('auto-adds bins when checkpoint-watch is selected by name', () => {
     const r = resolveDeps({ classes: [], skills: ['checkpoint-watch'] });
     assert.ok(r.classes.includes('bins'));
     assert.match(r.notices[0], /checkpoint-watch/);
   });
-
   it('does not add bins when already present', () => {
     const r = resolveDeps({ classes: ['bins'], skills: ['clock'] });
     assert.deepEqual(r.notices, []);
@@ -190,7 +165,6 @@ describe('resolveDeps', () => {
     assert.deepEqual(r.classes, ['commands', 'bins']);
   });
 });
-
 // ---------------------------------------------------------------------------
 // run (dispatch smoke)
 // ---------------------------------------------------------------------------
@@ -332,6 +306,41 @@ describe('run install/uninstall --only bins', () => {
     }
   });
 
+  it('reports a live lifecycle lease as busy and recovers an expired one', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
+    try {
+      withHome(home, () => {
+        const binDir = join(home, '.claude', 'cah-bin');
+        const lockPath = binLifecycleLockPath(binDir);
+        mkdirSync(lockPath, { recursive: true });
+        writeFileSync(join(lockPath, 'owner.json'), JSON.stringify({
+          kind: 'cc-arch-hands-bin-lifecycle',
+          pid: process.pid,
+          token: 'live-cli-operation',
+          timestamp: Date.now(),
+        }) + '\n');
+
+        let busyRc;
+        const busy = captureStderr(() => { busyRc = run(['install', '--only', 'bins']); });
+        assert.equal(busyRc, 1);
+        assert.match(busy, /companion bins are busy/);
+        assert.ok(!existsSync(join(binDir, 'package.json')), 'busy install must not publish leaves');
+
+        writeFileSync(join(lockPath, 'owner.json'), JSON.stringify({
+          kind: 'cc-arch-hands-bin-lifecycle',
+          pid: process.pid,
+          token: 'expired-cli-operation',
+          timestamp: Date.now() - LEASE_MAX_MS - 60 * 1000,
+        }) + '\n');
+        assert.equal(run(['install', '--only', 'bins']), 0);
+        assert.ok(existsSync(join(binDir, 'package.json')));
+        assert.ok(!existsSync(lockPath), 'CLI must release the recovered sibling lease');
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('list --json reports the bin files as mine once installed', () => {
     const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
     try {
@@ -369,7 +378,6 @@ describe('run install/uninstall --only bins', () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
-
   it('reports unproved cache crash temps through install and uninstall maintenance', () => {
     const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
     try {
@@ -398,7 +406,6 @@ describe('run install/uninstall --only bins', () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
-
   it('warns but does not fail when cache maintenance cannot enumerate', () => {
     const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
     const priorTest = process.env.CAH_TEST_ONLY;
@@ -412,6 +419,27 @@ describe('run install/uninstall --only bins', () => {
         assert.match(installed, /warning: cache maintenance incomplete/);
         const removed = captureStdout(() => assert.equal(run(['uninstall', '--only', 'bins']), 0));
         assert.match(removed, /warning: cache maintenance incomplete/);
+      });
+    } finally {
+      if (priorTest === undefined) delete process.env.CAH_TEST_ONLY;
+      else process.env.CAH_TEST_ONLY = priorTest;
+      if (priorFailure === undefined) delete process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
+      else process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = priorFailure;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+  it('propagates generic command maintenance failures to the CLI report', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
+    const priorTest = process.env.CAH_TEST_ONLY;
+    const priorFailure = process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
+    try {
+      withHome(home, () => {
+        process.env.CAH_TEST_ONLY = '1';
+        process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = 'opendir';
+        const output = captureStdout(() => {
+          assert.equal(run(['install', '--only', 'commands']), 0);
+        });
+        assert.match(output, /commands:[\s\S]*warning: cache maintenance incomplete/);
       });
     } finally {
       if (priorTest === undefined) delete process.env.CAH_TEST_ONLY;

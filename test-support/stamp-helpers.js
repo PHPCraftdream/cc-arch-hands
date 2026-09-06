@@ -84,7 +84,7 @@ export function isolatedDir() {
 }
 
 export function updateMarkerDir(home) {
-  return join(home, '.claude', 'cah-bin', 'cache');
+  return join(home, '.claude', 'cah-bin', 'cache', 'update-markers');
 }
 
 export async function waitForPath(path, timeoutMs = 5000) {
@@ -102,14 +102,20 @@ export function sessionHash(sessionId) {
 }
 
 export function stampSidecarPath(base, sessionId) {
-  return `${base}.session-${sessionHash(sessionId)}.json`;
+  const parent = dirname(base);
+  const stateDir = basename(parent) === 'stamp-state' ? parent : join(parent, 'stamp-state');
+  mkdirSync(stateDir, { recursive: true });
+  return join(stateDir, `${basename(base)}.session-${sessionHash(sessionId)}.json`);
 }
 
 export function stampSidecars(base) {
   const prefix = basename(base) + '.session-';
-  return readdirSync(dirname(base))
+  const parent = dirname(base);
+  const stateDir = basename(parent) === 'stamp-state' ? parent : join(parent, 'stamp-state');
+  if (!existsSync(stateDir)) return [];
+  return readdirSync(stateDir)
     .filter((name) => name.startsWith(prefix) && name.endsWith('.json'))
-    .map((name) => join(dirname(base), name));
+    .map((name) => join(stateDir, name));
 }
 
 export function writeClaim(path, owner) {

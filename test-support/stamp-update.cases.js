@@ -509,5 +509,79 @@ export function registerStampUpdateCases() {
       assert.doesNotMatch(JSON.parse(result.stdout.trim()).systemMessage, /99\.0\.0/);
       assert.equal(readFileSync(marker, 'utf8'), 'fresh-successor');
     });
+
+    it('state-write failure leaves the update capacity victim intact', () => {
+      const dir = isolatedDir();
+      const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
+      const updateCache = freshUpdateCache(dir, '99.0.0');
+      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const markerDir = updateMarkerDir(hintHome);
+      mkdirSync(markerDir, { recursive: true });
+      for (let i = 0; i < 64; i += 1) {
+        writeFileSync(join(markerDir, `cah-update-shown-${i.toString(16).padStart(64, '0')}`), `victim-${i}`);
+      }
+      const victim = join(markerDir, `cah-update-shown-${'0'.repeat(64)}`);
+      const result = runStamp(
+        { session_id: 'state-write-failure', transcript_path: tp, hook_event_name: 'Stop' },
+        {
+          CAH_UPDATE_CHECK_CACHE: updateCache,
+          CAH_STAMP_HINT_HOME: hintHome,
+          CAH_STAMP_THROTTLE_PATH: join(dir, 'last-stamp.json'),
+          CAH_TEST_ONLY: '1',
+          CAH_TEST_ONLY_STAMP_STATE_WRITE_FAILURE: '1',
+        },
+      );
+      assert.equal(result.stdout, '');
+      assert.equal(readFileSync(victim, 'utf8'), 'victim-0');
+      assert.equal(existsSync(join(markerDir, `cah-update-shown-${createHash('sha256').update('string:state-write-failure', 'utf8').digest('hex')}`)), false);
+    });
+
+    it('final update-marker unlink failure preserves the victim without prune growth', () => {
+      const dir = isolatedDir();
+      const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
+      const updateCache = freshUpdateCache(dir, '99.0.0');
+      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const markerDir = updateMarkerDir(hintHome);
+      mkdirSync(markerDir, { recursive: true });
+      for (let i = 0; i < 64; i += 1) {
+        writeFileSync(join(markerDir, `cah-update-shown-${i.toString(16).padStart(64, '0')}`), `victim-${i}`);
+      }
+      const victim = join(markerDir, `cah-update-shown-${'0'.repeat(64)}`);
+      const sessionId = 'final-update-unlink-failure';
+      const result = runStamp(
+        { session_id: sessionId, transcript_path: tp, hook_event_name: 'Stop' },
+        {
+          CAH_UPDATE_CHECK_CACHE: updateCache,
+          CAH_STAMP_HINT_HOME: hintHome,
+          CAH_STAMP_THROTTLE_PATH: join(dir, 'last-stamp.json'),
+          CAH_TEST_ONLY: '1',
+          CAH_TEST_ONLY_FINAL_UNLINK_FAILURE: '1',
+        },
+      );
+      assert.match(JSON.parse(result.stdout.trim()).systemMessage, /99\.0\.0/);
+      assert.equal(readFileSync(victim, 'utf8'), 'victim-0');
+      assert.equal(existsSync(join(markerDir, `cah-update-shown-${createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex')}`)), true);
+      assert.equal(readdirSync(markerDir).filter((name) => name.includes('.prune-')).length, 0);
+    });
+
+    it('keeps huge unrelated cache entries outside routine update maintenance', () => {
+      const dir = isolatedDir();
+      const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
+      const updateCache = freshUpdateCache(dir, '99.0.0');
+      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const root = join(hintHome, '.claude', 'cah-bin', 'cache');
+      mkdirSync(root, { recursive: true });
+      for (let i = 0; i < 500; i += 1) writeFileSync(join(root, `unrelated-${i}`), 'foreign');
+      const result = runStamp(
+        { session_id: 'huge-update-cache', transcript_path: tp, hook_event_name: 'Stop' },
+        {
+          CAH_UPDATE_CHECK_CACHE: updateCache,
+          CAH_STAMP_HINT_HOME: hintHome,
+          CAH_STAMP_THROTTLE_PATH: join(dir, 'last-stamp.json'),
+        },
+      );
+      assert.match(JSON.parse(result.stdout.trim()).systemMessage, /99\.0\.0/);
+      assert.equal(readdirSync(root).filter((name) => name.startsWith('unrelated-')).length, 500);
+    });
   });
 }

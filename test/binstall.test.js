@@ -11,7 +11,9 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir, homedir } from 'node:os';
 
 import { SentinelBin } from '../lib/sentinel.js';
-import { writeBins, removeBins, BinFiles } from '../lib/binstall.js';
+import {
+  writeBins, removeBins, BinFiles, binLifecycleLockPath,
+} from '../lib/binstall.js';
 import { enumerateRecoveryArtifacts } from '../lib/fs-atomic.js';
 import { Scope } from '../lib/scope.js';
 
@@ -117,6 +119,7 @@ describe('writeBins', () => {
   afterEach(() => {
     rmSync(src, { recursive: true, force: true });
     rmSync(dst, { recursive: true, force: true });
+    rmSync(binLifecycleLockPath(dst), { recursive: true, force: true });
   });
 
   it('copies every bin file mirroring bin/ + lib/ structure', () => {
@@ -422,6 +425,59 @@ describe('writeBins', () => {
     assert.equal(artifacts.length, 0);
   });
 
+  it('caps displaced, namespace, and temp output independently', () => {
+    const cache = join(dst, 'cache');
+    mkdirSync(cache, { recursive: true });
+    for (const name of ['a', 'b']) {
+      const quarantine = join(cache, `${name}.txt.cah-owned-remove`);
+      mkdirSync(quarantine);
+      writeFileSync(join(quarantine, 'payload'), name);
+      mkdirSync(join(cache, `${name}.js.cah-owned-publish`));
+    }
+    for (let i = 0; i < 1500; i++) writeFileSync(join(cache, `.cah-tmp-cap-${i}`), 'x');
+
+    const artifacts = enumerateRecoveryArtifacts(cache, { limit: 1 });
+    assert.ok(artifacts.length <= 3, `unexpected result length: ${artifacts.length}`);
+    assert.ok(artifacts.displaced.length <= 1);
+    assert.ok(artifacts.namespaces.length <= 1);
+    assert.ok(artifacts.temps.length <= 1);
+  });
+
+  it('uses lookahead to distinguish exact cap, cap minus one, and cap plus one', () => {
+    for (const count of [127, 128, 129]) {
+      const cache = join(dst, `cache-${count}`);
+      mkdirSync(cache, { recursive: true });
+      for (let i = 0; i < count; i++) writeFileSync(join(cache, `.cah-tmp-exact-${i}`), 'x');
+      const artifacts = enumerateRecoveryArtifacts(cache, {
+        limit: 128, displacedVisitLimit: 0, namespaceVisitLimit: 0, tempVisitLimit: 128,
+      });
+      assert.equal(artifacts.visits, Math.min(count, 128));
+      assert.equal(artifacts.truncated, count === 129);
+      assert.ok(artifacts.length <= 128);
+    }
+  });
+
+  it('reports child-lstat recovery failures as incomplete metadata', () => {
+    const cache = join(dst, 'cache-child-failure');
+    const quarantine = join(cache, 'lost.txt.cah-owned-remove');
+    mkdirSync(quarantine, { recursive: true });
+    writeFileSync(join(quarantine, 'payload'), 'displaced\n');
+    const priorTest = process.env.CAH_TEST_ONLY;
+    const priorFailure = process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
+    process.env.CAH_TEST_ONLY = '1';
+    process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = 'child';
+    try {
+      const artifacts = enumerateRecoveryArtifacts(cache, { displacedVisitLimit: 1 });
+      assert.equal(artifacts.incomplete, true);
+      assert.ok(artifacts.failures.some((failure) => failure.path.endsWith('payload')));
+    } finally {
+      if (priorTest === undefined) delete process.env.CAH_TEST_ONLY;
+      else process.env.CAH_TEST_ONLY = priorTest;
+      if (priorFailure === undefined) delete process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
+      else process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = priorFailure;
+    }
+  });
+
   it('refuses a foreign successor at the publication leaf and preserves its mode', async () => {
     writeBins(dst, src);
     const destination = join(dst, 'lib', 'sentinel.js');
@@ -548,6 +604,39 @@ describe('writeBins', () => {
     assert.ok(existsSync(cache), 'reserved cache must survive uninstall');
   });
 
+  it('holds one lease across install preflight and rejects a concurrent uninstall', async () => {
+    const interlock = join(dst, 'lifecycle-install-interlock');
+    const installing = runBinWorker(dst, src, interlock, 'binstall-after-lease', 'writeBins');
+    await waitForPath(`${interlock}.ready`);
+
+    await assert.rejects(
+      runBinWorker(dst, src, join(dst, 'unused-remove-interlock'), 'binstall-after-lease', 'removeBins'),
+      /companion bins are busy/,
+    );
+
+    writeFileSync(`${interlock}.go`, 'go');
+    const result = await installing;
+    assert.equal(result.written, BinFiles.length);
+    assert.ok(!existsSync(binLifecycleLockPath(dst)), 'released lifecycle lease must not remain');
+  });
+
+  it('holds one lease across uninstall and rejects a concurrent install', async () => {
+    writeBins(dst, src);
+    const interlock = join(dst, 'lifecycle-remove-interlock');
+    const removing = runBinWorker(dst, src, interlock, 'binstall-after-lease', 'removeBins');
+    await waitForPath(`${interlock}.ready`);
+
+    await assert.rejects(
+      runBinWorker(dst, src, join(dst, 'unused-install-interlock'), 'binstall-after-lease', 'writeBins'),
+      /companion bins are busy/,
+    );
+
+    writeFileSync(`${interlock}.go`, 'go');
+    const result = await removing;
+    assert.equal(result.removed, BinFiles.length);
+    assert.ok(!existsSync(join(dst, 'package.json')), 'uninstall should finish as one serialized operation');
+  });
+
   it('smoke-runs every installed companion binary from the mirrored tree', () => {
     const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
     const smokeHome = tmpDir();
@@ -598,6 +687,7 @@ describe('removeBins', () => {
   afterEach(() => {
     rmSync(src, { recursive: true, force: true });
     rmSync(dst, { recursive: true, force: true });
+    rmSync(binLifecycleLockPath(dst), { recursive: true, force: true });
   });
 
   it('removes all our files and the now-empty bin root', () => {

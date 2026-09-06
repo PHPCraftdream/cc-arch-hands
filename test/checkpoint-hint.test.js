@@ -40,7 +40,7 @@ function isolatedHome() {
 }
 
 function cacheDir(home) {
-  return join(home, '.claude', 'cah-bin', 'cache');
+  return join(home, '.claude', 'cah-bin', 'cache', 'hint-markers');
 }
 
 async function waitForPath(path, timeoutMs = 5000) {
@@ -682,5 +682,54 @@ describe('cah-checkpoint-hint bin', () => {
     const result = await running;
     assert.equal(result.stdout, EXPECTED);
     assert.equal(readFileSync(target, 'utf8'), 'fresh-capacity-successor');
+  });
+
+  it('keeps the capacity victim when delivery crashes or marker writing fails', () => {
+    for (const failure of ['crash', 'write']) {
+      const home = isolatedHome();
+      const markerDir = cacheDir(home);
+      mkdirSync(markerDir, { recursive: true });
+      for (let i = 0; i < 64; i += 1) {
+        writeFileSync(join(markerDir, `cah-hint-shown-${i.toString(16).padStart(64, '0')}`), `victim-${i}`);
+      }
+      const victim = join(markerDir, `cah-hint-shown-${'0'.repeat(64)}`);
+      const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+      const env = failure === 'crash'
+        ? { CAH_TEST_ONLY: '1', CAH_TEST_ONLY_MARKER_CRASH: 'before-durable' }
+        : { CAH_TEST_ONLY: '1', CAH_TEST_ONLY_MARKER_WRITE_FAILURE: '1' };
+      const result = runHint(JSON.stringify({ session_id: `failure-${failure}`, transcript_path: tp }), home, env);
+      assert.equal(readFileSync(victim, 'utf8'), 'victim-0');
+      assert.equal(markerExists(home, `failure-${failure}`), false);
+      if (failure === 'write') assert.equal(result.stdout, EXPECTED);
+    }
+  });
+
+  it('final capacity-unlink failure preserves the victim and does not grow prune files', () => {
+    const home = isolatedHome();
+    const markerDir = cacheDir(home);
+    mkdirSync(markerDir, { recursive: true });
+    for (let i = 0; i < 64; i += 1) {
+      writeFileSync(join(markerDir, `cah-hint-shown-${i.toString(16).padStart(64, '0')}`), `victim-${i}`);
+    }
+    const victim = join(markerDir, `cah-hint-shown-${'0'.repeat(64)}`);
+    const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+    const env = { CAH_TEST_ONLY: '1', CAH_TEST_ONLY_FINAL_UNLINK_FAILURE: '1' };
+    const result = runHint(JSON.stringify({ session_id: 'final-unlink-failure', transcript_path: tp }), home, env);
+    assert.equal(result.stdout, EXPECTED);
+    assert.equal(readFileSync(victim, 'utf8'), 'victim-0');
+    assert.equal(markerExists(home, 'final-unlink-failure'), true);
+    assert.equal(readdirSync(markerDir).filter((name) => name.includes('.prune-')).length, 0);
+  });
+
+  it('ignores a large unrelated shared cache while maintaining the owned namespace', () => {
+    const home = isolatedHome();
+    const root = join(home, '.claude', 'cah-bin', 'cache');
+    mkdirSync(root, { recursive: true });
+    for (let i = 0; i < 500; i += 1) writeFileSync(join(root, `unrelated-${i}`), 'foreign');
+    const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+    const result = runHint(JSON.stringify({ session_id: 'huge-unrelated-cache', transcript_path: tp }), home);
+    assert.equal(result.stdout, EXPECTED);
+    assert.equal(readdirSync(root).filter((name) => name.startsWith('unrelated-')).length, 500);
+    assert.equal(markerExists(home, 'huge-unrelated-cache'), true);
   });
 });

@@ -200,7 +200,7 @@ export function registerStampStateCases() {
     const oldTime = Date.now() / 1000 - 60 * 60;
     for (let i = 0; i < 100; i++) {
       const fakeHash = i.toString(16).padStart(64, '0');
-      const path = `${throttle}.session-${fakeHash}.json`;
+      const path = join(dirname(stampSidecarPath(throttle, 'new-session')), `last-stamp.json.session-${fakeHash}.json`);
       writeFileSync(path, JSON.stringify({ lastStampedAt: Date.now() - i }));
       utimesSync(path, oldTime, oldTime);
     }
@@ -221,7 +221,7 @@ export function registerStampStateCases() {
     const dir = isolatedDir();
     const tp = writeTranscript(dir, 'claude-opus-4-7', 46_000);
     const throttle = join(dir, 'last-stamp.json');
-    const stale = `${throttle}.session-${'c'.repeat(64)}.json`;
+    const stale = join(dirname(stampSidecarPath(throttle, 'sidecar-prune-successor')), `last-stamp.json.session-${'c'.repeat(64)}.json`);
     writeFileSync(stale, 'stale-sidecar');
     const old = Date.now() / 1000 - 30 * 24 * 60 * 60;
     utimesSync(stale, old, old);
@@ -252,7 +252,7 @@ export function registerStampStateCases() {
     const now = Date.now() / 1000;
     const sidecars = [];
     for (let i = 0; i < 64; i++) {
-      const path = `${throttle}.session-${i.toString(16).padStart(64, '0')}.json`;
+      const path = join(dirname(stampSidecarPath(throttle, 'sidecar-prune-capacity-successor')), `last-stamp.json.session-${i.toString(16).padStart(64, '0')}.json`);
       sidecars.push(path);
       writeFileSync(path, JSON.stringify({ lastStampedAt: Date.now() - i * 1000 }));
       // Keep every entry inside the TTL while making the first one the
@@ -285,10 +285,11 @@ export function registerStampStateCases() {
     const tp = writeTranscript(dir, 'claude-opus-4-7', 46_000);
     const throttle = join(dir, 'last-stamp.json');
     const suffix = 'd'.repeat(64);
-    const sidecarDir = `${throttle}.session-${suffix}.json`;
+    const sidecarDir = join(dirname(stampSidecarPath(throttle, 'non-file-sidecars')), `last-stamp.json.session-${suffix}.json`);
     const sidecarTarget = join(dir, 'sidecar-target');
-    const sidecarLink = `${throttle}.session-${'e'.repeat(64)}.json`;
-    const sidecarHardlink = `${throttle}.session-${'f'.repeat(64)}.json`;
+    const stateDir = dirname(stampSidecarPath(throttle, 'non-file-sidecars'));
+    const sidecarLink = join(stateDir, `last-stamp.json.session-${'e'.repeat(64)}.json`);
+    const sidecarHardlink = join(stateDir, `last-stamp.json.session-${'f'.repeat(64)}.json`);
     mkdirSync(sidecarDir);
     writeFileSync(sidecarTarget, 'target');
     try {
