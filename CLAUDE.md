@@ -25,7 +25,7 @@ node bin/cah.js install --templates ./templates --only skills --cwd /tmp/sandbox
 
 The codebase has two layers: a thin CLI (`lib/cli.js`) that does arg parsing and dispatch, and the installer modules (`lib/*.js`) that own all side effects.
 
-**Manifest-driven generation.** The 44 current Claude model definitions live in `lib/manifest.js` as `AllModelCommands`; each renders one command body and one agent body, for 88 installed bodies total. Both Claude commands and Claude agents are rendered parametrically at install time from this single registry. The current `AllCodexAgents` registry contains 24 optional Codex agents, installed only with `--codex-agents`.
+**Manifest-driven generation.** The 44 current Claude model definitions live in `lib/manifest.js` as `AllModelCommands`; each renders one command body and one agent body, for 88 installed bodies total. Both Claude commands and Claude agents are rendered parametrically at install time from this single registry. The current `AllCodexAgents` registry contains 23 optional Codex agents, installed only with `--codex-agents`.
 
 **Skills are static trees.** Each skill is a directory under `templates/skills/<name>/`. The `AllSkills` array in `lib/manifest.js` is the registry. Adding a skill = drop a directory + append the name.
 

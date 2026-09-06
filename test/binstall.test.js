@@ -803,6 +803,32 @@ describe('writeBins', () => {
     assert.match(readFileSync(join(dst, 'bin', 'cah-status.js'), 'utf8'), /console\.log\('new'/);
   });
 
+  it('retries the whole capture when an early dependency changes before a later source', () => {
+    const dependency = join(src, 'lib', 'transcript-stats.js');
+    let changed = false;
+    let retryObserved = false;
+    const result = writeBins(dst, src, {
+      testInterlock: (phase, dest, attempt) => {
+        if (phase === 'binstall-before-source-capture' && dest === 'lib/update-check.js') {
+          if (!changed) {
+            changed = true;
+            writeFileSync(dependency, 'export const x = 2;\n');
+          } else if (attempt > 0) {
+            retryObserved = true;
+          }
+        }
+      },
+    });
+
+    assert.equal(result.written, BinFiles.length);
+    assert.equal(changed, true);
+    assert.equal(retryObserved, true);
+    assert.equal(readFileSync(join(dst, 'lib', 'transcript-stats.js'), 'utf8'),
+      `${SentinelBin}\nexport const x = 2;\n`);
+    assert.match(readFileSync(join(dst, 'bin', 'cah-status.js'), 'utf8'),
+      /import \{ x \} from '..\/lib\/transcript-stats\.js'/);
+  });
+
   it('does not publish dependents when the synthetic package boundary is unproved', () => {
     writeBins(dst, src);
     writeFileSync(

@@ -51,13 +51,13 @@ describe('gen-docs --check', () => {
   it('keeps the current narrative counts tied to the fixed registry oracle', () => {
     assert.equal(AllModelCommands.length, 44);
     assert.equal(AllModelCommands.length * 2, 88);
-    assert.equal(AllCodexAgents.length, 24);
+    assert.equal(AllCodexAgents.length, 23);
 
     assert.match(README, /<!--gen:count:model-commands-->44<!--\/gen-->/);
     assert.match(README, /<!--gen:count:model-bodies-->88<!--\/gen--> command\+agent bodies/);
-    assert.match(README, /<!--gen:count:codex-agents-->24<!--\/gen-->/);
+    assert.match(README, /<!--gen:count:codex-agents-->23<!--\/gen-->/);
     assert.match(CLAUDE, /44 current Claude model definitions[\s\S]*88 installed bodies total/);
-    assert.match(CLAUDE, /current `AllCodexAgents` registry contains 24 optional Codex agents/);
+    assert.match(CLAUDE, /current `AllCodexAgents` registry contains 23 optional Codex agents/);
 
     for (const stale of [
       'three companion',
@@ -136,8 +136,8 @@ describe('gen-docs --check', () => {
     );
   });
 
-  it('defines exactly six collision-free Astra Codex agents', () => {
-    assert.equal(AllCodexAgents.length, 24);
+  it('defines exactly five collision-free Astra Codex agents', () => {
+    assert.equal(AllCodexAgents.length, 23);
     const astra = AllCodexAgents.filter((agent) => agent.model === 'gpt-6-astra');
     assert.deepEqual(
       astra,
@@ -147,7 +147,6 @@ describe('gen-docs --check', () => {
         { name: 'ha', model: 'gpt-6-astra', effort: 'high', display: 'Astra - high' },
         { name: 'xa', model: 'gpt-6-astra', effort: 'xhigh', display: 'Astra - Extra High' },
         { name: 'xxa', model: 'gpt-6-astra', effort: 'max', display: 'Astra - max' },
-        { name: 'ua', model: 'gpt-6-astra', effort: 'ultra', display: 'Astra - ultra' },
       ],
     );
 
@@ -162,7 +161,7 @@ describe('gen-docs --check', () => {
       ['gpt-5.6-terra', 6],
       ['gpt-5.6-luna', 6],
       ['gpt-5.6-sol', 6],
-      ['gpt-6-astra', 6],
+      ['gpt-6-astra', 5],
     ]);
   });
 
@@ -178,7 +177,7 @@ describe('gen-docs --check', () => {
     );
     assert.deepEqual(
       AllCodexAgents.filter((agent) => agent.model === 'gpt-6-astra').map((agent) => agent.name),
-      ['la', 'ma', 'ha', 'xa', 'xxa', 'ua'],
+      ['la', 'ma', 'ha', 'xa', 'xxa'],
     );
     assert.ok(AllCodexAgents.every((agent) => !['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'].includes(agent.model)));
   });
@@ -190,16 +189,18 @@ describe('gen-docs --check', () => {
 
     assert.match(
       README,
-      /`x\/xx\/u` for `xhigh\/max\/ultra`\.[\s\S]*`gpt-6-astra`/,
-      'README prose must use the official xhigh effort key and exact Astra model id',
+      /Astra \(`a`\) uses five levels: `l\/m\/h\/x\/xx` for `low\/medium\/high\/xhigh\/max`\.[\s\S]*`gpt-6-astra`/,
+      'README prose must list only the supported Astra effort levels and exact model id',
     );
-    assert.doesNotMatch(README, /`x\/xx\/u` for `extra\/max\/ultra`/);
-    assert.match(currentRelease, /`gpt-6-astra` with `low`, `medium`, `high`, `xhigh`, `max`,/);
+    assert.doesNotMatch(README, /Astra[^\n]*ultra/);
+    assert.match(currentRelease, /`gpt-6-astra` with `low`, `medium`, `high`, `xhigh`, and `max`/);
     assert.doesNotMatch(currentRelease, /`extra`/);
 
-    assert.ok(
-      README.includes('| Astra | `la` low · `ma` medium · `ha` high · `xa` xhigh · `xxa` max · `ua` ultra |'),
-      'generated Codex table must keep all Astra aliases aligned',
+    assert.match(
+      README,
+      /\| Astra \| `la` low[^\n]*`ma` medium[^\n]*`ha` high[^\n]*`xa` xhigh[^\n]*`xxa` max \|/,
+      'generated Codex table must keep the five supported Astra aliases aligned',
     );
+    assert.doesNotMatch(README, /\| Astra \|[^\n]*`ua`/);
   });
 });

@@ -95,6 +95,30 @@ describe('writeCodexAgents', { concurrency: false }, () => {
     assert.throws(() => statSync(orphanMine), { code: 'ENOENT' });
     assert.equal(readFileSync(orphanForeign, 'utf8'), 'not yours');
   });
+
+  it('does not install unsupported Astra ultra and prunes a stale owned ua alias', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const agentsDir = join(dir, '.codex', 'agents');
+    mkdirSync(agentsDir, { recursive: true });
+    const stale = join(agentsDir, 'ua.toml');
+    writeFileSync(stale,
+      `${SentinelCodexAgent}\nname = "ua"\nmodel = "gpt-6-astra"\n` +
+      'model_reasoning_effort = "ultra"\n');
+
+    const result = writeCodexAgents(null, scope);
+    assert.equal(result.pruned, 1);
+    assert.throws(() => statSync(stale), { code: 'ENOENT' });
+    assert.equal(
+      readdirSync(agentsDir).some((name) => name === 'ua.toml'),
+      false,
+      'unsupported Astra ua must stay absent after install',
+    );
+    assert.deepEqual(
+      AllCodexAgents.filter((agent) => agent.model === 'gpt-6-astra').map((agent) => agent.name),
+      ['la', 'ma', 'ha', 'xa', 'xxa'],
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

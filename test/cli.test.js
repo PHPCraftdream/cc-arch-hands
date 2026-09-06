@@ -608,11 +608,12 @@ describe('run install/uninstall --codex-agents', () => {
     }
   });
 
-  it('install and reinstall prune all legacy sentinel-owned Codex TOML and preserve foreign files', () => {
+  it('install and reinstall prune legacy and unsupported sentinel-owned Codex TOML and preserve foreign files', () => {
     const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
     const legacyNames = [
       'l55', 'm55', 'h55', 'x55', 'l54', 'm54', 'h54', 'x54',
       'l54m', 'm54m', 'h54m', 'x54m',
+      'ua',
     ];
     const agentsDir = join(home, '.codex', 'agents');
     const foreignPath = join(agentsDir, 'foreign-legacy.toml');

@@ -8,8 +8,9 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   abortMarkerTransaction, compareFreshness, claimMarker, publishMarker,
-  releaseMarkerClaim, sessionHash,
+  inspectPath, identityKey, releaseMarkerClaim, sessionHash,
 } from '../lib/marker-state.js';
+import { recoverLegacyCapacityState } from '../lib/marker-capacity-ops.js';
 
 describe('marker state freshness ordering', () => {
   it('orders BigInt nanosecond mtimes exactly beyond Number safe range', () => {
@@ -231,6 +232,18 @@ describe('marker capacity staging', () => {
     assert.equal(existsSync(join(publicationFence, 'publication.json'))
       || existsSync(join(publicationFence, 'publication.json.tmp')), true);
     unlinkSync(join(home, 'cache', '.markers-capacity-transaction', 'transaction.json'));
+    const statePath = join(home, 'cache', '.markers-capacity-transaction', 'transaction.json');
+    const rejected = recoverLegacyCapacityState(
+      markerDir, statePath, publicationFence, () => false,
+      {
+        inspectPath,
+        capacitySlotPath: (dir) => join(dir, '..', '.markers-capacity-transaction', 'victim'),
+        parseTransactionState: (content) => JSON.parse(content.toString('utf8')),
+        identityKey, present: 'present', indeterminate: 'indeterminate',
+      },
+    );
+    assert.deepEqual(rejected, { recognized: true, state: null });
+    assert.equal(existsSync(statePath), false);
     if (existsSync(join(publicationFence, 'publication.json'))) {
       copyFileSync(join(publicationFence, 'publication.json'),
         join(publicationFence, 'publication.json.tmp'));
@@ -243,6 +256,76 @@ describe('marker capacity staging', () => {
     assert.equal(existsSync(join(home, 'cache', '.markers-capacity-transaction')), false);
     assert.equal(existsSync(join(home, 'cache', '.markers-capacity-transaction',
       'transaction.json.cah-owned-publish')), false);
+  });
+
+  it('preserves and reports a successor moved by a late victim race', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-marker-late-successor-'));
+    const markerDir = join(home, 'cache', 'markers');
+    mkdirSync(markerDir, { recursive: true });
+    const victim = join(markerDir, `marker-${sessionHash('late-victim')}`);
+    writeFileSync(victim, 'victim\n');
+    const markerUrl = new URL('../lib/marker-state.js', import.meta.url).href;
+    const interlocksUrl = new URL('../test-support/interlocks.js', import.meta.url).href;
+    const script = `
+      import { claimMarker } from ${JSON.stringify(markerUrl)};
+      import { makeInterlock } from ${JSON.stringify(interlocksUrl)};
+      const cfg = {
+        markerDir: process.env.CAH_TEST_MARKER_DIR, namespace: 'marker-tests', prefix: 'marker-',
+        ttlMs: 86400000, maxSessions: 1, scanCap: 128, claimTtlMs: 30000,
+        ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS',
+        markerNameRe: /^marker-[a-f0-9]{64}$/, testInterlock: makeInterlock(),
+      };
+      const maintenance = {};
+      const claim = claimMarker({ ...cfg, sessionId: 'late-successor', nowMs: Date.now(), maintenance });
+      if (claim) process.exit(3);
+      process.exit(maintenance.preserved?.some((path) => path.includes('.cah-tmp-victim-')) ? 0 : 4);
+    `;
+    const interlock = join(home, 'victim-fence-interlock');
+    const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+      env: { ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
+        CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+        CAH_TEST_ONLY_OWNER_INTERLOCK: interlock,
+        CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'marker-capacity-victim-rename' },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    await waitForPath(`${interlock}.ready`);
+    unlinkSync(victim);
+    writeFileSync(victim, 'successor\n');
+    writeFileSync(`${interlock}.go`, 'go');
+    const result = await new Promise((resolve) => child.on('close', (status) => resolve(status)));
+    assert.equal(result, 0);
+    const fencePayload = join(markerDir, `.cah-tmp-victim-${victim.slice(markerDir.length + 1)}`, 'payload');
+    assert.equal(readFileSync(fencePayload, 'utf8'), 'successor\n');
+  });
+
+  it('recovers a crash after victim quarantine without losing the victim', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-marker-quarantine-crash-'));
+    const markerDir = join(home, 'cache', 'markers');
+    mkdirSync(markerDir, { recursive: true });
+    const victim = join(markerDir, `marker-${sessionHash('quarantine-victim')}`);
+    writeFileSync(victim, 'victim\n');
+    const markerUrl = new URL('../lib/marker-state.js', import.meta.url).href;
+    const script = `
+      import { abortMarkerTransaction, claimMarker, releaseMarkerClaim } from ${JSON.stringify(markerUrl)};
+      const cfg = { markerDir: process.env.CAH_TEST_MARKER_DIR, namespace: 'marker-tests',
+        prefix: 'marker-', ttlMs: 86400000, maxSessions: 1, scanCap: 128, claimTtlMs: 30000,
+        ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS', markerNameRe: /^marker-[a-f0-9]{64}$/ };
+      if (process.env.CAH_TEST_RECOVER === '1') {
+        const claim = claimMarker({ ...cfg, sessionId: 'recover-quarantine', nowMs: Date.now() });
+        if (!claim || !abortMarkerTransaction(claim)) process.exit(3);
+        releaseMarkerClaim(claim);
+      } else if (claimMarker({ ...cfg, sessionId: 'crash-quarantine', nowMs: Date.now() })) process.exit(4);
+    `;
+    const env = { ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
+      CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+      CAH_TEST_ONLY_CAPACITY_CRASH: 'after-victim-quarantine' };
+    const crashed = spawnSync(process.execPath, ['--input-type=module', '-e', script], { env });
+    assert.notEqual(crashed.status, 0);
+    const recovered = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      encoding: 'utf8', env: { ...env, CAH_TEST_RECOVER: '1', CAH_TEST_ONLY_CAPACITY_CRASH: undefined },
+    });
+    assert.equal(recovered.status, 0, recovered.stderr);
+    assert.equal(readFileSync(victim, 'utf8'), 'victim\n');
   });
 
   it('preserves and reports a successor replacing the victim slot after the final fence', async () => {
