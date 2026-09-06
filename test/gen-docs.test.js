@@ -117,6 +117,10 @@ describe('gen-docs --check', () => {
         );
       }
     }
+    for (const file of BinFiles.filter((entry) => entry.dest.endsWith('.js'))) {
+      assert.ok(graph.get(file.dest).has('package.json'),
+        `${file.dest} must depend on the managed ESM boundary`);
+    }
     assert.ok(
       validation.order.indexOf('lib/fs-atomic.js')
         < validation.order.indexOf('lib/fsutil.js')

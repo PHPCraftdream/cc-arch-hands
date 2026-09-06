@@ -710,6 +710,92 @@ describe('writeBins', () => {
     assert.match(readFileSync(join(dst, 'lib', 'transcript-stats.js'), 'utf8'), /x = 2/);
   });
 
+  it('republishes restored dependents when a dependency cannot roll back', () => {
+    writeBins(dst, src);
+    writeFileSync(
+      join(src, 'bin', 'cah-status.js'),
+      "#!/usr/bin/env node\nimport { x } from '../lib/transcript-stats.js';\nconsole.log('new', x);\n",
+    );
+    writeFileSync(join(src, 'lib', 'transcript-stats.js'), 'export const x = 2;\n');
+
+    let failedForward = false;
+    let failDependencyRollback = false;
+    let threwDependencyRollback = false;
+    let failure;
+    try {
+      writeBins(dst, src, {
+        testInterlock: (phase, dest) => {
+          if (phase === 'binstall-before-leaf-write'
+              && dest === 'bin/cah-status-probe.js' && !failedForward) {
+            unlinkSync(join(src, 'bin', 'cah-status-probe.js'));
+            failedForward = true;
+          }
+          if (phase === 'binstall-before-rollback'
+              && dest === 'lib/transcript-stats.js') {
+            failDependencyRollback = true;
+          }
+          if (phase === 'write-before-final-operation'
+              && failDependencyRollback && !threwDependencyRollback) {
+            threwDependencyRollback = true;
+            throw new Error('test-only dependency rollback failure');
+          }
+        },
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    assert.ok(failure, 'the missing executable source must fail the reinstall');
+    assert.equal(failure.rollbackIncomplete, true);
+    assert.ok(failure.rollback.republished.includes('bin/cah-status.js'),
+      'a dependent restored before its failed dependency must be republished');
+    assert.match(readFileSync(join(dst, 'bin', 'cah-status.js'), 'utf8'), /console\.log\('new'/);
+    assert.match(readFileSync(join(dst, 'lib', 'transcript-stats.js'), 'utf8'), /x = 2/);
+  });
+
+  it('fresh-install surviving executables retain the ESM boundary for runtime smoke', () => {
+    let failedForward = false;
+    let failure;
+    const statusPath = join(dst, 'bin', 'cah-status.js');
+    try {
+      writeBins(dst, src, {
+        testInterlock: (phase, dest) => {
+          if (phase === 'binstall-before-leaf-write'
+              && dest === 'bin/cah-stamp.js' && !failedForward) {
+            unlinkSync(join(src, 'bin', 'cah-stamp.js'));
+            failedForward = true;
+          }
+          if (phase === 'binstall-before-rollback' && dest === 'bin/cah-status.js') {
+            rmSync(statusPath, { force: true });
+            writeFileSync(
+              statusPath,
+              "#!/usr/bin/env node\nimport { x } from '../lib/transcript-stats.js';\nconsole.log('surviving', x);\n",
+            );
+          }
+        },
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    assert.ok(failure, 'the missing executable source must fail the fresh install');
+    assert.equal(JSON.parse(readFileSync(join(dst, 'package.json'), 'utf8')).type, 'module');
+    const smokeHome = tmpDir();
+    try {
+      const result = spawnSync(process.execPath, [statusPath], {
+        cwd: smokeHome,
+        env: { ...process.env, HOME: smokeHome, USERPROFILE: smokeHome },
+        encoding: 'utf8',
+        timeout: 10_000,
+      });
+      assert.equal(result.error, undefined, 'surviving executable process failed to start');
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stdout, /surviving 1/);
+    } finally {
+      rmSync(smokeHome, { recursive: true, force: true });
+    }
+  });
+
   it('publishes the complete dependency chain before any executable leaf', async () => {
     writeBins(dst, src);
     const statusPath = join(dst, 'bin', 'cah-status.js');
