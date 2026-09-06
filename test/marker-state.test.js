@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import {
-  existsSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync,
+  existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -84,6 +84,98 @@ function replaceWithSuccessorStage(home, markerDir, stagePath) {
     });
     if (!lease) process.exit(2);
     try { rmdirSync(stage); mkdirSync(stage); } finally { releaseLease(lease); }
+  `;
+  return spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    encoding: 'utf8',
+    env: {
+      ...process.env, HOME: home, USERPROFILE: home,
+      CAH_TEST_ONLY: '1', CAH_TEST_MARKER_DIR: markerDir,
+      CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+    },
+  });
+}
+
+function replaceWithSuccessorChild(home, markerDir, stagePath, content = 'successor\n') {
+  const leaseUrl = new URL('../lib/lease-lock.js', import.meta.url).href;
+  const script = `
+    import { acquireLease, releaseLease } from ${JSON.stringify(leaseUrl)};
+    import { unlinkSync, writeFileSync } from 'node:fs';
+    import { join } from 'node:path';
+    const markerDir = process.env.CAH_TEST_MARKER_DIR;
+    const stage = ${JSON.stringify(stagePath)};
+    const lease = acquireLease(join(markerDir, '.cah-marker-capacity-marker-tests'), {
+      testLeaseEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS', staleAfterMs: 100,
+    });
+    if (!lease) process.exit(2);
+    try {
+      unlinkSync(join(stage, 'transaction.json'));
+      writeFileSync(join(stage, 'transaction.json'), ${JSON.stringify(content)});
+    } finally { releaseLease(lease); }
+  `;
+  return spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    encoding: 'utf8',
+    env: {
+      ...process.env, HOME: home, USERPROFILE: home,
+      CAH_TEST_ONLY: '1', CAH_TEST_MARKER_DIR: markerDir,
+      CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+    },
+  });
+}
+
+function stagedTransaction(markerDir) {
+  return JSON.stringify({
+    version: 2,
+    marker: join(markerDir, `marker-${sessionHash('staged-marker')}`),
+    victim: join(markerDir, `marker-${sessionHash('staged-victim')}`),
+    victimKey: 'victim-key', markerBeforeKey: 'absent', nonce: 'staged-nonce',
+    markerClaimPath: join(markerDir, '.staged-marker-claim'),
+    victimClaimPath: join(markerDir, '.staged-victim-claim'),
+    capacityLeasePath: join(markerDir, '.cah-marker-capacity-marker-tests'),
+  }) + '\n';
+}
+
+function runPausedFenceReconciler(home, markerDir) {
+  const markerUrl = new URL('../lib/marker-state.js', import.meta.url).href;
+  const interlocksUrl = new URL('../test-support/interlocks.js', import.meta.url).href;
+  const script = `
+    import { pruneMarkers } from ${JSON.stringify(markerUrl)};
+    import { makeInterlock } from ${JSON.stringify(interlocksUrl)};
+    const cfg = {
+      markerDir: process.env.CAH_TEST_MARKER_DIR,
+      namespace: 'marker-tests', prefix: 'marker-', ttlMs: 86400000,
+      maxSessions: 1, scanCap: 128, claimTtlMs: 30000,
+      ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS',
+      markerNameRe: /^marker-[a-f0-9]{64}$/,
+      testInterlock: makeInterlock(),
+    };
+    pruneMarkers({ ...cfg, nowMs: Date.now() });
+  `;
+  return spawn(process.execPath, ['--input-type=module', '-e', script], {
+    env: {
+      ...process.env, HOME: home, USERPROFILE: home,
+      CAH_TEST_ONLY: '1', CAH_TEST_MARKER_DIR: markerDir,
+      CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+      CAH_TEST_ONLY_OWNER_INTERLOCK: join(home, 'fence-reconcile-interlock'),
+      CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'marker-capacity-fence',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+function replaceWithSuccessorFile(home, markerDir, path, content) {
+  const leaseUrl = new URL('../lib/lease-lock.js', import.meta.url).href;
+  const script = `
+    import { acquireLease, releaseLease } from ${JSON.stringify(leaseUrl)};
+    import { unlinkSync, writeFileSync } from 'node:fs';
+    import { join } from 'node:path';
+    const markerDir = process.env.CAH_TEST_MARKER_DIR;
+    const path = ${JSON.stringify(path)};
+    const lease = acquireLease(join(markerDir, '.cah-marker-capacity-marker-tests'), {
+      testLeaseEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS', staleAfterMs: 100,
+    });
+    if (!lease) process.exit(2);
+    try { unlinkSync(path); writeFileSync(path, ${JSON.stringify(content)}); }
+    finally { releaseLease(lease); }
   `;
   return spawnSync(process.execPath, ['--input-type=module', '-e', script], {
     encoding: 'utf8',
@@ -179,5 +271,81 @@ describe('marker capacity staging', () => {
       assert.equal(result.status, 0, result.stderr);
       assert.equal(existsSync(stagePath), true);
     });
+
+    it(`preserves a replaced transaction child in the ${legacy ? 'legacy' : 'current'} promotion branch`, async () => {
+      const home = mkdtempSync(join(tmpdir(), `cah-marker-${legacy ? 'legacy' : 'current'}-child-`));
+      const markerDir = join(home, 'cache', 'markers');
+      mkdirSync(markerDir, { recursive: true });
+      const stagePath = legacy
+        ? join(home, 'cache', '.markers-capacity-transaction-stage-successor')
+        : join(markerDir, '.capacity-transaction-stage');
+      mkdirSync(stagePath);
+      writeFileSync(join(stagePath, 'transaction.json'), stagedTransaction(markerDir));
+
+      const paused = runPausedReconciler(home, markerDir);
+      const interlock = join(home, 'stage-reconcile-interlock');
+      await waitForPath(`${interlock}.ready`);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      const successor = replaceWithSuccessorChild(home, markerDir, stagePath, 'successor\n');
+      assert.equal(successor.status, 0, successor.stderr);
+      writeFileSync(`${interlock}.go`, 'go');
+      const result = await new Promise((resolve) => {
+        let stderr = '';
+        paused.stderr.on('data', (chunk) => { stderr += chunk; });
+        paused.on('close', (status) => resolve({ status, stderr }));
+      });
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(readFileSync(join(stagePath, 'transaction.json'), 'utf8'), 'successor\n');
+      assert.equal(existsSync(join(home, 'cache', '.markers-capacity-transaction')), false);
+    });
   }
+
+  it('does not rename a replaced legacy capacity fence into an empty marker slot', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-marker-fence-rename-'));
+    const markerDir = join(home, 'cache', 'markers');
+    mkdirSync(markerDir, { recursive: true });
+    const marker = join(markerDir, `marker-${sessionHash('fence-rename')}`);
+    const fence = `${marker}.cah-capacity-fence`;
+    writeFileSync(fence, JSON.stringify({ deliveredAt: 1 }) + '\n');
+    const paused = runPausedFenceReconciler(home, markerDir);
+    const interlock = join(home, 'fence-reconcile-interlock');
+    await waitForPath(`${interlock}.ready`);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const successor = replaceWithSuccessorFile(home, markerDir, fence, 'successor\n');
+    assert.equal(successor.status, 0, successor.stderr);
+    writeFileSync(`${interlock}.go`, 'go');
+    const result = await new Promise((resolve) => {
+      let stderr = '';
+      paused.stderr.on('data', (chunk) => { stderr += chunk; });
+      paused.on('close', (status) => resolve({ status, stderr }));
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(existsSync(marker), false);
+    assert.equal(readFileSync(fence, 'utf8'), 'successor\n');
+  });
+
+  it('does not remove a replaced legacy capacity fence over a newer marker', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-marker-fence-remove-'));
+    const markerDir = join(home, 'cache', 'markers');
+    mkdirSync(markerDir, { recursive: true });
+    const marker = join(markerDir, `marker-${sessionHash('fence-remove')}`);
+    const fence = `${marker}.cah-capacity-fence`;
+    writeFileSync(fence, JSON.stringify({ deliveredAt: 1 }) + '\n');
+    writeFileSync(marker, JSON.stringify({ deliveredAt: 2 }) + '\n');
+    const paused = runPausedFenceReconciler(home, markerDir);
+    const interlock = join(home, 'fence-reconcile-interlock');
+    await waitForPath(`${interlock}.ready`);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    const successor = replaceWithSuccessorFile(home, markerDir, fence, 'successor\n');
+    assert.equal(successor.status, 0, successor.stderr);
+    writeFileSync(`${interlock}.go`, 'go');
+    const result = await new Promise((resolve) => {
+      let stderr = '';
+      paused.stderr.on('data', (chunk) => { stderr += chunk; });
+      paused.on('close', (status) => resolve({ status, stderr }));
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(readFileSync(marker, 'utf8'), JSON.stringify({ deliveredAt: 2 }) + '\n');
+    assert.equal(readFileSync(fence, 'utf8'), 'successor\n');
+  });
 });

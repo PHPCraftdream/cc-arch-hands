@@ -86,6 +86,11 @@ function stagedNames(repo) {
 }
 
 describe('release and generated-doc contracts', () => {
+  it('does not retain the extracted agent-tree worktree ignore state', () => {
+    const gitignore = read('.gitignore');
+    assert.doesNotMatch(gitignore, /wrush|\/worktrees\//i);
+  });
+
   it('publish workflow requires tag, package, and CURRENT_VERSION to match', () => {
     const workflow = read('.github/workflows/publish.yml');
     assert.match(workflow, /PACKAGE_VERSION=.*package\.json/);

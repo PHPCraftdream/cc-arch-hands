@@ -636,6 +636,80 @@ describe('writeBins', () => {
       'rollback must not leave a publication fence after a successor wins');
   });
 
+  it('protects dependencies of an executable that survives rollback', () => {
+    let failedForward = false;
+    let failure;
+    const statusPath = join(dst, 'bin', 'cah-status.js');
+    try {
+      writeBins(dst, src, {
+        testInterlock: (phase, dest) => {
+          if (phase === 'binstall-before-leaf-write'
+              && dest === 'bin/cah-stamp.js' && !failedForward) {
+            unlinkSync(join(src, 'bin', 'cah-stamp.js'));
+            failedForward = true;
+          }
+          if (phase === 'binstall-before-rollback' && dest === 'bin/cah-status.js') {
+            rmSync(statusPath, { force: true });
+            writeFileSync(statusPath, 'foreign successor executable\n');
+          }
+        },
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    assert.ok(failure, 'the missing source executable must fail the install');
+    assert.equal(failure.rollbackIncomplete, true);
+    assert.match(failure.message, /incomplete rollback recovery/);
+    assert.ok(failure.rollback.failedExecutables.some((entry) =>
+      entry.dest === 'bin/cah-status.js' && entry.action === 'remove'));
+    assert.ok(failure.rollback.protected.some((entry) =>
+      entry.dest === 'lib/transcript-stats.js'
+      && entry.requiredBy.includes('bin/cah-status.js')));
+    assert.equal(readFileSync(statusPath, 'utf8'), 'foreign successor executable\n');
+    assert.ok(existsSync(join(dst, 'lib', 'transcript-stats.js')),
+      'a surviving executable must keep its dependency available');
+    assert.ok(!existsSync(join(dst, 'lib', 'update-check.js')),
+      'unrelated libraries remain eligible for rollback');
+  });
+
+  it('reports failed executable restoration and preserves its dependency closure', () => {
+    writeBins(dst, src);
+    writeFileSync(
+      join(src, 'bin', 'cah-status.js'),
+      "#!/usr/bin/env node\nimport { x } from '../lib/transcript-stats.js';\nconsole.log('new', x);\n",
+    );
+    writeFileSync(join(src, 'lib', 'transcript-stats.js'), 'export const x = 2;\n');
+
+    let failedForward = false;
+    let failure;
+    try {
+      writeBins(dst, src, {
+        testInterlock: (phase, dest) => {
+          if (phase === 'binstall-before-leaf-write'
+              && dest === 'bin/cah-stamp.js' && !failedForward) {
+            unlinkSync(join(src, 'bin', 'cah-stamp.js'));
+            failedForward = true;
+          }
+          if (failedForward && phase === 'write-before-final-operation') {
+            throw new Error('test-only rollback restoration failure');
+          }
+        },
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    assert.ok(failure, 'the missing source executable must fail the reinstall');
+    assert.equal(failure.rollbackIncomplete, true);
+    assert.ok(failure.rollback.failedExecutables.some((entry) =>
+      entry.dest === 'bin/cah-status.js' && entry.action === 'restore'));
+    assert.ok(failure.rollback.protected.some((entry) =>
+      entry.dest === 'lib/transcript-stats.js'));
+    assert.match(failure.message, /incomplete rollback recovery.*bin\/cah-status\.js/);
+    assert.match(readFileSync(join(dst, 'lib', 'transcript-stats.js'), 'utf8'), /x = 2/);
+  });
+
   it('publishes the complete dependency chain before any executable leaf', async () => {
     writeBins(dst, src);
     const statusPath = join(dst, 'bin', 'cah-status.js');

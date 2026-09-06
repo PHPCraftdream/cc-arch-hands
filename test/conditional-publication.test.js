@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { captureRegularFileSnapshot, writeFileAtomic } from '../lib/fs-atomic.js';
+import { readPublicationProof } from '../lib/fs-atomic-publication.js';
 
 function waitForPath(path) {
   const deadline = Date.now() + 10_000;
@@ -155,6 +156,84 @@ describe('conditional atomic publication', () => {
 
     const before = captureRegularFileSnapshot(dest);
     writeFileAtomic(dest, 'successor\n', { expectedDestination: before.expectedDestination });
+    assert.equal(readFileSync(dest, 'utf8'), 'successor\n');
+    assert.equal(existsSync(`${dest}.cah-owned-publish`), false);
+  });
+
+  it('selects the complete abandoned proof when proof replacement crashed', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-conditional-two-proof-'));
+    const dest = join(dir, 'leaf');
+    writeFileSync(dest, 'old\n');
+    const before = captureRegularFileSnapshot(dest);
+
+    assert.throws(() => writeFileAtomic(dest, 'new\n', {
+      expectedDestination: before.expectedDestination,
+      testInterlock: (phase) => {
+        if (phase === 'write-after-final-rename') throw new Error('simulated crash');
+      },
+    }), /simulated crash/);
+
+    const fence = `${dest}.cah-owned-publish`;
+    const proofPath = join(fence, 'publication.json');
+    const abandoned = JSON.parse(readFileSync(proofPath, 'utf8'));
+    abandoned.ownerState = 'abandoned';
+    abandoned.createdAtMs = 0;
+    abandoned.updatedAtMs = 1;
+    writeFileSync(join(fence, 'publication.json.tmp'), `${JSON.stringify(abandoned)}\n`);
+
+    const successor = captureRegularFileSnapshot(dest);
+    writeFileAtomic(dest, 'successor\n', { expectedDestination: successor.expectedDestination });
+    assert.equal(readFileSync(dest, 'utf8'), 'successor\n');
+    assert.equal(existsSync(fence), false);
+  });
+
+  it('does not authorize a complete proof beside a partial sibling', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-conditional-partial-proof-'));
+    const dest = join(dir, 'leaf');
+    writeFileSync(dest, 'old\n');
+    const before = captureRegularFileSnapshot(dest);
+
+    assert.throws(() => writeFileAtomic(dest, 'new\n', {
+      expectedDestination: before.expectedDestination,
+      testInterlock: (phase) => {
+        if (phase === 'write-after-final-rename') throw new Error('simulated crash');
+      },
+    }), /simulated crash/);
+
+    const fence = `${dest}.cah-owned-publish`;
+    writeFileSync(join(fence, 'publication.json.tmp'), '{"partial":');
+    assert.equal(readPublicationProof(fence), null);
+    assert.equal(readFileSync(dest, 'utf8'), 'new\n');
+    assert.equal(readFileSync(join(fence, 'publication.json.tmp'), 'utf8'), '{"partial":');
+  });
+
+  it('lets a verified lifecycle successor recover a live-PID publication', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-conditional-generation-'));
+    const dest = join(dir, 'leaf');
+    const leasePath = join(dir, 'lifecycle.lock');
+    mkdirSync(leasePath);
+    writeFileSync(join(leasePath, 'owner.json'), JSON.stringify({
+      pid: process.pid, token: 'old-token', generation: 'old-generation',
+    }));
+    writeFileSync(dest, 'old\n');
+    const before = captureRegularFileSnapshot(dest);
+
+    assert.throws(() => writeFileAtomic(dest, 'new\n', {
+      expectedDestination: before.expectedDestination,
+      lifecycleLease: { path: leasePath, token: 'old-token', generation: 'old-generation' },
+      testInterlock: (phase) => {
+        if (phase === 'write-after-final-rename') throw new Error('simulated crash');
+      },
+    }), /simulated crash/);
+
+    writeFileSync(join(leasePath, 'owner.json'), JSON.stringify({
+      pid: process.pid, token: 'new-token', generation: 'new-generation',
+    }));
+    const successor = captureRegularFileSnapshot(dest);
+    writeFileAtomic(dest, 'successor\n', {
+      expectedDestination: successor.expectedDestination,
+      lifecycleLease: { path: leasePath, token: 'new-token', generation: 'new-generation' },
+    });
     assert.equal(readFileSync(dest, 'utf8'), 'successor\n');
     assert.equal(existsSync(`${dest}.cah-owned-publish`), false);
   });
