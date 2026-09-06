@@ -59,11 +59,33 @@ function runUpdateWorker(cachePath, nowMs, fetchSpecPath, env = {}) {
   const source = `
     const { parentPort, workerData } = require('node:worker_threads');
     (async () => {
+      const { readFileSync, writeFileSync } = require('node:fs');
       process.env.CAH_TEST_ONLY = '1';
-      process.env.CAH_TEST_ONLY_UPDATE_FETCH = workerData.fetchSpecPath;
       for (const [key, value] of Object.entries(workerData.env)) process.env[key] = value;
       const { getLatestVersion } = await import(workerData.updateCheckUrl);
-      const result = getLatestVersion(workerData.cachePath, workerData.ttlMs, workerData.nowMs);
+      const readSpec = () => {
+        try { return JSON.parse(readFileSync(workerData.fetchSpecPath, 'utf8')); } catch { return null; }
+      };
+      const fetchLatestVersion = (timeoutMs) => {
+        const spec = readSpec();
+        if (!spec) return null;
+        if (typeof spec.readyPath === 'string') {
+          try { writeFileSync(spec.readyPath, 'ready\\n', { flag: 'wx' }); } catch { /* already ready */ }
+        }
+        if (typeof spec.goPath === 'string') {
+          const deadline = Date.now() + Math.max(1000, timeoutMs * 10);
+          const signal = new Int32Array(new SharedArrayBuffer(4));
+          while (true) {
+            try { readFileSync(spec.goPath); break; } catch (error) {
+              if (error?.code !== 'ENOENT' || Date.now() >= deadline) return null;
+              Atomics.wait(signal, 0, 0, 10);
+            }
+          }
+        }
+        return typeof spec.result === 'string' ? spec.result : null;
+      };
+      const result = getLatestVersion(workerData.cachePath, workerData.ttlMs, workerData.nowMs,
+        { fetchLatestVersion });
       parentPort.postMessage(result);
     })().catch((error) => {
       setImmediate(() => { throw error; });
@@ -309,6 +331,33 @@ describe('getLatestVersion caching', () => {
     }));
 
     const fetchSpec = join(dir, 'recovery-fetch.json');
+    writeFileSync(fetchSpec, JSON.stringify({ result: '9.9.9' }));
+    assert.equal(await runUpdateWorker(cachePath, now, fetchSpec), '9.9.9');
+    assert.equal(existsSync(lockPath), false);
+  });
+
+  it('reclaims a fresh lock when its recorded owner is already dead', async () => {
+    const cachePath = isolatedCachePath();
+    const dir = dirname(cachePath);
+    const now = 5_500_000;
+    writeFileSync(cachePath, JSON.stringify({ latestVersion: '8.8.8', checkedAt: 0 }));
+
+    const crashed = spawn(process.execPath, ['-e', ''], { stdio: 'ignore' });
+    const deadPid = crashed.pid;
+    await new Promise((resolve, reject) => {
+      crashed.once('error', reject);
+      crashed.once('exit', resolve);
+    });
+    const lockPath = `${cachePath}.lock`;
+    mkdirSync(lockPath);
+    writeFileSync(join(lockPath, 'owner.json'), JSON.stringify({
+      kind: 'cc-arch-hands-update-check',
+      pid: deadPid,
+      token: 'fresh-crashed-owner',
+      startedAt: Date.now() - 1_000,
+    }));
+
+    const fetchSpec = join(dir, 'fresh-dead-owner-fetch.json');
     writeFileSync(fetchSpec, JSON.stringify({ result: '9.9.9' }));
     assert.equal(await runUpdateWorker(cachePath, now, fetchSpec), '9.9.9');
     assert.equal(existsSync(lockPath), false);

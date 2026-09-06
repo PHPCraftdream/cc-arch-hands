@@ -56,6 +56,34 @@ describe('writeSkills', { concurrency: false }, () => {
     assert.ok(existsSync(join(linkedClaude, 'skills', AllSkills[0], SKILL_MANIFEST_LEAF)));
   });
 
+  it('accepts a symlinked skills directory and removes through its real target', (t) => {
+    const dir = tmpDir();
+    const realSkills = join(dir, 'managed-skills');
+    const linkedSkills = join(dir, '.claude', 'skills');
+    mkdirSync(realSkills, { recursive: true });
+    mkdirSync(join(dir, '.claude'));
+    try {
+      symlinkSync(realSkills, linkedSkills, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch (e) {
+      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
+        t.skip('junction creation is unavailable in this Windows test environment');
+        return;
+      }
+      throw e;
+    }
+
+    const scope = new Scope({ cwd: dir });
+    const name = AllSkills[0];
+    const result = writeSkills(embeddedTemplates(), scope, { subset: [name] });
+    assert.equal(result.written, 1);
+    assert.ok(existsSync(join(realSkills, name, SKILL_MANIFEST_LEAF)));
+    assert.ok(existsSync(join(linkedSkills, name, SKILL_MANIFEST_LEAF)));
+
+    const removed = removeSkills(embeddedTemplates(), scope, { subset: [name] });
+    assert.equal(removed.removed, 1);
+    assert.ok(!existsSync(join(realSkills, name)));
+  });
+
   it('embedded smoke install', () => {
     const dir = tmpDir();
     const scope = new Scope({ cwd: dir });
@@ -574,4 +602,3 @@ describe('writeSkills', { concurrency: false }, () => {
 // ---------------------------------------------------------------------------
 // RemoveSkills
 // ---------------------------------------------------------------------------
-
