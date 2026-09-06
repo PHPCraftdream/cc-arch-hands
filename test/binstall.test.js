@@ -1,7 +1,8 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, mkdtempSync, statSync, unlinkSync,
+  mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, mkdtempSync, statSync, lstatSync, unlinkSync,
+  symlinkSync, linkSync,
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
@@ -259,6 +260,65 @@ describe('writeBins', () => {
     }
   });
 
+  it('rejects a directory at every declared leaf before publishing anything', () => {
+    const conflict = join(dst, 'bin', 'cah-status.js');
+    mkdirSync(conflict, { recursive: true });
+
+    assert.throws(
+      () => writeBins(dst, src),
+      /foreign managed runtime leaf.*cah-status\.js.*directory/,
+    );
+    assert.ok(existsSync(conflict), 'the foreign directory must survive preflight');
+    assert.ok(!existsSync(join(dst, 'package.json')));
+    assert.ok(!existsSync(join(dst, 'lib', 'fsutil.js')));
+  });
+
+  it('rejects valid and dangling declared symlinks without following them', (t) => {
+    const target = join(dst, 'foreign-target.js');
+    writeFileSync(target, `#!/usr/bin/env node\n${SentinelBin}\nforeign target\n`);
+    const linked = join(dst, 'bin', 'cah-status.js');
+    mkdirSync(dirname(linked), { recursive: true });
+    try {
+      symlinkSync(target, linked, 'file');
+    } catch (error) {
+      if (process.platform === 'win32' && (error.code === 'EPERM' || error.code === 'EACCES')) {
+        t.skip('symbolic links are unavailable on this Windows runner');
+        return;
+      }
+      throw error;
+    }
+
+    assert.throws(() => writeBins(dst, src), /foreign managed runtime leaf.*cah-status\.js.*symbolic link/);
+    assert.ok(existsSync(linked), 'the valid symlink must survive preflight');
+    assert.equal(readFileSync(target, 'utf8').includes('foreign target'), true);
+
+    rmSync(linked);
+    symlinkSync(join(dst, 'missing-target.js'), linked, 'file');
+    assert.throws(() => writeBins(dst, src), /foreign managed runtime leaf.*cah-status\.js.*symbolic link/);
+    assert.ok(lstatSync(linked).isSymbolicLink(), 'the dangling symlink must survive preflight');
+    assert.ok(!existsSync(join(dst, 'package.json')));
+  });
+
+  it('rejects a multi-hardlink declared leaf before any mutation', (t) => {
+    if (process.platform === 'win32') {
+      t.skip('hardlink metadata is not portable on this Windows runner');
+      return;
+    }
+    const conflict = join(dst, 'bin', 'cah-status.js');
+    const secondLink = join(dst, 'foreign-hardlink.js');
+    mkdirSync(dirname(conflict), { recursive: true });
+    writeFileSync(conflict, `#!/usr/bin/env node\n${SentinelBin}\nforeign\n`);
+    linkSync(conflict, secondLink);
+
+    assert.throws(
+      () => writeBins(dst, src),
+      /foreign managed runtime leaf.*cah-status\.js.*multi-hardlink/,
+    );
+    assert.ok(existsSync(conflict));
+    assert.ok(existsSync(secondLink));
+    assert.ok(!existsSync(join(dst, 'package.json')));
+  });
+
   it('preserves a foreign successor installed during orphan pruning', async () => {
     writeBins(dst, src);
     const orphan = join(dst, 'bin', 'cah-old.js');
@@ -508,6 +568,51 @@ describe('removeBins', () => {
     assert.throws(() => removeBins(dst), /foreign managed runtime leaf.*fsutil\.js/);
     assert.equal(readFileSync(foreign, 'utf8'), 'not ours\n');
     assert.ok(existsSync(join(dst, 'bin', 'cah-status.js')), 'zero-mutation rejection must keep executables');
+  });
+
+  it('rejects non-regular declared leaves before removing any managed files', (t) => {
+    writeBins(dst, src);
+    const conflict = join(dst, 'lib', 'fsutil.js');
+    rmSync(conflict, { force: true });
+    mkdirSync(conflict, { recursive: true });
+    assert.throws(() => removeBins(dst), /foreign managed runtime leaf.*fsutil\.js.*directory/);
+    assert.ok(existsSync(join(dst, 'bin', 'cah-status.js')));
+
+    rmSync(conflict, { recursive: true, force: true });
+    const target = join(dst, 'foreign-target.js');
+    writeFileSync(target, 'foreign target\n');
+    try {
+      symlinkSync(target, conflict, 'file');
+    } catch (error) {
+      if (process.platform === 'win32' && (error.code === 'EPERM' || error.code === 'EACCES')) {
+        t.skip('symbolic links are unavailable on this Windows runner');
+        return;
+      }
+      throw error;
+    }
+    assert.throws(() => removeBins(dst), /foreign managed runtime leaf.*fsutil\.js.*symbolic link/);
+    assert.ok(existsSync(join(dst, 'bin', 'cah-status.js')));
+  });
+
+  it('preserves and reports unproved cache crash temps without traversing cache', () => {
+    writeBins(dst, src);
+    const cache = join(dst, 'cache');
+    const crashTemp = join(cache, '.cah-tmp-crashed-install');
+    const nested = join(crashTemp, 'must-not-be-visited');
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(nested, 'payload'), 'foreign cache data\n');
+
+    const installed = writeBins(dst, src);
+    assert.ok(existsSync(crashTemp));
+    assert.deepEqual(installed.maintenance.unprovedTemps, ['cache/.cah-tmp-crashed-install']);
+    assert.deepEqual(installed.recovery, ['cache/.cah-tmp-crashed-install']);
+    assert.ok(!installed.skipped.includes('cache'));
+
+    const removed = removeBins(dst);
+    assert.ok(existsSync(crashTemp));
+    assert.deepEqual(removed.maintenance.unprovedTemps, ['cache/.cah-tmp-crashed-install']);
+    assert.deepEqual(removed.recovery, ['cache/.cah-tmp-crashed-install']);
+    assert.ok(!removed.skipped.includes('cache'));
   });
 
   it('leaves unknown foreign files and keeps the dir', () => {

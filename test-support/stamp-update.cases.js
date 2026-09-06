@@ -161,6 +161,44 @@ export function registerStampUpdateCases() {
       assert.equal(existsSync(join(hintHome, 'escape')), false);
     });
 
+    it('marker capacity cleanup restores a freshly replaced update marker', async () => {
+      const dir = isolatedDir();
+      const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
+      const updateCache = freshUpdateCache(dir, '99.0.0');
+      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const markerDir = updateMarkerDir(hintHome);
+      mkdirSync(markerDir, { recursive: true });
+      const now = Date.now() / 1000;
+      const markers = [];
+      for (let i = 0; i < 64; i += 1) {
+        const marker = join(markerDir, `cah-update-shown-${i.toString(16).padStart(64, '0')}`);
+        writeFileSync(marker, `old-${i}`);
+        const mtime = now - (64 - i);
+        utimesSync(marker, mtime, mtime);
+        markers.push(marker);
+      }
+      const target = markers[0];
+      const interlock = join(dir, 'update-marker-capacity-interlock');
+      const running = runStampAsync(
+        { session_id: 'update-marker-capacity', transcript_path: tp, hook_event_name: 'Stop' },
+        {
+          CAH_UPDATE_CHECK_CACHE: updateCache,
+          CAH_STAMP_HINT_HOME: hintHome,
+          CAH_STAMP_THROTTLE_PATH: join(dir, 'last-stamp.json'),
+          CAH_TEST_ONLY: '1',
+          CAH_TEST_ONLY_OWNER_INTERLOCK: interlock,
+          CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'marker-capacity',
+        },
+      );
+      await waitForPath(`${interlock}.ready`);
+      unlinkSync(target);
+      writeFileSync(target, 'fresh-capacity-successor');
+      writeFileSync(`${interlock}.go`, 'go');
+      const result = await running;
+      assert.match(JSON.parse(result.stdout.trim()).systemMessage, /99\.0\.0/);
+      assert.equal(readFileSync(target, 'utf8'), 'fresh-capacity-successor');
+    });
+
     it('Stop delivers the notice after PostToolUse already deduped the same turn', () => {
       const dir = isolatedDir();
       const tp = join(dir, 'transcript.jsonl');

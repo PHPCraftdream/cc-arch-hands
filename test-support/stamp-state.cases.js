@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync, utimesSync, mkdirSync, unlinkSync, rmdirSync, symlinkSync, lstatSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync, utimesSync, mkdirSync, unlinkSync, rmdirSync, symlinkSync, lstatSync, linkSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -278,6 +278,41 @@ export function registerStampStateCases() {
     const result = await running;
     assert.ok(result.stdout.trim());
     assert.equal(readFileSync(capacityTarget, 'utf8'), 'fresh-capacity-successor');
+  });
+
+  it('sidecar pruning ignores directories, links, and multiply-linked files', (t) => {
+    const dir = isolatedDir();
+    const tp = writeTranscript(dir, 'claude-opus-4-7', 46_000);
+    const throttle = join(dir, 'last-stamp.json');
+    const suffix = 'd'.repeat(64);
+    const sidecarDir = `${throttle}.session-${suffix}.json`;
+    const sidecarTarget = join(dir, 'sidecar-target');
+    const sidecarLink = `${throttle}.session-${'e'.repeat(64)}.json`;
+    const sidecarHardlink = `${throttle}.session-${'f'.repeat(64)}.json`;
+    mkdirSync(sidecarDir);
+    writeFileSync(sidecarTarget, 'target');
+    try {
+      symlinkSync(sidecarTarget, sidecarLink, 'file');
+    } catch (error) {
+      if (process.platform === 'win32' && error && ['EPERM', 'EACCES', 'EINVAL'].includes(error.code)) {
+        t.skip('file symlinks are unavailable on this Windows host');
+        return;
+      }
+      throw error;
+    }
+    writeFileSync(sidecarHardlink, 'hard-linked');
+    const hardlinkPeer = join(dir, 'hardlink-peer');
+    // A hard link is a regular file but is not a single-link managed sidecar.
+    // Keep the peer alive while the hook runs so nlink remains greater than 1.
+    linkSync(sidecarHardlink, hardlinkPeer);
+    const result = runStamp(
+      { session_id: 'non-file-sidecars', transcript_path: tp },
+      { CAH_STAMP_THROTTLE_PATH: throttle, CAH_STAMP_MIN_INTERVAL_MS: '1' },
+    );
+    assert.ok(result.stdout.trim());
+    assert.equal(lstatSync(sidecarDir).isDirectory(), true);
+    assert.equal(lstatSync(sidecarLink).isSymbolicLink(), true);
+    assert.equal(lstatSync(sidecarHardlink).nlink > 1n, true);
   });
 
   it('atomic sidecar writes ignore a prepared legacy predictable temp symlink', (t) => {

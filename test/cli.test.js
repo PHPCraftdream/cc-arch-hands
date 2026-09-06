@@ -370,6 +370,35 @@ describe('run install/uninstall --only bins', () => {
     }
   });
 
+  it('reports unproved cache crash temps through install and uninstall maintenance', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
+    try {
+      withHome(home, () => {
+        const binDir = join(home, '.claude', 'cah-bin');
+        const cache = join(binDir, 'cache');
+        const crashTemp = join(cache, '.cah-tmp-crashed-cli');
+        mkdirSync(cache, { recursive: true });
+        writeFileSync(crashTemp, 'unproved crash leftover\n');
+
+        const installed = captureStdout(() => {
+          assert.equal(run(['install', '--only', 'bins']), 0);
+        });
+        assert.match(installed, /recovery: cache[\\/]\.cah-tmp-crashed-cli/);
+        assert.ok(existsSync(crashTemp), 'unproved cache temp must be preserved');
+        assert.doesNotMatch(installed, /skipped: cache\b/);
+
+        const removed = captureStdout(() => {
+          assert.equal(run(['uninstall', '--only', 'bins']), 0);
+        });
+        assert.match(removed, /recovery: cache[\\/]\.cah-tmp-crashed-cli/);
+        assert.ok(existsSync(crashTemp), 'unproved cache temp must survive removal');
+        assert.doesNotMatch(removed, /skipped: cache\b/);
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('bare uninstall preserves shared bins; explicit bins removal warns', () => {
     const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
     try {

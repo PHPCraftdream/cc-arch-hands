@@ -8,6 +8,7 @@ import {
   mkdirSync,
   unlinkSync,
   symlinkSync,
+  linkSync,
   lstatSync,
   openSync,
   writeSync,
@@ -202,6 +203,55 @@ describe('enableProbe', () => {
     assert.throws(() => enableProbe(h));
     assert.equal(readFileSync(h.settingsPath, 'utf8'), settingsBefore);
     assert.equal(existsSync(h.backupPath), false, 'failed preflight must not create backup');
+  });
+
+  it('rejects a log symlink without touching its victim or probe state', (t) => {
+    const h = harness();
+    const victimPath = join(h.logPath, '..', 'log-victim.txt');
+    const victim = 'foreign log data\n';
+    mkdirSync(join(h.logPath, '..'), { recursive: true });
+    writeFileSync(victimPath, victim);
+    if (!makeSymlinkOrSkip(t, h.logPath, victimPath)) return;
+    const settingsBefore = JSON.stringify({ statusLine: { type: 'command', command: 'original' } });
+    writeFileSync(h.settingsPath, settingsBefore);
+
+    assert.throws(() => enableProbe(h), /probe log path is not a regular file/);
+    assert.equal(readFileSync(victimPath, 'utf8'), victim);
+    assert.equal(readFileSync(h.settingsPath, 'utf8'), settingsBefore);
+    assert.equal(existsSync(h.backupPath), false);
+    assert.equal(lstatSync(h.logPath, { bigint: true }).isSymbolicLink(), true);
+  });
+
+  it('rejects a hard-linked log without touching either link or probe state', () => {
+    const h = harness();
+    const victimPath = join(h.logPath, '..', 'log-hardlink-victim.txt');
+    const victim = 'foreign hard-linked data\n';
+    mkdirSync(join(h.logPath, '..'), { recursive: true });
+    writeFileSync(victimPath, victim);
+    linkSync(victimPath, h.logPath);
+    const settingsBefore = JSON.stringify({ statusLine: { type: 'command', command: 'original' } });
+    writeFileSync(h.settingsPath, settingsBefore);
+
+    assert.throws(() => enableProbe(h), /probe log path has multiple links/);
+    assert.equal(readFileSync(victimPath, 'utf8'), victim);
+    assert.equal(readFileSync(h.logPath, 'utf8'), victim);
+    assert.equal(readFileSync(h.settingsPath, 'utf8'), settingsBefore);
+    assert.equal(existsSync(h.backupPath), false);
+  });
+
+  it('atomically publishes an empty log for a missing or safe existing leaf', () => {
+    const missing = harness();
+    enableProbe(missing);
+    assert.equal(readFileSync(missing.logPath, 'utf8'), '');
+
+    const existing = harness();
+    mkdirSync(join(existing.logPath, '..'), { recursive: true });
+    writeFileSync(existing.logPath, 'foreign existing log\n');
+    const before = lstatSync(existing.logPath, { bigint: true });
+    enableProbe(existing);
+    const after = lstatSync(existing.logPath, { bigint: true });
+    assert.equal(readFileSync(existing.logPath, 'utf8'), '');
+    assert.notEqual(after.ino, before.ino, 'safe existing log must be atomically replaced');
   });
 });
 

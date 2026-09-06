@@ -623,4 +623,38 @@ describe('cah-checkpoint-hint bin', () => {
     assert.equal(result.stdout, '');
     assert.equal(readFileSync(marker, 'utf8'), 'fresh-successor');
   });
+
+  it('marker capacity cleanup restores a freshly replaced delivered marker', async () => {
+    const home = isolatedHome();
+    const markerDir = cacheDir(home);
+    mkdirSync(markerDir, { recursive: true });
+    const now = Date.now() / 1000;
+    const markers = [];
+    for (let i = 0; i < 64; i += 1) {
+      const marker = join(markerDir, `cah-hint-shown-${i.toString(16).padStart(64, '0')}`);
+      writeFileSync(marker, `old-${i}`);
+      const mtime = now - (64 - i);
+      utimesSync(marker, mtime, mtime);
+      markers.push(marker);
+    }
+    const target = markers[0];
+    const interlock = join(home, 'hint-marker-capacity-interlock');
+    const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+    const running = runHintAsync(
+      JSON.stringify({ session_id: 'hint-marker-capacity', transcript_path: tp }),
+      home,
+      {
+        CAH_TEST_ONLY: '1',
+        CAH_TEST_ONLY_OWNER_INTERLOCK: interlock,
+        CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'marker-capacity',
+      },
+    );
+    await waitForPath(`${interlock}.ready`);
+    unlinkSync(target);
+    writeFileSync(target, 'fresh-capacity-successor');
+    writeFileSync(`${interlock}.go`, 'go');
+    const result = await running;
+    assert.equal(result.stdout, EXPECTED);
+    assert.equal(readFileSync(target, 'utf8'), 'fresh-capacity-successor');
+  });
 });

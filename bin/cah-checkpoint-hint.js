@@ -38,7 +38,7 @@ const RATE_LIMITS_CACHE =
   process.env.CAH_RATE_LIMITS_CACHE ||
   join(homedir(), '.claude', 'cah-bin', 'cache', 'rate-limits.json');
 
-function pruneStaleMarkers(markerDir, nowMs) {
+function pruneStaleMarkers(markerDir, nowMs, protectedMarker = null) {
   let entries;
   try {
     entries = readdirSync(markerDir);
@@ -73,17 +73,19 @@ function pruneStaleMarkers(markerDir, nowMs) {
     const p = join(markerDir, name);
     try {
       const stat = pathIdentity(p);
-      if (stat?.isFile) fresh.push({ path: p, mtimeNs: stat.mtimeNs });
+      if (stat?.isFile) fresh.push({ path: p, identity: stat, mtimeNs: stat.mtimeNs });
     } catch { /* best effort */ }
   }
   fresh.sort((a, b) => a.mtimeNs === b.mtimeNs ? 0 : a.mtimeNs > b.mtimeNs ? -1 : 1);
-  for (const entry of fresh.slice(MARKER_MAX_SESSIONS)) {
+  // Leave one slot for the session that is about to claim a marker.
+  const capacity = fresh.filter((entry) => entry.path !== protectedMarker);
+  for (const entry of capacity.slice(Math.max(0, MARKER_MAX_SESSIONS - 1))) {
     try {
       const claim = acquireMarkerClaim(entry.path, nowMs);
       if (!claim) continue;
       try {
         const current = pathIdentity(entry.path);
-        if (current?.isFile) removePathIfUnchanged(entry.path, current, 'marker-remove');
+        removePathIfUnchanged(entry.path, entry.identity, 'marker-capacity');
       } finally {
         releaseMarkerClaim(claim);
       }
@@ -293,7 +295,9 @@ function main() {
   const home = process.env.CAH_HINT_HOME || homedir();
   const markerDir = join(home, '.claude', 'cah-bin', 'cache');
   migrateLegacyMarkers(home, markerDir, sessionId);
-  pruneStaleMarkers(markerDir, Date.now());
+  pruneStaleMarkers(
+    markerDir, Date.now(), join(markerDir, `${MARKER_PREFIX}${sessionHash(sessionId)}`),
+  );
 
   let usedTokens = null;
   let modelId = null;

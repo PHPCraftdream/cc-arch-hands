@@ -159,7 +159,7 @@ function migrateLegacyMarkers(home, markerDir, sessionId) {
   }
 }
 
-function pruneStaleMarkers(markerDir, nowMs) {
+function pruneStaleMarkers(markerDir, nowMs, protectedMarker = null) {
   let entries;
   try {
     entries = readdirSync(markerDir);
@@ -186,19 +186,20 @@ function pruneStaleMarkers(markerDir, nowMs) {
         }
         continue;
       }
-      candidates.push({ path: p, mtimeNs: stat.mtimeNs });
+      candidates.push({ path: p, identity: stat, mtimeNs: stat.mtimeNs });
     } catch {
       // ignore individual failures — best-effort hygiene
     }
   }
   candidates.sort((a, b) => a.mtimeNs === b.mtimeNs ? 0 : a.mtimeNs > b.mtimeNs ? -1 : 1);
-  for (const entry of candidates.slice(UPDATE_MARKER_MAX_SESSIONS)) {
+  // Leave one slot for the session that is about to claim a marker.
+  const capacity = candidates.filter((entry) => entry.path !== protectedMarker);
+  for (const entry of capacity.slice(Math.max(0, UPDATE_MARKER_MAX_SESSIONS - 1))) {
     try {
       const claim = acquireUpdateMarkerClaim(entry.path, nowMs);
       if (!claim) continue;
       try {
-        const current = pathIdentity(entry.path);
-        removePathIfUnchanged(entry.path, current, 'marker-remove');
+        removePathIfUnchanged(entry.path, entry.identity, 'marker-capacity');
       } finally {
         releaseUpdateMarkerClaim(claim);
       }
@@ -309,7 +310,9 @@ function buildUpdateNotice(payload, nowMs) {
   const home = process.env.CAH_STAMP_HINT_HOME || homedir();
   const markerDir = join(home, '.claude', 'cah-bin', 'cache');
   migrateLegacyMarkers(home, markerDir, sessionId);
-  pruneStaleMarkers(markerDir, nowMs);
+  pruneStaleMarkers(
+    markerDir, nowMs, join(markerDir, `${UPDATE_MARKER_PREFIX}${sessionHash(sessionId)}`),
+  );
 
   let latest = null;
   try {
@@ -413,6 +416,8 @@ function pruneStampSidecars(path, nowMs) {
     if (!name.startsWith(prefix) || !name.endsWith('.json')) continue;
     const sidecar = join(dirname(path), name);
     try {
+      const lstat = lstatSync(sidecar, { bigint: true });
+      if (!lstat.isFile() || lstat.nlink !== 1n) continue;
       const stat = pathIdentity(sidecar);
       if (isOlderThan(stat, nowMs, STAMP_STATE_TTL_MS)) {
         removePathIfUnchanged(sidecar, stat, 'sidecar-prune');
