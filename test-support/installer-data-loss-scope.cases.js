@@ -1,6 +1,8 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, lstatSync, rmdirSync, mkdtempSync, existsSync, symlinkSync, unlinkSync } from 'node:fs';
+import { chmodSync, closeSync, mkdirSync, openSync, writeSync, utimesSync,
+  writeFileSync, readFileSync, readdirSync, statSync, lstatSync, rmdirSync,
+  mkdtempSync, existsSync, symlinkSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
@@ -232,6 +234,81 @@ describe('skill data-loss protection', { concurrency: false }, () => {
       () => statSync(join(dir, '.claude', 'skills', name, SKILL_MANIFEST_LEAF)),
       { code: 'ENOENT' },
     );
+  });
+
+  it('reports recovery when the canonical SKILL.md is missing', () => {
+    const name = AllSkills[0];
+    const removeRoot = tmpDir();
+    const removeDir = join(removeRoot, '.claude', 'skills', name);
+    const removePayload = join(removeDir, `${SKILL_MANIFEST_LEAF}.cah-owned-remove`, 'payload');
+    mkdirSync(join(removeDir, `${SKILL_MANIFEST_LEAF}.cah-owned-remove`), { recursive: true });
+    writeFileSync(removePayload, 'recovery from remove\n');
+    const removeResult = removeSkills(embeddedTemplates(), new Scope({ cwd: removeRoot }), {
+      subset: [name],
+    });
+    const relativePayload = `${name}/${SKILL_MANIFEST_LEAF}.cah-owned-remove/payload`;
+    assert.deepEqual(removeResult.recovery, [relativePayload]);
+    assert.ok(!removeResult.preserved.includes(relativePayload));
+
+    const writeRoot = tmpDir();
+    const writeDir = join(writeRoot, '.claude', 'skills', name);
+    const writeQuarantine = join(writeDir, `${SKILL_MANIFEST_LEAF}.cah-owned-remove`);
+    mkdirSync(writeQuarantine, { recursive: true });
+    writeFileSync(join(writeQuarantine, 'payload'), 'recovery from write\n');
+    const writeResult = writeSkills(embeddedTemplates(), new Scope({ cwd: writeRoot }), {
+      subset: [name],
+    });
+    assert.deepEqual(writeResult.recovery, [relativePayload]);
+    assert.ok(!writeResult.preserved.includes(relativePayload));
+  });
+
+  it('preserves a same-inode orphan mutation with restored metadata', async () => {
+    const dir = tmpDir();
+    const orphan = join(dir, 'orphan-skill.md');
+    const original = `${SentinelSkill}\nowned body\n`;
+    const successor = `${SentinelSkill}\nalien body\n`;
+    writeFileSync(orphan, original);
+    const fixedTime = 1700000000.123;
+    utimesSync(orphan, fixedTime, fixedTime);
+    const before = statSync(orphan, { bigint: true });
+    const interlock = join(dir, 'orphan-prune-interlock');
+    const fsutilUrl = new URL('../lib/fsutil.js', import.meta.url).href;
+    const source = `
+      const { parentPort, workerData } = require('node:worker_threads');
+      (async () => {
+        process.env.CAH_TEST_ONLY = '1';
+        process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK = workerData.interlock;
+        process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE = 'prune-before-remove';
+        const fsutil = await import(workerData.fsutilUrl);
+        const { SetForSkill } = await import(workerData.sentinelUrl);
+        const result = fsutil.pruneOrphans(workerData.dir, new Set(), SetForSkill);
+        parentPort.postMessage(result);
+      })().catch((error) => { setImmediate(() => { throw error; }); });
+    `;
+    const worker = new Worker(source, {
+      eval: true,
+      workerData: {
+        dir, interlock, fsutilUrl,
+        sentinelUrl: new URL('../lib/sentinel.js', import.meta.url).href,
+      },
+    });
+    const resultPromise = new Promise((resolve, reject) => {
+      worker.once('message', resolve);
+      worker.once('error', reject);
+    });
+    await waitForPath(`${interlock}.ready`);
+    const fd = openSync(orphan, 'r+');
+    writeSync(fd, Buffer.from(successor), 0, Buffer.byteLength(successor), 0);
+    closeSync(fd);
+    chmodSync(orphan, Number(before.mode & 0o7777n));
+    utimesSync(orphan, Number(before.atimeNs) / 1e9, Number(before.mtimeNs) / 1e9);
+    writeFileSync(`${interlock}.go`, 'go');
+    const result = await resultPromise;
+    const recovery = join(`${orphan}.cah-owned-remove`, 'payload');
+    assert.equal(result.pruned, 0);
+    assert.deepEqual(result.recovery, [recovery]);
+    assert.equal(existsSync(orphan), false);
+    assert.equal(readFileSync(recovery, 'utf8'), successor);
   });
 
   it('pruneOrphanDirs spares a copied skill dir that holds extra user files', () => {
@@ -475,4 +552,3 @@ describe('strict scope', { concurrency: false }, () => {
     assert.ok(desc.includes('/tmp/x'));
   });
 });
-

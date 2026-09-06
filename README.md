@@ -2,7 +2,8 @@
 
 Installer for the artifacts that turn Claude Code into an architect's
 workshop: per-model slash-commands, per-model delegated sub-agents, and
-skills. Zero runtime dependencies — only Node.js built-ins.
+skills. Requires Node.js >=18.19.0 and has zero runtime dependencies — only
+Node.js built-ins.
 
 ```bash
 npx cc-arch-hands install        # that's it — installs agents & skills into ~/.claude/
@@ -38,7 +39,7 @@ Optional artifacts are installed only when requested:
 
 The installed companion tree also contains a managed `package.json` with
 `"type": "module"`. This explicit ESM boundary keeps the copied `.js` files
-working on the package's supported Node 18 runtime. A pre-existing foreign
+working on the package's supported Node >=18.19.0 runtime. A pre-existing foreign
 `~/.claude/cah-bin/package.json` is preserved and reported as foreign.
 Updates publish that package boundary first, then `sentinel.js`, `fs-atomic.js`,
 `fsutil.js`, `lease-lock.js`, `transcript-stats.js` and `update-check.js`, and

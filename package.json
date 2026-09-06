@@ -24,7 +24,7 @@
     "gen:docs:check": "node scripts/gen-docs.js --check"
   },
   "engines": {
-    "node": ">=18.17.0"
+    "node": ">=18.19.0"
   },
   "repository": {
     "type": "git",

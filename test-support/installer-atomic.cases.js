@@ -389,4 +389,21 @@ describe('writeFileAtomic', { concurrency: false }, () => {
     assert.ok(existsSync(join(quarantine, 'payload')));
     assert.ok(!existsSync(publication), 'empty publication namespace is bounded cleanup');
   });
+
+  it('does not let more than 128 abandoned temps hide a recovery payload', () => {
+    const dir = tmpDir();
+    const quarantine = join(dir, 'missing.txt.cah-owned-remove');
+    mkdirSync(quarantine);
+    writeFileSync(join(quarantine, 'payload'), 'must remain recoverable\n');
+    for (let i = 0; i < 129; i++) {
+      writeFileSync(join(dir, `.cah-tmp-noise-${String(i).padStart(3, '0')}`), 'noise\n');
+    }
+
+    const artifacts = enumerateRecoveryArtifacts(dir);
+    const payload = join(quarantine, 'payload');
+    assert.ok(artifacts.some((artifact) => artifact.path === payload));
+    const maintenance = sweepRecoveryArtifacts(dir);
+    assert.ok(maintenance.preserved.includes(payload));
+    assert.equal(readFileSync(payload, 'utf8'), 'must remain recoverable\n');
+  });
 });

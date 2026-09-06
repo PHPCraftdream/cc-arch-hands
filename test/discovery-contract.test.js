@@ -29,22 +29,16 @@ describe('test discovery contract', () => {
     const expected = filesystemTests();
     const tokens = commandTokens(PACKAGE.scripts?.test);
     assert.equal(tokens.shift(), 'node', 'npm test must invoke Node directly');
-    assert.ok(tokens.includes('--test'), 'npm test must use Node test discovery');
-    assert.ok(tokens.includes('--test-concurrency=1'), 'npm test must serialize the suite');
+    assert.equal(PACKAGE.engines?.node, '>=18.19.0', 'test-concurrency requires the fixed Node minimum');
+    assert.deepEqual(
+      tokens,
+      ['--test', '--test-concurrency=1'],
+      'npm test must use serialized bare Node discovery exactly once',
+    );
 
-    const explicit = tokens
-      .filter((token) => token.replaceAll('\\', '/').startsWith('test/'))
-      .map((token) => token.replaceAll('\\', '/'));
-    const discovered = explicit.length === 0 ? expected : explicit;
+    const discovered = expected;
 
     assert.equal(new Set(discovered).size, discovered.length, 'test entries must not be duplicated');
-    assert.deepEqual(
-      discovered,
-      expected,
-      explicit.length === 0
-        ? 'bare Node discovery must cover every test/*.test.js file'
-        : 'explicit npm test entries must match test/*.test.js exactly',
-    );
 
     for (const entry of discovered) {
       assert.equal(relative(ROOT, join(ROOT, entry)).replaceAll('\\', '/'), entry);

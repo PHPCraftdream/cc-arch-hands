@@ -407,6 +407,31 @@ describe('run install/uninstall --only bins', () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  it('rejects a foreign companion executable before CLI bin mutation', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
+    try {
+      withHome(home, () => {
+        const binDir = join(home, '.claude', 'cah-bin');
+        const foreign = join(binDir, 'bin', 'cah-status.js');
+        const foreignBody = '#!/usr/bin/env node\nforeign\n';
+        mkdirSync(join(binDir, 'bin'), { recursive: true });
+        writeFileSync(foreign, foreignBody);
+
+        let rc;
+        const error = captureStderr(() => { rc = run(['install', '--only', 'bins']); });
+        assert.equal(rc, 1);
+        assert.match(error, /foreign managed runtime leaf.*cah-status\.js/);
+        assert.equal(readFileSync(foreign, 'utf8'), foreignBody);
+        assert.ok(!existsSync(join(binDir, 'package.json')),
+          'foreign executable rejection must not publish the package boundary');
+        assert.ok(!existsSync(join(binDir, 'lib', 'fsutil.js')),
+          'foreign executable rejection must not publish dependencies');
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
 
 

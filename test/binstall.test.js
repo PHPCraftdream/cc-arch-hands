@@ -73,7 +73,13 @@ function waitForPath(path, timeoutMs = 5000) {
   });
 }
 
-function runBinWorker(dst, src, interlock, phase = 'prune-before-remove') {
+function runBinWorker(
+  dst,
+  src,
+  interlock,
+  phase = 'prune-before-remove',
+  operation = 'writeBins',
+) {
   const moduleUrl = new URL('../lib/binstall.js', import.meta.url).href;
   const source = `
     const { parentPort, workerData } = require('node:worker_threads');
@@ -81,14 +87,15 @@ function runBinWorker(dst, src, interlock, phase = 'prune-before-remove') {
       process.env.CAH_TEST_ONLY = '1';
       process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK = workerData.interlock;
       process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE = workerData.phase;
-      const { writeBins } = await import(workerData.moduleUrl);
-      parentPort.postMessage(writeBins(workerData.dst, workerData.src));
+      const { writeBins, removeBins } = await import(workerData.moduleUrl);
+      const operation = workerData.operation === 'removeBins' ? removeBins : writeBins;
+      parentPort.postMessage(operation(workerData.dst, workerData.src));
     })().catch((error) => { setImmediate(() => { throw error; }); });
   `;
   return new Promise((resolvePromise, reject) => {
     const worker = new Worker(source, {
       eval: true,
-      workerData: { dst, src, interlock, phase, moduleUrl },
+      workerData: { dst, src, interlock, phase, operation, moduleUrl },
     });
     worker.once('message', resolvePromise);
     worker.once('error', reject);
@@ -222,18 +229,34 @@ describe('writeBins', () => {
     assert.ok(!existsSync(orphan), 'orphan should be pruned');
   });
 
-  it('never overwrites or prunes a foreign file', () => {
+  it('rejects a foreign declared runtime leaf before any mutation', () => {
     writeBins(dst, src);
     const foreignLeaf = join(dst, 'bin', 'cah-status.js');
     writeFileSync(foreignLeaf, 'foreign content, no sentinel\n');
     const foreignExtra = join(dst, 'bin', 'someones-tool.js');
     writeFileSync(foreignExtra, 'not ours\n');
 
-    const r = writeBins(dst, src);
-    assert.ok(r.skipped.includes('bin/cah-status.js'));
+    assert.throws(() => writeBins(dst, src), /foreign managed runtime leaf.*cah-status\.js/);
     assert.equal(readFileSync(foreignLeaf, 'utf8'), 'foreign content, no sentinel\n');
-    assert.equal(r.pruned, 0);
     assert.ok(existsSync(foreignExtra), 'foreign extra left untouched');
+  });
+
+  it('preflights foreign shared dependencies and executables as a zero-mutation closure', () => {
+    for (const dest of ['lib/fsutil.js', 'lib/lease-lock.js', 'bin/cah-status.js']) {
+      const caseDir = join(dst, dest.replaceAll('/', '-'));
+      mkdirSync(dirname(caseDir), { recursive: true });
+      const foreignPath = join(caseDir, dest);
+      mkdirSync(dirname(foreignPath), { recursive: true });
+      writeFileSync(foreignPath, `foreign ${dest}\n`);
+
+      assert.throws(
+        () => writeBins(caseDir, src),
+        new RegExp(`foreign managed runtime leaf.*${dest.split('/').pop()}`),
+      );
+      assert.equal(readFileSync(foreignPath, 'utf8'), `foreign ${dest}\n`);
+      assert.ok(!existsSync(join(caseDir, 'package.json')), `${dest} rejection must not publish boundary`);
+      assert.ok(!existsSync(join(caseDir, 'bin', 'cah-status.js')) || dest === 'bin/cah-status.js');
+    }
   });
 
   it('preserves a foreign successor installed during orphan pruning', async () => {
@@ -254,24 +277,23 @@ describe('writeBins', () => {
     assert.equal(readFileSync(orphan, 'utf8'), 'foreign successor\n');
   });
 
-  it('reports foreign bin orphans with bin-root-relative paths exactly once', () => {
+  it('reports unknown foreign orphans with bin-root-relative paths exactly once', () => {
     mkdirSync(join(dst, 'bin'), { recursive: true });
     mkdirSync(join(dst, 'lib'), { recursive: true });
-    writeFileSync(join(dst, 'bin', 'cah-status.js'), 'foreign current bin\n');
     writeFileSync(join(dst, 'bin', 'old-tool.js'), 'foreign orphan bin\n');
     writeFileSync(join(dst, 'lib', 'old-helper.js'), 'foreign orphan lib\n');
 
     const installed = writeBins(dst, src);
     assert.deepEqual(
       installed.skipped,
-      ['bin/cah-status.js', 'bin/old-tool.js', 'lib/old-helper.js'],
+      ['bin/old-tool.js', 'lib/old-helper.js'],
     );
-    assert.ok(installed.skipped.every((value) => !['cah-status.js', 'old-tool.js', 'old-helper.js'].includes(value)));
+    assert.ok(installed.skipped.every((value) => !['old-tool.js', 'old-helper.js'].includes(value)));
 
     const removed = removeBins(dst);
     assert.deepEqual(
       removed.skipped,
-      ['bin/cah-status.js', 'bin/old-tool.js', 'lib/old-helper.js'],
+      ['bin/old-tool.js', 'lib/old-helper.js'],
     );
     assert.equal(new Set(removed.skipped).size, removed.skipped.length);
   });
@@ -386,6 +408,40 @@ describe('writeBins', () => {
       'the executable may update after its dependency chain is complete');
   });
 
+  it('removes executables and libraries before the Node 18 boundary, preserving cache', async () => {
+    writeBins(dst, src);
+    const cache = join(dst, 'cache');
+    mkdirSync(cache);
+    const oldExecutable = join(dst, 'bin', 'cah-old.js');
+    const oldLibrary = join(dst, 'lib', 'cah-old.js');
+    writeFileSync(oldExecutable, `#!/usr/bin/env node\n${SentinelBin}\nold\n`);
+    writeFileSync(oldLibrary, `${SentinelBin}\nold\n`);
+    const interlock = join(dst, 'uninstall-boundary-interlock');
+    const running = runBinWorker(
+      dst,
+      src,
+      interlock,
+      'binstall-before-boundary-remove',
+      'removeBins',
+    );
+    await waitForPath(`${interlock}.ready`);
+
+    assert.ok(existsSync(join(dst, 'package.json')), 'Node 18 ESM boundary must be last');
+    assert.equal(JSON.parse(readFileSync(join(dst, 'package.json'), 'utf8')).type, 'module');
+    for (const file of BinFiles.filter((entry) => entry.dest !== 'package.json')) {
+      assert.ok(!existsSync(join(dst, file.dest)), `${file.dest} must precede boundary removal`);
+    }
+    assert.ok(!existsSync(oldExecutable), 'legacy executable orphans must precede boundary removal');
+    assert.ok(!existsSync(oldLibrary), 'legacy library orphans must precede boundary removal');
+    assert.ok(existsSync(cache), 'reserved cache must survive the staged uninstall');
+
+    writeFileSync(`${interlock}.go`, 'go');
+    const result = await running;
+    assert.equal(result.removed, BinFiles.length + 2);
+    assert.ok(!existsSync(join(dst, 'package.json')));
+    assert.ok(existsSync(cache), 'reserved cache must survive uninstall');
+  });
+
   it('smoke-runs every installed companion binary from the mirrored tree', () => {
     const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
     const smokeHome = tmpDir();
@@ -445,7 +501,16 @@ describe('removeBins', () => {
     assert.ok(!existsSync(dst), 'empty cah-bin dir should be removed');
   });
 
-  it('leaves foreign files and keeps the dir', () => {
+  it('rejects a foreign declared leaf before removing any managed files', () => {
+    writeBins(dst, src);
+    const foreign = join(dst, 'lib', 'fsutil.js');
+    writeFileSync(foreign, 'not ours\n');
+    assert.throws(() => removeBins(dst), /foreign managed runtime leaf.*fsutil\.js/);
+    assert.equal(readFileSync(foreign, 'utf8'), 'not ours\n');
+    assert.ok(existsSync(join(dst, 'bin', 'cah-status.js')), 'zero-mutation rejection must keep executables');
+  });
+
+  it('leaves unknown foreign files and keeps the dir', () => {
     writeBins(dst, src);
     const foreign = join(dst, 'bin', 'someones-tool.js');
     writeFileSync(foreign, 'not ours\n');

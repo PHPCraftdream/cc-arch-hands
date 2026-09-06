@@ -191,6 +191,18 @@ describe('enableProbe', () => {
     enableProbe(h);
     assert.equal(readFileSync(h.logPath, 'utf8'), '');
   });
+
+  it('fails before state mutation when the log path cannot be prepared', () => {
+    const h = harness();
+    const original = { type: 'command', command: 'original', padding: 0 };
+    const settingsBefore = JSON.stringify({ statusLine: original });
+    writeFileSync(h.settingsPath, settingsBefore);
+    mkdirSync(h.logPath, { recursive: true });
+
+    assert.throws(() => enableProbe(h));
+    assert.equal(readFileSync(h.settingsPath, 'utf8'), settingsBefore);
+    assert.equal(existsSync(h.backupPath), false, 'failed preflight must not create backup');
+  });
 });
 
 describe('disableProbe', () => {

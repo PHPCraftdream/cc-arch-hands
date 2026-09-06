@@ -418,7 +418,11 @@ function pruneStampSidecars(path, nowMs) {
         removePathIfUnchanged(sidecar, stat, 'sidecar-prune');
         continue;
       }
-      candidates.push({ path: sidecar, mtimeNs: stat.mtimeNs });
+      // Keep the complete scan-time identity, including the content digest.
+      // Capacity removal must act on this exact observation; rescanning the
+      // path after the interlock could turn a successor into the file we
+      // remove.
+      candidates.push({ path: sidecar, identity: stat, mtimeNs: stat.mtimeNs });
     } catch {
       // Best-effort cleanup; concurrent hook processes may be writing it.
     }
@@ -426,8 +430,7 @@ function pruneStampSidecars(path, nowMs) {
   candidates.sort((a, b) => a.mtimeNs === b.mtimeNs ? 0 : a.mtimeNs > b.mtimeNs ? -1 : 1);
   for (const entry of candidates.slice(MAX_STAMP_SESSIONS)) {
     try {
-      const current = pathIdentity(entry.path);
-      removePathIfUnchanged(entry.path, current, 'sidecar-prune');
+      removePathIfUnchanged(entry.path, entry.identity, 'sidecar-prune-capacity');
     } catch { /* best effort */ }
   }
 }

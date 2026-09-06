@@ -245,6 +245,41 @@ export function registerStampStateCases() {
     assert.equal(readFileSync(stale, 'utf8'), 'fresh-successor');
   });
 
+  it('64-capacity sidecar prune preserves a successor installed after scan', async () => {
+    const dir = isolatedDir();
+    const tp = writeTranscript(dir, 'claude-opus-4-7', 46_000);
+    const throttle = join(dir, 'last-stamp.json');
+    const now = Date.now() / 1000;
+    const sidecars = [];
+    for (let i = 0; i < 64; i++) {
+      const path = `${throttle}.session-${i.toString(16).padStart(64, '0')}.json`;
+      sidecars.push(path);
+      writeFileSync(path, JSON.stringify({ lastStampedAt: Date.now() - i * 1000 }));
+      // Keep every entry inside the TTL while making the first one the
+      // oldest capacity candidate.
+      utimesSync(path, now - (64 - i), now - (64 - i));
+    }
+    const capacityTarget = sidecars[0];
+    const interlock = join(dir, 'sidecar-prune-capacity-interlock');
+    const running = runStampAsync(
+      { session_id: 'sidecar-prune-capacity-successor', transcript_path: tp },
+      {
+        CAH_STAMP_THROTTLE_PATH: throttle,
+        CAH_STAMP_MIN_INTERVAL_MS: '1',
+        CAH_TEST_ONLY: '1',
+        CAH_TEST_ONLY_OWNER_INTERLOCK: interlock,
+        CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'sidecar-prune-capacity',
+      },
+    );
+    await waitForPath(`${interlock}.ready`);
+    unlinkSync(capacityTarget);
+    writeFileSync(capacityTarget, 'fresh-capacity-successor');
+    writeFileSync(`${interlock}.go`, 'go');
+    const result = await running;
+    assert.ok(result.stdout.trim());
+    assert.equal(readFileSync(capacityTarget, 'utf8'), 'fresh-capacity-successor');
+  });
+
   it('atomic sidecar writes ignore a prepared legacy predictable temp symlink', (t) => {
     const dir = isolatedDir();
     const tp = writeTranscript(dir, 'claude-opus-4-7', 46_000);

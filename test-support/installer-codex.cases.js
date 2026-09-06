@@ -208,7 +208,7 @@ describe('truthful deterministic quarantine reporting', { concurrency: false }, 
     mkdirSync(quarantine);
     writeFileSync(join(quarantine, 'payload'), `preserved skill data\n${SentinelSkill}\n`);
     const skillResult = writeSkills(embeddedTemplates(), new Scope({ cwd: skillRoot }));
-    assert.ok(skillResult.preserved.includes(`${orphanSkill}/${SKILL_MANIFEST_LEAF}.cah-owned-remove/payload`));
+    assert.ok(skillResult.recovery.includes(`${orphanSkill}/${SKILL_MANIFEST_LEAF}.cah-owned-remove/payload`));
     assert.equal(readFileSync(join(quarantine, 'payload'), 'utf8'), `preserved skill data\n${SentinelSkill}\n`);
 
     const managedRoot = tmpDir();
@@ -222,7 +222,7 @@ describe('truthful deterministic quarantine reporting', { concurrency: false }, 
     mkdirSync(managedQuarantine);
     writeFileSync(join(managedQuarantine, 'payload'), `preserved managed skill data\n${SentinelSkill}\n`);
     const removeResult = removeSkills(embeddedTemplates(), managedScope, { subset: [managedSkill] });
-    assert.ok(removeResult.preserved.includes(`${managedSkill}/${SKILL_MANIFEST_LEAF}.cah-owned-remove/payload`));
+    assert.ok(removeResult.recovery.includes(`${managedSkill}/${SKILL_MANIFEST_LEAF}.cah-owned-remove/payload`));
     assert.equal(readFileSync(join(managedQuarantine, 'payload'), 'utf8'), `preserved managed skill data\n${SentinelSkill}\n`);
   });
 });
