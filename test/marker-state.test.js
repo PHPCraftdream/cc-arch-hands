@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import {
-  existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, unlinkSync, writeFileSync,
+  copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, unlinkSync, writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -218,7 +218,7 @@ describe('marker capacity staging', () => {
       ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
       CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
       CAH_TEST_ONLY_OWNER_INTERLOCK: join(home, 'publication-proof-interlock'),
-      CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'write-after-final-rename',
+      CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'write-after-proof-before-final-operation',
     };
     const crashed = spawn(process.execPath, ['--input-type=module', '-e', script], {
       env, stdio: ['ignore', 'ignore', 'pipe'],
@@ -230,6 +230,11 @@ describe('marker capacity staging', () => {
       'transaction.json.cah-owned-publish');
     assert.equal(existsSync(join(publicationFence, 'publication.json'))
       || existsSync(join(publicationFence, 'publication.json.tmp')), true);
+    unlinkSync(join(home, 'cache', '.markers-capacity-transaction', 'transaction.json'));
+    if (existsSync(join(publicationFence, 'publication.json'))) {
+      copyFileSync(join(publicationFence, 'publication.json'),
+        join(publicationFence, 'publication.json.tmp'));
+    }
     const recovered = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
       encoding: 'utf8', env: { ...env, CAH_TEST_RECOVER: '1',
         CAH_TEST_ONLY_OWNER_INTERLOCK: undefined, CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: undefined },
@@ -256,8 +261,12 @@ describe('marker capacity staging', () => {
         ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS', markerNameRe: /^marker-[a-f0-9]{64}$/,
         testInterlock: makeInterlock(),
       };
-      const claim = claimMarker({ ...cfg, sessionId: 'slot-successor', nowMs: Date.now() });
-      if (process.env.CAH_TEST_RECOVER === '1') process.exit(claim ? 2 : 0);
+      const maintenance = {};
+      const claim = claimMarker({ ...cfg, sessionId: 'slot-successor', nowMs: Date.now(), maintenance });
+      if (process.env.CAH_TEST_RECOVER === '1') {
+        const slot = ${JSON.stringify(join(home, 'cache', '.markers-capacity-transaction', 'victim'))};
+        process.exit(claim ? 2 : maintenance.preserved?.includes(slot) ? 0 : 4);
+      }
       if (!claim) process.exit(3);
     `;
     const env = {

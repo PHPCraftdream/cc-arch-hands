@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, mkdtempSync, statSync, lstatSync, unlinkSync,
+  mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, mkdtempSync, statSync, lstatSync,
   symlinkSync, linkSync,
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -50,6 +50,7 @@ function fakeSource(root) {
   writeFileSync(join(root, 'lib', 'fs-atomic-identity.js'), 'export const identity = 1;\n');
   writeFileSync(join(root, 'lib', 'fs-atomic-publication.js'), 'export const publication = 1;\n');
   writeFileSync(join(root, 'lib', 'marker-capacity-stage.js'), 'export const stage = 1;\n');
+  writeFileSync(join(root, 'lib', 'marker-capacity-ops.js'), 'export const ops = 1;\n');
   writeFileSync(join(root, 'lib', 'fs-atomic.js'), 'export const atomic = 1;\n');
   writeFileSync(join(root, 'lib', 'sentinel.js'), 'export const sentinel = 1;\n');
   writeFileSync(
@@ -609,7 +610,6 @@ describe('writeBins', () => {
 
   it('keeps C during boundary rollback without a publication vacancy', async () => {
     writeBins(dst, src);
-    const sourceThatWillFail = join(src, 'bin', 'cah-stamp.js');
     const packagePath = join(dst, 'package.json');
     const oldBoundary = readFileSync(packagePath, 'utf8');
     const interlock = join(dst, 'boundary-rollback-vacancy-interlock');
@@ -621,7 +621,9 @@ describe('writeBins', () => {
     );
 
     await waitForPath(`${interlock}.binstall-after-first-leaf.ready`);
-    unlinkSync(sourceThatWillFail);
+    const successorLeaf = join(dst, 'lib', 'fs-atomic-identity.js');
+    rmSync(successorLeaf);
+    writeFileSync(successorLeaf, 'foreign successor during rollback\n');
     writeFileSync(`${interlock}.binstall-after-first-leaf.go`, 'go');
     await waitForPath(`${interlock}.binstall-rollback-before-final.ready`);
     assert.equal(readFileSync(packagePath, 'utf8'), oldBoundary,
@@ -645,8 +647,8 @@ describe('writeBins', () => {
         testInterlock: (phase, dest) => {
           if (phase === 'binstall-before-leaf-write'
               && dest === 'bin/cah-stamp.js' && !failedForward) {
-            unlinkSync(join(src, 'bin', 'cah-stamp.js'));
             failedForward = true;
+            throw new Error('test-only forward publication failure');
           }
           if (phase === 'binstall-before-rollback' && dest === 'bin/cah-status.js') {
             rmSync(statusPath, { force: true });
@@ -688,8 +690,8 @@ describe('writeBins', () => {
         testInterlock: (phase, dest) => {
           if (phase === 'binstall-before-leaf-write'
               && dest === 'bin/cah-stamp.js' && !failedForward) {
-            unlinkSync(join(src, 'bin', 'cah-stamp.js'));
             failedForward = true;
+            throw new Error('test-only forward publication failure');
           }
           if (failedForward && phase === 'write-before-final-operation') {
             throw new Error('test-only rollback restoration failure');
@@ -727,8 +729,8 @@ describe('writeBins', () => {
         testInterlock: (phase, dest) => {
           if (phase === 'binstall-before-leaf-write'
               && dest === 'bin/cah-status-probe.js' && !failedForward) {
-            unlinkSync(join(src, 'bin', 'cah-status-probe.js'));
             failedForward = true;
+            throw new Error('test-only forward publication failure');
           }
           if (phase === 'binstall-before-rollback'
               && dest === 'lib/transcript-stats.js') {
@@ -753,6 +755,90 @@ describe('writeBins', () => {
     assert.match(readFileSync(join(dst, 'lib', 'transcript-stats.js'), 'utf8'), /x = 2/);
   });
 
+  it('freezes one source generation for graph, publication, and repair', () => {
+    writeBins(dst, src);
+    writeFileSync(
+      join(src, 'bin', 'cah-status.js'),
+      "#!/usr/bin/env node\nimport { x } from '../lib/transcript-stats.js';\nconsole.log('new', x);\n",
+    );
+    writeFileSync(join(src, 'lib', 'transcript-stats.js'), 'export const x = 2;\n');
+
+    let sourceSwapped = false;
+    let failedForward = false;
+    let failDependencyRollback = false;
+    let threwDependencyRollback = false;
+    let failure;
+    try {
+      writeBins(dst, src, {
+        testInterlock: (phase, dest) => {
+          if (phase === 'binstall-after-source-freeze' && !sourceSwapped) {
+            sourceSwapped = true;
+            writeFileSync(join(src, 'lib', 'transcript-stats.js'), 'export const x = 9;\n');
+          }
+          if (phase === 'binstall-before-leaf-write'
+              && dest === 'bin/cah-status-probe.js' && !failedForward) {
+            failedForward = true;
+            throw new Error('test-only frozen-generation failure');
+          }
+          if (phase === 'binstall-before-rollback'
+              && dest === 'lib/transcript-stats.js') {
+            failDependencyRollback = true;
+          }
+          if (phase === 'write-before-final-operation'
+              && failDependencyRollback && !threwDependencyRollback) {
+            threwDependencyRollback = true;
+            throw new Error('test-only frozen-generation repair failure');
+          }
+        },
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    assert.ok(failure);
+    assert.equal(sourceSwapped, true);
+    assert.equal(failure.rollbackIncomplete, true);
+    assert.match(readFileSync(join(dst, 'lib', 'transcript-stats.js'), 'utf8'), /x = 2/);
+    assert.doesNotMatch(readFileSync(join(dst, 'lib', 'transcript-stats.js'), 'utf8'), /x = 9/);
+    assert.match(readFileSync(join(dst, 'bin', 'cah-status.js'), 'utf8'), /console\.log\('new'/);
+  });
+
+  it('does not publish dependents when the synthetic package boundary is unproved', () => {
+    writeBins(dst, src);
+    writeFileSync(
+      join(src, 'bin', 'cah-status.js'),
+      "#!/usr/bin/env node\nimport { x } from '../lib/transcript-stats.js';\nconsole.log('new', x);\n",
+    );
+    writeFileSync(join(src, 'lib', 'transcript-stats.js'), 'export const x = 2;\n');
+
+    let failedForward = false;
+    let failure;
+    try {
+      writeBins(dst, src, {
+        testInterlock: (phase, dest) => {
+          if (phase === 'binstall-before-leaf-write'
+              && dest === 'bin/cah-status-probe.js' && !failedForward) {
+            failedForward = true;
+            throw new Error('test-only boundary-preflight failure');
+          }
+          if (phase === 'binstall-before-rollback' && dest === 'package.json') {
+            rmSync(join(dst, 'package.json'), { force: true });
+            writeFileSync(join(dst, 'package.json'), '{"owner":"successor"}\n');
+          }
+        },
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    assert.ok(failure);
+    assert.equal(failure.rollbackIncomplete, true);
+    assert.ok(failure.rollback.preflight.some((entry) => entry.dest === 'package.json'));
+    assert.equal(JSON.parse(readFileSync(join(dst, 'package.json'), 'utf8')).owner, 'successor');
+    assert.doesNotMatch(readFileSync(join(dst, 'bin', 'cah-status.js'), 'utf8'), /console\.log\('new'/);
+    assert.match(readFileSync(join(dst, 'bin', 'cah-status.js'), 'utf8'), /console\.log\(x\)/);
+  });
+
   it('fresh-install surviving executables retain the ESM boundary for runtime smoke', () => {
     let failedForward = false;
     let failure;
@@ -762,8 +848,8 @@ describe('writeBins', () => {
         testInterlock: (phase, dest) => {
           if (phase === 'binstall-before-leaf-write'
               && dest === 'bin/cah-stamp.js' && !failedForward) {
-            unlinkSync(join(src, 'bin', 'cah-stamp.js'));
             failedForward = true;
+            throw new Error('test-only forward publication failure');
           }
           if (phase === 'binstall-before-rollback' && dest === 'bin/cah-status.js') {
             rmSync(statusPath, { force: true });

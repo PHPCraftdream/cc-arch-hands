@@ -63,7 +63,8 @@ wrong turn.
 companion runtime bins and their shared library leaves
 (`lib/sentinel.js`, `lib/fs-atomic-identity.js`, `lib/fs-atomic-publication.js`,
 `lib/fs-atomic.js`, `lib/fsutil.js`, `lib/lease-lock.js`,
-`lib/marker-capacity-stage.js`, `lib/marker-state.js`, `lib/transcript-stats.js`,
+`lib/marker-capacity-ops.js`, `lib/marker-capacity-stage.js`,
+`lib/marker-state.js`, `lib/transcript-stats.js`,
 and `lib/update-check.js`) into
 `~/.claude/cah-bin/`, mirroring the package's `bin/` + `lib/` layout so
 the bins' relative imports resolve unchanged. `settings.json` then references
@@ -83,7 +84,8 @@ re-run.**
 
 Publication is dependency-first: the managed package boundary, `sentinel.js`,
 `fs-atomic-identity.js`, `fs-atomic-publication.js`, `fs-atomic.js`, `fsutil.js`,
-`lease-lock.js`, `marker-capacity-stage.js`, `marker-state.js`,
+`lease-lock.js`, `marker-capacity-ops.js`, `marker-capacity-stage.js`,
+`marker-state.js`,
 `transcript-stats.js`, and `update-check.js` are replaced before any executable
 bin. A new executable is
 never exposed before its complete mirrored dependency chain is present.
@@ -107,6 +109,7 @@ never exposed before its complete mirrored dependency chain is present.
 | `lib/fs-atomic-publication.js` | Generation-fenced no-overwrite publication transaction |
 | `lib/fs-atomic.js` | Atomic publication, quarantine, and conditional removal |
 | `lib/transcript-stats.js` | Shared transcript walker + status-line formatter for all hook bins |
+| `lib/marker-capacity-ops.js` | Durable marker-capacity transitions, exact victim CAS, and surfaced mismatch recovery |
 | `lib/marker-capacity-stage.js` | Deterministic bounded staging and recovery for marker capacity transactions |
 | `lib/marker-state.js` | Shared marker migration, claims, and bounded capacity transactions for hook bins |
 | `lib/update-check.js` | `CURRENT_VERSION`, `isNewerVersion`, `getLatestVersion` — TTL-cached npm registry check shared by `cah-status`/`cah-stamp` |
