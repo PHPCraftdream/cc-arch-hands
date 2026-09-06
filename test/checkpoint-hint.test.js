@@ -149,6 +149,57 @@ describe('cah-checkpoint-hint bin', () => {
     assert.equal(markerExists(home, sessionId), true);
   });
 
+  it('reconciles an empty capacity transaction directory left before or after state cleanup', () => {
+    const home = isolatedHome();
+    const markerDir = cacheDir(home);
+    mkdirSync(markerDir, { recursive: true });
+    const transactionDir = join(dirname(markerDir), '.hint-markers-capacity-transaction');
+    mkdirSync(transactionDir);
+    const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+    const result = runHint(JSON.stringify({ session_id: 'empty-transaction', transcript_path: tp }), home);
+    assert.equal(result.stdout, EXPECTED);
+    assert.equal(existsSync(transactionDir), false);
+  });
+
+  it('preserves unexpected capacity transaction content as indeterminate', () => {
+    const home = isolatedHome();
+    const markerDir = cacheDir(home);
+    mkdirSync(markerDir, { recursive: true });
+    const transactionDir = join(dirname(markerDir), '.hint-markers-capacity-transaction');
+    mkdirSync(transactionDir);
+    writeFileSync(join(transactionDir, 'foreign'), 'preserve');
+    const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+    const result = runHint(JSON.stringify({ session_id: 'unexpected-transaction', transcript_path: tp }), home);
+    assert.equal(result.stdout, '');
+    assert.equal(readFileSync(join(transactionDir, 'foreign'), 'utf8'), 'preserve');
+  });
+
+  it('restarts a full-capacity legacy marker migration with nonce/timestamp proof', () => {
+    const home = isolatedHome();
+    const markerDir = cacheDir(home);
+    mkdirSync(markerDir, { recursive: true });
+    for (let i = 0; i < 64; i += 1) {
+      writeFileSync(join(markerDir, `cah-hint-shown-${i.toString(16).padStart(64, '0')}`), `victim-${i}`);
+    }
+    const sessionId = 'full-capacity-legacy-migration';
+    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const legacyDir = join(home, '.claude');
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(join(legacyDir, `cah-hint-shown-${sessionId}`),
+      JSON.stringify({ nonce: 'legacy-nonce', timestamp: Date.now() }) + '\n');
+    const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+    const input = JSON.stringify({ session_id: sessionId, transcript_path: tp });
+    const crashed = runHint(input, home, {
+      CAH_TEST_ONLY: '1', CAH_TEST_ONLY_CAPACITY_CRASH: 'after-victim-rename',
+    });
+    assert.notEqual(crashed.status, 0);
+    const recovered = runHint(input, home);
+    assert.equal(recovered.status, 0);
+    assert.equal(existsSync(join(markerDir, `cah-hint-shown-${hash}`)), true);
+    assert.equal(existsSync(join(legacyDir, `cah-hint-shown-${sessionId}`)), false);
+    assert.equal(existsSync(join(dirname(markerDir), '.hint-markers-capacity-transaction')), false);
+  });
+
   it('ignores a legacy marker symlink during migration', (t) => {
     const home = isolatedHome();
     const sessionId = 'raw-symlink-session';

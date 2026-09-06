@@ -6,7 +6,7 @@ import { join, dirname, basename } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { runStamp, isolatedDir, writeTranscript, updateMarkerDir, TIME_RE } from './stamp-helpers.js';
+import { runStamp, isolatedDir, writeTranscript, updateMarkerDir, stampSidecarPath, TIME_RE } from './stamp-helpers.js';
 
 export function registerStampCoreCases() {
   it('empty stdin → no output, exit 0', () => {
@@ -38,6 +38,32 @@ export function registerStampCoreCases() {
     const realMarker = join(updateMarkerDir(homedir()), `cah-update-shown-${createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex')}`);
     assert.equal(existsSync(marker), true);
     assert.equal(existsSync(realMarker), false);
+  });
+
+  it('default-layout stamp state survives migration and deduplicates the second call', () => {
+    const dir = isolatedDir();
+    const home = mkdtempSync(join(tmpdir(), 'cah-default-layout-home-'));
+    const cache = join(home, '.claude', 'cah-bin', 'cache');
+    mkdirSync(cache, { recursive: true });
+    const tp = join(dir, 'request.jsonl');
+    writeFileSync(tp, JSON.stringify({ type: 'assistant', requestId: 'default-layout-request',
+      message: { role: 'assistant', model: 'claude-opus-4-7', usage: { input_tokens: 1000 } } }) + '\n');
+    const throttle = join(cache, 'stamp-state', 'last-stamp.json');
+    const env = {
+      CAH_STAMP_HINT_HOME: home,
+      CAH_STAMP_THROTTLE_PATH: throttle,
+      CAH_RATE_LIMITS_CACHE: join(cache, 'rate-limits.json'),
+      CAH_UPDATE_CHECK_CACHE: join(cache, 'update-check.json'),
+      CAH_STAMP_MIN_INTERVAL_MS: '1',
+    };
+    writeFileSync(env.CAH_UPDATE_CHECK_CACHE, JSON.stringify({ latestVersion: null, checkedAt: Date.now() }));
+    const payload = { session_id: 'default-layout-session', transcript_path: tp, hook_event_name: 'Stop' };
+    const first = runStamp(payload, env);
+    assert.equal(first.status, 0);
+    const second = runStamp(payload, env);
+    assert.equal(second.status, 0);
+    assert.equal(second.stdout, '', 'same request must remain deduplicated after namespace migration');
+    assert.ok(existsSync(stampSidecarPath(throttle, payload.session_id)));
   });
 
   it('stop_hook_active: true → no output, exit 0', () => {
