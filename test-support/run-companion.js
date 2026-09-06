@@ -6,6 +6,12 @@ if (process.env.CAH_TEST_ONLY_HANG === '1') {
   // before importing a companion so a hung child cannot touch real state.
   process.on('SIGTERM', () => {});
   setInterval(() => {}, 1000);
+} else if (process.env.CAH_TEST_ONLY_SLOW_CLOSE === '1') {
+  const delayMs = Number(process.env.CAH_TEST_ONLY_SLOW_CLOSE_MS || 100);
+  process.on('SIGTERM', () => {
+    setTimeout(() => process.exit(0), delayMs);
+  });
+  setInterval(() => {}, 1000);
 } else {
   const targets = {
     hint: '../bin/cah-checkpoint-hint.js',

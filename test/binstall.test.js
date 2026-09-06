@@ -18,11 +18,20 @@ import {
 import { enumerateRecoveryArtifacts, maintainRecoveryArtifacts } from '../lib/fs-atomic.js';
 import { Scope } from '../lib/scope.js';
 import {
-  armWorkerDeadline, timeoutError, DEFAULT_WORKER_DEADLINE_MS, TERMINATION_GRACE_MS,
+  armWorkerDeadline, timeoutError, DEFAULT_CHILD_DEADLINE_MS, DEFAULT_WORKER_DEADLINE_MS,
+  TERMINATION_GRACE_MS,
 } from '../test-support/process-batches.js';
 
 function tmpDir() {
   return mkdtempSync(join(tmpdir(), 'cah-bin-test-'));
+}
+
+function runBinSync(file, args, options = {}) {
+  return spawnSync(file, args, {
+    ...options,
+    timeout: options.timeout ?? DEFAULT_CHILD_DEADLINE_MS,
+    killSignal: options.killSignal ?? 'SIGKILL',
+  });
 }
 
 // A throwaway package layout that mirrors what writeBins reads from: a bin/
@@ -107,7 +116,12 @@ function runBinWorker(
   phase = 'prune-before-remove',
   operation = 'writeBins',
   leaseMs = null,
-  { timeoutMs = DEFAULT_WORKER_DEADLINE_MS, graceMs = TERMINATION_GRACE_MS, hang = false } = {},
+  {
+    timeoutMs = DEFAULT_WORKER_DEADLINE_MS,
+    graceMs = TERMINATION_GRACE_MS,
+    hang = false,
+    slowClose = false,
+  } = {},
 ) {
   const moduleUrl = new URL('../lib/binstall.js', import.meta.url).href;
   const hooksUrl = new URL('../test-support/interlocks.js', import.meta.url).href;
@@ -132,9 +146,13 @@ function runBinWorker(
         process.env.CAH_TEST_ONLY_BIN_LEASE_MS = String(workerData.leaseMs);
       }
       if (workerData.hang) {
+        await new Promise(() => {});
+        return;
+      }
+      if (workerData.slowClose) {
         await new Promise((resolve) => {
           parentPort.once('message', (message) => {
-            if (message?.__testShutdown) resolve();
+            if (message?.__testShutdown) setTimeout(resolve, 10);
           });
         });
         return;
@@ -158,7 +176,7 @@ function runBinWorker(
     const worker = new Worker(source, {
       eval: true,
       workerData: {
-        dst, src, interlock, phase, operation, leaseMs, hang, moduleUrl, hooksUrl,
+        dst, src, interlock, phase, operation, leaseMs, hang, slowClose, moduleUrl, hooksUrl,
       },
     });
     let finishing = false;
@@ -240,6 +258,20 @@ describe('writeBins', () => {
       (error) => error?.code === 'ETIMEDOUT',
     );
     assert.ok(Date.now() - started < 2_000, 'hung worker must be bounded');
+    assert.ok(existsSync(src), 'fixtures remain until the worker has terminated');
+  });
+
+  it('waits for a deterministic slow-close worker before settling', async () => {
+    const started = Date.now();
+    await assert.rejects(
+      runBinWorker(dst, src, join(dst, 'slow-worker-interlock'), 'unused', 'writeBins', null, {
+        timeoutMs: 50,
+        graceMs: 100,
+        slowClose: true,
+      }),
+      (error) => error?.code === 'ETIMEDOUT',
+    );
+    assert.ok(Date.now() - started >= 10, 'worker close is awaited after timeout');
     assert.ok(existsSync(src), 'fixtures remain until the worker has terminated');
   });
 
@@ -938,7 +970,7 @@ describe('writeBins', () => {
     assert.ok(failure.rollback.republished.includes('bin/cah-status.js'));
     const smokeHome = tmpDir();
     try {
-      const result = spawnSync(process.execPath, [join(dst, 'bin', 'cah-status.js')], {
+      const result = runBinSync(process.execPath, [join(dst, 'bin', 'cah-status.js')], {
         cwd: smokeHome,
         env: { ...process.env, HOME: smokeHome, USERPROFILE: smokeHome },
         encoding: 'utf8',
@@ -1091,7 +1123,7 @@ describe('writeBins', () => {
     assert.equal(JSON.parse(readFileSync(join(dst, 'package.json'), 'utf8')).type, 'module');
     const smokeHome = tmpDir();
     try {
-      const result = spawnSync(process.execPath, [statusPath], {
+      const result = runBinSync(process.execPath, [statusPath], {
         cwd: smokeHome,
         env: { ...process.env, HOME: smokeHome, USERPROFILE: smokeHome },
         encoding: 'utf8',
@@ -1306,7 +1338,7 @@ describe('writeBins', () => {
         .filter((file) => file.dest.startsWith('bin/'))
         .map((file) => file.dest.slice('bin/'.length));
       for (const name of bins) {
-        const result = spawnSync(process.execPath, [join(dst, 'bin', name)], {
+        const result = runBinSync(process.execPath, [join(dst, 'bin', name)], {
           cwd: smokeHome,
           env,
           input: '{}\n',

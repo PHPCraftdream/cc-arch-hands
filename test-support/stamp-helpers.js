@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync, utimesSync, mkdirSync, unlinkSync, rmdirSync, symlinkSync, lstatSync, rmSync } from 'node:fs';
@@ -6,15 +6,24 @@ import { join, dirname, basename } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
-import { armChildDeadline, timeoutError, DEFAULT_CHILD_DEADLINE_MS, TERMINATION_GRACE_MS } from './process-batches.js';
+import {
+  armChildDeadline, timeoutError, DEFAULT_CHILD_DEADLINE_MS, TERMINATION_GRACE_MS,
+} from './process-batches.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BIN = join(__dirname, '..', 'bin', 'cah-stamp.js');
 const RUNNER = join(__dirname, 'run-companion.js');
+const stampFixtures = new Set();
+
+afterEach(() => {
+  for (const fixture of stampFixtures) rmSync(fixture, { recursive: true, force: true });
+  stampFixtures.clear();
+});
 
 export function stampInvocationEnv(env = {}) {
   const hintHome = env.CAH_STAMP_HINT_HOME
     || mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+  if (!env.CAH_STAMP_HINT_HOME) stampFixtures.add(hintHome);
   const cacheOverride = env.CAH_RATE_LIMITS_CACHE
     || join(hintHome, 'missing-rate-limits.json');
   const throttleOverride = env.CAH_STAMP_THROTTLE_PATH
@@ -50,6 +59,8 @@ export function runStamp(stdinData, env) {
     input,
     encoding: 'utf8',
     env: invocation.env,
+    timeout: DEFAULT_CHILD_DEADLINE_MS,
+    killSignal: 'SIGKILL',
   });
   return {
     stdout: res.stdout,
@@ -61,7 +72,7 @@ export function runStamp(stdinData, env) {
   };
 }
 
-export function runStampAsync(
+export async function runStampAsync(
   stdinData,
   env = {},
   { timeoutMs = DEFAULT_CHILD_DEADLINE_MS, graceMs = TERMINATION_GRACE_MS, signal } = {},
@@ -69,56 +80,31 @@ export function runStampAsync(
   const input = typeof stdinData === 'string' ? stdinData : JSON.stringify(stdinData);
   const invocation = stampInvocationEnv(env);
   const ownsHintHome = !env.CAH_STAMP_HINT_HOME;
-  return new Promise((resolve) => {
-    let child;
-    const result = { stdout: '', status: null, error: null };
-    let settled = false;
-    let closed = false;
-    let terminationError = null;
-    let deadline;
-    const finish = (status, error = null) => {
-      if (settled) return;
-      settled = true;
-      deadline?.clear();
-      if (ownsHintHome && (!child || closed)) {
-        rmSync(invocation.hintHome, { recursive: true, force: true });
-      }
-      resolve({ ...result, status, error,
-        hintHome: invocation.hintHome,
-        cachePath: invocation.cacheOverride,
-        throttlePath: invocation.throttleOverride,
-        updateCachePath: invocation.updateCacheOverride });
-    };
-    try {
-      child = spawn(process.execPath, [RUNNER, 'stamp'], {
-        env: invocation.env,
-        stdio: ['pipe', 'pipe', 'ignore'],
-      });
-    } catch (error) {
-      finish(null, error);
-      return;
-    }
-    let stdout = '';
-    const onSignalAbort = () => {
-      terminationError = timeoutError('stamp child');
-      deadline?.terminate();
-    };
+  let child = null;
+  let closed = false;
+  let deadline = null;
+  let terminationError = null;
+  let stdout = '';
+  let closePromise = null;
+  const result = { stdout: '', status: null, error: null };
+  const onSignalAbort = () => {
+    terminationError = timeoutError('stamp child');
+    void deadline?.terminate();
+  };
+  try {
+    child = spawn(process.execPath, [RUNNER, 'stamp'], {
+      env: invocation.env,
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => { stdout += chunk; });
     child.stdout.on('error', (error) => { if (!terminationError) terminationError = error; });
     child.stdin.on('error', () => { /* close reports the child result */ });
     child.on('error', (error) => { if (!terminationError) terminationError = error; });
-    child.on('close', (status) => {
+    closePromise = new Promise((resolve) => child.once('close', (status) => {
       closed = true;
-      result.stdout = stdout;
-      const error = terminationError;
-      child.stdout.removeAllListeners();
-      child.stdin.removeAllListeners();
-      child.stdout.destroy();
-      child.stdin.destroy();
-      if (signal) signal.removeEventListener('abort', onSignalAbort);
-      finish(status, error);
-    });
+      resolve(status);
+    }));
     deadline = armChildDeadline(child, {
       timeoutMs,
       graceMs,
@@ -129,11 +115,39 @@ export function runStampAsync(
       else signal.addEventListener('abort', onSignalAbort, { once: true });
     }
     child.stdin.end(input);
-  });
+    result.status = await closePromise;
+    result.stdout = stdout;
+    result.error = terminationError;
+  } catch (error) {
+    result.error = terminationError || error;
+  } finally {
+    if (signal) signal.removeEventListener('abort', onSignalAbort);
+    if (child && !closed) {
+      void deadline?.terminate();
+    }
+    if (closePromise) await closePromise;
+    deadline?.clear();
+    if (child) {
+      child.stdout.removeAllListeners();
+      child.stdin.removeAllListeners();
+      child.stdout.destroy();
+      child.stdin.destroy();
+    }
+    if (ownsHintHome) rmSync(invocation.hintHome, { recursive: true, force: true });
+  }
+  return {
+    ...result,
+    hintHome: invocation.hintHome,
+    cachePath: invocation.cacheOverride,
+    throttlePath: invocation.throttleOverride,
+    updateCachePath: invocation.updateCacheOverride,
+  };
 }
 
 export function isolatedDir() {
-  return mkdtempSync(join(tmpdir(), 'cah-stamp-'));
+  const path = mkdtempSync(join(tmpdir(), 'cah-stamp-'));
+  stampFixtures.add(path);
+  return path;
 }
 
 export function updateMarkerDir(home) {

@@ -1,8 +1,9 @@
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import {
-  copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, unlinkSync, writeFileSync,
+  copyFileSync, existsSync, mkdirSync, mkdtempSync as rawMkdtempSync, readdirSync, readFileSync,
+  unlinkSync, writeFileSync, rmSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -13,6 +14,39 @@ import {
 import {
   recoverLegacyCapacityState, transactionRetirementPath, victimFencePath,
 } from '../lib/marker-capacity-ops.js';
+import {
+  DEFAULT_CHILD_DEADLINE_MS, killChild, terminateChild,
+} from '../test-support/process-batches.js';
+
+const markerChildren = new Set();
+const markerFixtures = new Set();
+
+function mkdtempSync(...args) {
+  const path = rawMkdtempSync(...args);
+  markerFixtures.add(path);
+  return path;
+}
+
+function spawnMarker(...args) {
+  const child = spawn(...args);
+  markerChildren.add(child);
+  child.once('close', () => markerChildren.delete(child));
+  return child;
+}
+
+function spawnMarkerSync(file, args, options = {}) {
+  return spawnSync(file, args, {
+    ...options,
+    timeout: options.timeout ?? DEFAULT_CHILD_DEADLINE_MS,
+    killSignal: options.killSignal ?? 'SIGKILL',
+  });
+}
+
+afterEach(async () => {
+  await Promise.all([...markerChildren].map((child) => terminateChild(child)));
+  for (const fixture of markerFixtures) rmSync(fixture, { recursive: true, force: true });
+  markerFixtures.clear();
+});
 
 describe('marker state freshness ordering', () => {
   it('orders BigInt nanosecond mtimes exactly beyond Number safe range', () => {
@@ -63,7 +97,7 @@ function runPausedReconciler(home, markerDir) {
     const claim = claimMarker({ ...cfg, sessionId: 'paused-reconciler', nowMs: Date.now() });
     if (claim) releaseMarkerClaim(claim);
   `;
-  return spawn(process.execPath, ['--input-type=module', '-e', script], {
+  return spawnMarker(process.execPath, ['--input-type=module', '-e', script], {
     env: {
       ...process.env, HOME: home, USERPROFILE: home,
       CAH_TEST_ONLY: '1', CAH_TEST_MARKER_DIR: markerDir,
@@ -73,6 +107,16 @@ function runPausedReconciler(home, markerDir) {
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+}
+
+async function retrySuccessor(run) {
+  let result;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    result = run();
+    if (result.status !== 2) return result;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return result;
 }
 
 function replaceWithSuccessorStage(home, markerDir, stagePath) {
@@ -89,14 +133,14 @@ function replaceWithSuccessorStage(home, markerDir, stagePath) {
     if (!lease) process.exit(2);
     try { rmdirSync(stage); mkdirSync(stage); } finally { releaseLease(lease); }
   `;
-  return spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+  return retrySuccessor(() => spawnMarkerSync(process.execPath, ['--input-type=module', '-e', script], {
     encoding: 'utf8',
     env: {
       ...process.env, HOME: home, USERPROFILE: home,
       CAH_TEST_ONLY: '1', CAH_TEST_MARKER_DIR: markerDir,
       CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
     },
-  });
+  }));
 }
 
 function replaceWithSuccessorChild(home, markerDir, stagePath, content = 'successor\n') {
@@ -116,7 +160,7 @@ function replaceWithSuccessorChild(home, markerDir, stagePath, content = 'succes
       writeFileSync(join(stage, 'transaction.json'), ${JSON.stringify(content)});
     } finally { releaseLease(lease); }
   `;
-  return spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+  return spawnMarkerSync(process.execPath, ['--input-type=module', '-e', script], {
     encoding: 'utf8',
     env: {
       ...process.env, HOME: home, USERPROFILE: home,
@@ -154,7 +198,7 @@ function runPausedFenceReconciler(home, markerDir) {
     };
     pruneMarkers({ ...cfg, nowMs: Date.now() });
   `;
-  return spawn(process.execPath, ['--input-type=module', '-e', script], {
+  return spawnMarker(process.execPath, ['--input-type=module', '-e', script], {
     env: {
       ...process.env, HOME: home, USERPROFILE: home,
       CAH_TEST_ONLY: '1', CAH_TEST_MARKER_DIR: markerDir,
@@ -181,14 +225,14 @@ function replaceWithSuccessorFile(home, markerDir, path, content) {
     try { unlinkSync(path); writeFileSync(path, ${JSON.stringify(content)}); }
     finally { releaseLease(lease); }
   `;
-  return spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+  return retrySuccessor(() => spawnMarkerSync(process.execPath, ['--input-type=module', '-e', script], {
     encoding: 'utf8',
     env: {
       ...process.env, HOME: home, USERPROFILE: home,
       CAH_TEST_ONLY: '1', CAH_TEST_MARKER_DIR: markerDir,
       CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
     },
-  });
+  }));
 }
 
 describe('marker capacity staging', () => {
@@ -223,12 +267,11 @@ describe('marker capacity staging', () => {
       CAH_TEST_ONLY_OWNER_INTERLOCK: join(home, 'publication-proof-interlock'),
       CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'write-after-proof-before-final-operation',
     };
-    const crashed = spawn(process.execPath, ['--input-type=module', '-e', script], {
+    const crashed = spawnMarker(process.execPath, ['--input-type=module', '-e', script], {
       env, stdio: ['ignore', 'ignore', 'pipe'],
     });
     await waitForPath(`${env.CAH_TEST_ONLY_OWNER_INTERLOCK}.ready`);
-    crashed.kill('SIGKILL');
-    await new Promise((resolve) => crashed.on('close', resolve));
+    await killChild(crashed);
     const publicationFence = join(home, 'cache', '.markers-capacity-transaction',
       'transaction.json.cah-owned-publish');
     assert.equal(existsSync(join(publicationFence, 'publication.json'))
@@ -253,7 +296,7 @@ describe('marker capacity staging', () => {
       copyFileSync(join(publicationFence, 'publication.json'),
         join(publicationFence, 'publication.json.tmp'));
     }
-    const recovered = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    const recovered = spawnMarkerSync(process.execPath, ['--input-type=module', '-e', script], {
       encoding: 'utf8', env: { ...env, CAH_TEST_RECOVER: '1',
         CAH_TEST_ONLY_OWNER_INTERLOCK: undefined, CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: undefined },
     });
@@ -286,7 +329,7 @@ describe('marker capacity staging', () => {
       process.exit(maintenance.preserved?.some((path) => path.includes('.cah-tmp-victim-')) ? 0 : 4);
     `;
     const interlock = join(home, 'victim-fence-interlock');
-    const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+    const child = spawnMarker(process.execPath, ['--input-type=module', '-e', script], {
       env: { ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
         CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
         CAH_TEST_ONLY_OWNER_INTERLOCK: interlock,
@@ -326,9 +369,9 @@ describe('marker capacity staging', () => {
     const env = { ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
       CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
       CAH_TEST_ONLY_CAPACITY_CRASH: 'after-victim-quarantine' };
-    const crashed = spawnSync(process.execPath, ['--input-type=module', '-e', script], { env });
+    const crashed = spawnMarkerSync(process.execPath, ['--input-type=module', '-e', script], { env });
     assert.notEqual(crashed.status, 0);
-    const recovered = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    const recovered = spawnMarkerSync(process.execPath, ['--input-type=module', '-e', script], {
       encoding: 'utf8', env: { ...env, CAH_TEST_RECOVER: '1', CAH_TEST_ONLY_CAPACITY_CRASH: undefined },
     });
     assert.equal(recovered.status, 0, recovered.stderr);
@@ -354,12 +397,12 @@ describe('marker capacity staging', () => {
     const env = { ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
       CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
       CAH_TEST_ONLY_CAPACITY_CRASH: 'after-transaction-retirement' };
-    const crashed = spawnSync(process.execPath, ['--input-type=module', '-e', script], { env });
+    const crashed = spawnMarkerSync(process.execPath, ['--input-type=module', '-e', script], { env });
     assert.notEqual(crashed.status, 0);
     const txDir = join(home, 'cache', '.markers-capacity-transaction');
     assert.ok(readdirSync(txDir).some((name) => name.startsWith('.cah-retired-')));
     unlinkSync(join(txDir, 'transaction.json'));
-    const recovered = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    const recovered = spawnMarkerSync(process.execPath, ['--input-type=module', '-e', script], {
       encoding: 'utf8', env: { ...env, CAH_TEST_RECOVER: '1', CAH_TEST_ONLY_CAPACITY_CRASH: undefined },
     });
     assert.equal(recovered.status, 0, recovered.stderr);
@@ -386,7 +429,7 @@ describe('marker capacity staging', () => {
     const env = { ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
       CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
       CAH_TEST_ONLY_CAPACITY_CRASH: 'after-transaction-retirement' };
-    const crashed = spawnSync(process.execPath, ['--input-type=module', '-e', crashScript], {
+    const crashed = spawnMarkerSync(process.execPath, ['--input-type=module', '-e', crashScript], {
       encoding: 'utf8', env,
     });
     assert.notEqual(crashed.status, 0, crashed.stderr);
@@ -413,7 +456,7 @@ describe('marker capacity staging', () => {
       if (!abortMarkerTransaction(claim)) process.exit(3);
       releaseMarkerClaim(claim);
     `;
-    const recovery = spawn(process.execPath, ['--input-type=module', '-e', recoveryScript], {
+    const recovery = spawnMarker(process.execPath, ['--input-type=module', '-e', recoveryScript], {
       env: { ...env, CAH_TEST_ONLY_CAPACITY_CRASH: undefined,
         CAH_TEST_ONLY_OWNER_INTERLOCK: join(home, 'successor-interlock'),
         CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'marker-capacity-before-transaction-reconcile' },
@@ -456,7 +499,7 @@ describe('marker capacity staging', () => {
     const env = { ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
       CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
       CAH_TEST_ONLY_CAPACITY_CRASH: 'after-victim-rename' };
-    const crashed = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    const crashed = spawnMarkerSync(process.execPath, ['--input-type=module', '-e', `
       import { claimMarker } from ${JSON.stringify(markerUrl)};
       const cfg = { markerDir: process.env.CAH_TEST_MARKER_DIR, namespace: 'marker-tests',
         prefix: 'marker-', ttlMs: 86400000, maxSessions: 1, scanCap: 128, claimTtlMs: 30000,
@@ -469,7 +512,7 @@ describe('marker capacity staging', () => {
     const staleB = transactionRetirementPath(txDir, 'stale-b');
     mkdirSync(staleA);
     mkdirSync(staleB);
-    const recovered = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    const recovered = spawnMarkerSync(process.execPath, ['--input-type=module', '-e', script], {
       encoding: 'utf8', env: { ...env, CAH_TEST_ONLY_CAPACITY_CRASH: undefined },
     });
     assert.equal(recovered.status, 0, recovered.stderr);
@@ -508,15 +551,14 @@ describe('marker capacity staging', () => {
       CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
       CAH_TEST_ONLY_OWNER_INTERLOCK: join(home, 'pre-proof-interlock'),
       CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'write-before-final-publication' };
-    const crashed = spawn(process.execPath, ['--input-type=module', '-e', script], {
+    const crashed = spawnMarker(process.execPath, ['--input-type=module', '-e', script], {
       env, stdio: ['ignore', 'ignore', 'pipe'],
     });
     await waitForPath(join(home, 'pre-proof-interlock.ready'));
-    crashed.kill('SIGKILL');
-    await new Promise((resolve) => crashed.on('close', resolve));
+    await killChild(crashed);
     const txDir = join(home, 'cache', '.markers-capacity-transaction');
     assert.ok(readdirSync(txDir).some((name) => name.startsWith('.cah-tmp-')));
-    const recovered = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    const recovered = spawnMarkerSync(process.execPath, ['--input-type=module', '-e', script], {
       encoding: 'utf8', env: { ...env, CAH_TEST_ONLY_OWNER_INTERLOCK: undefined,
         CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: undefined, CAH_TEST_RECOVER: '1' },
     });
@@ -556,15 +598,14 @@ describe('marker capacity staging', () => {
         CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: crashPhase,
         ...(crashPhase === 'write-after-temp-partial'
           ? { CAH_TEST_ONLY_ATOMIC_PARTIAL_WRITE: '1' } : {}) };
-      const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
+      const child = spawnMarker(process.execPath, ['--input-type=module', '-e', script], {
         env, stdio: ['ignore', 'ignore', 'pipe'],
       });
       await waitForPath(join(home, 'temp-interlock.ready'));
-      child.kill('SIGKILL');
-      await new Promise((resolve) => child.on('close', resolve));
+      await killChild(child);
       const txDir = join(home, 'cache', '.markers-capacity-transaction');
       assert.ok(readdirSync(txDir).some((name) => name.startsWith('.cah-tmp-')));
-      const recovered = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      const recovered = spawnMarkerSync(process.execPath, ['--input-type=module', '-e', script], {
         encoding: 'utf8',
         env: { ...env, CAH_TEST_RECOVER: '1', CAH_TEST_ONLY_OWNER_INTERLOCK: undefined,
           CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: undefined, CAH_TEST_ONLY_ATOMIC_PARTIAL_WRITE: undefined },
@@ -599,13 +640,13 @@ describe('marker capacity staging', () => {
       CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
       CAH_TEST_ONLY_OWNER_INTERLOCK: join(home, 'retirement-interlock'),
       CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'marker-capacity-transaction-retire-before-unlink' };
-    const paused = spawn(process.execPath, ['--input-type=module', '-e', script], {
+    const paused = spawnMarker(process.execPath, ['--input-type=module', '-e', script], {
       env, stdio: ['ignore', 'ignore', 'pipe'],
     });
     await waitForPath(join(home, 'retirement-interlock.ready'));
     await new Promise((resolve) => setTimeout(resolve, 180));
     const txPath = join(home, 'cache', '.markers-capacity-transaction', 'transaction.json');
-    const successor = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    const successor = spawnMarkerSync(process.execPath, ['--input-type=module', '-e', `
       import { acquireLease, releaseLease } from ${JSON.stringify(leaseUrl)};
       import { unlinkSync, writeFileSync } from 'node:fs';
       const path = ${JSON.stringify(join(markerDir, '.cah-marker-capacity-marker-tests'))};
@@ -646,10 +687,10 @@ describe('marker capacity staging', () => {
       CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_VICTIM: victim,
       CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
       CAH_TEST_ONLY_CAPACITY_CRASH: 'after-victim-rename' };
-    const crashed = spawnSync(process.execPath, ['--input-type=module', '-e', script], { env });
+    const crashed = spawnMarkerSync(process.execPath, ['--input-type=module', '-e', script], { env });
     assert.notEqual(crashed.status, 0, crashed.stderr);
     writeFileSync(victim, 'new-canonical\n');
-    const recovered = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    const recovered = spawnMarkerSync(process.execPath, ['--input-type=module', '-e', script], {
       encoding: 'utf8', env: { ...env, CAH_TEST_RECOVER: '1', CAH_TEST_ONLY_CAPACITY_CRASH: undefined },
     });
     assert.equal(recovered.status, 0, recovered.stderr);
@@ -689,7 +730,7 @@ describe('marker capacity staging', () => {
     const env = { ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
       CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
       CAH_TEST_ONLY_CAPACITY_CRASH: 'after-victim-quarantine' };
-    const crashed = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    const crashed = spawnMarkerSync(process.execPath, ['--input-type=module', '-e', `
       import { claimMarker } from ${JSON.stringify(markerUrl)};
       const cfg = { markerDir: process.env.CAH_TEST_MARKER_DIR, namespace: 'marker-tests',
         prefix: 'marker-', ttlMs: 86400000, maxSessions: 1, scanCap: 128, claimTtlMs: 30000,
@@ -705,7 +746,7 @@ describe('marker capacity staging', () => {
     const tx = JSON.parse(readFileSync(join(txDir, 'transaction.json'), 'utf8'));
     const ownerPath = join(tx.capacityLeasePath, 'owner.json');
     const owner = JSON.parse(readFileSync(ownerPath, 'utf8'));
-    const recovering = spawn(process.execPath, ['--input-type=module', '-e', script], {
+    const recovering = spawnMarker(process.execPath, ['--input-type=module', '-e', script], {
       env: { ...env, CAH_TEST_ONLY_CAPACITY_CRASH: undefined,
         CAH_TEST_ONLY_OWNER_INTERLOCK: join(home, 'lease-reuse-interlock'),
         CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'marker-capacity-victim-unlink' },
@@ -752,12 +793,12 @@ describe('marker capacity staging', () => {
       CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
       CAH_TEST_ONLY_CAPACITY_CRASH: 'after-victim-rename',
     };
-    const crashed = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    const crashed = spawnMarkerSync(process.execPath, ['--input-type=module', '-e', script], {
       encoding: 'utf8', env,
     });
     assert.notEqual(crashed.status, 0, crashed.stderr);
     const slot = join(home, 'cache', '.markers-capacity-transaction', 'victim');
-    const recovering = spawn(process.execPath, ['--input-type=module', '-e', script], {
+    const recovering = spawnMarker(process.execPath, ['--input-type=module', '-e', script], {
       env: { ...env, CAH_TEST_ONLY_CAPACITY_CRASH: undefined,
         CAH_TEST_RECOVER: '1', CAH_TEST_ONLY_OWNER_INTERLOCK: join(home, 'slot-interlock'),
         CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'marker-capacity-slot' },
@@ -814,7 +855,7 @@ describe('marker capacity staging', () => {
       if (!abortMarkerTransaction(claim)) process.exit(4);
       releaseMarkerClaim(claim);
     `;
-    const run = (crash) => spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    const run = (crash) => spawnMarkerSync(process.execPath, ['--input-type=module', '-e', script], {
       encoding: 'utf8',
       env: {
         ...process.env, HOME: home, USERPROFILE: home,
@@ -849,7 +890,7 @@ describe('marker capacity staging', () => {
       const interlock = join(home, 'stage-reconcile-interlock');
       await waitForPath(`${interlock}.ready`);
       await new Promise((resolve) => setTimeout(resolve, 150));
-      const successor = replaceWithSuccessorStage(home, markerDir, stagePath);
+      const successor = await replaceWithSuccessorStage(home, markerDir, stagePath);
       assert.equal(successor.status, 0, successor.stderr);
       writeFileSync(`${interlock}.go`, 'go');
       const result = await new Promise((resolve) => {
@@ -900,7 +941,7 @@ describe('marker capacity staging', () => {
     const interlock = join(home, 'fence-reconcile-interlock');
     await waitForPath(`${interlock}.ready`);
     await new Promise((resolve) => setTimeout(resolve, 150));
-    const successor = replaceWithSuccessorFile(home, markerDir, fence, 'successor\n');
+    const successor = await replaceWithSuccessorFile(home, markerDir, fence, 'successor\n');
     assert.equal(successor.status, 0, successor.stderr);
     writeFileSync(`${interlock}.go`, 'go');
     const result = await new Promise((resolve) => {
@@ -925,7 +966,7 @@ describe('marker capacity staging', () => {
     const interlock = join(home, 'fence-reconcile-interlock');
     await waitForPath(`${interlock}.ready`);
     await new Promise((resolve) => setTimeout(resolve, 150));
-    const successor = replaceWithSuccessorFile(home, markerDir, fence, 'successor\n');
+    const successor = await replaceWithSuccessorFile(home, markerDir, fence, 'successor\n');
     assert.equal(successor.status, 0, successor.stderr);
     writeFileSync(`${interlock}.go`, 'go');
     const result = await new Promise((resolve) => {

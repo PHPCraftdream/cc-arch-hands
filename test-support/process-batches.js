@@ -16,6 +16,33 @@ export function timeoutError(label = 'child') {
   return error;
 }
 
+export function waitForChildClose(child) {
+  return new Promise((resolve) => {
+    child.once('close', (code, signal) => resolve({ code, signal }));
+  });
+}
+
+export function terminateChild(
+  child,
+  { graceMs = TERMINATION_GRACE_MS, onForce } = {},
+) {
+  const closed = waitForChildClose(child);
+  if (child.exitCode !== null || child.signalCode !== null) return closed;
+  try { child.kill('SIGTERM'); } catch { /* close/error reports the outcome */ }
+  const forceTimer = setTimeout(() => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    onForce?.();
+    try { child.kill('SIGKILL'); } catch { /* close/error reports the outcome */ }
+  }, graceMs);
+  return closed.finally(() => clearTimeout(forceTimer));
+}
+
+export function killChild(child) {
+  const closed = waitForChildClose(child);
+  try { child.kill('SIGKILL'); } catch { /* close/error reports the outcome */ }
+  return closed;
+}
+
 // Give a child a chance to exit normally before using the hard kill.  The
 // close event still belongs to the caller: callers must not settle their
 // promise from the timeout callback because stdout/stderr may still be
@@ -25,22 +52,15 @@ export function armChildDeadline(
   { timeoutMs = DEFAULT_CHILD_DEADLINE_MS, graceMs = TERMINATION_GRACE_MS, onTimeout } = {},
 ) {
   let timer = null;
-  let forceTimer = null;
   let terminated = false;
-
-  const forceKill = () => {
-    if (child.exitCode !== null || child.signalCode !== null) return;
-    try { child.kill('SIGKILL'); } catch { /* close/error reports the outcome */ }
-  };
+  let terminationPromise = null;
 
   const terminate = () => {
-    if (terminated) return;
+    if (terminated) return terminationPromise;
     terminated = true;
     onTimeout?.();
-    if (child.exitCode === null && child.signalCode === null) {
-      try { child.kill(); } catch { /* close/error reports the outcome */ }
-      forceTimer = setTimeout(forceKill, graceMs);
-    }
+    terminationPromise = terminateChild(child, { graceMs });
+    return terminationPromise;
   };
 
   timer = setTimeout(terminate, timeoutMs);
@@ -49,10 +69,9 @@ export function armChildDeadline(
     terminate,
     clear() {
       if (timer !== null) clearTimeout(timer);
-      if (forceTimer !== null) clearTimeout(forceTimer);
       timer = null;
-      forceTimer = null;
     },
+    wait: () => terminationPromise || waitForChildClose(child),
   };
 }
 
@@ -68,28 +87,38 @@ export function armWorkerDeadline(
   let timer = null;
   let forceTimer = null;
   let terminated = false;
+  let terminationPromise = null;
   const forceTerminate = () => {
-    void worker.terminate().catch(() => {});
-    onForce?.();
+    terminationPromise = Promise.resolve(worker.terminate()).then(
+      () => onForce?.(),
+      () => onForce?.(),
+    );
+    return terminationPromise;
   };
   const terminate = () => {
-    if (terminated) return;
+    if (terminated) return terminationPromise;
     terminated = true;
     onTimeout?.();
     // A worker can cooperatively leave a test wait; the caller's force
     // termination below is still required for Atomics.wait or a sync loop.
     try { worker.postMessage({ __testShutdown: true }); } catch { /* already closed */ }
-    forceTimer = setTimeout(forceTerminate, graceMs);
+    terminationPromise = new Promise((resolve) => {
+      forceTimer = setTimeout(() => {
+        forceTerminate().then(resolve, resolve);
+      }, graceMs);
+    });
+    return terminationPromise;
   };
   timer = setTimeout(terminate, timeoutMs);
   return {
     terminate,
     clear() {
       if (timer !== null) clearTimeout(timer);
-      if (forceTimer !== null) clearTimeout(forceTimer);
+      if (!terminated && forceTimer !== null) clearTimeout(forceTimer);
       timer = null;
-      forceTimer = null;
+      if (!terminated) forceTimer = null;
     },
+    wait: () => terminationPromise || Promise.resolve(worker.terminate()),
   };
 }
 
@@ -112,16 +141,20 @@ export async function runConcurrentBatches(
       batch.push(new Promise((resolve, reject) => {
         let timer;
         const controller = new AbortController();
+        let timeoutFailure = null;
         try {
           timer = setTimeout(() => {
-            const error = timeoutError(`batch task ${index}`);
-            // Tasks that own a child can accept the signal and terminate it;
-            // ordinary promise tasks still get a deterministic bounded error.
-            controller.abort(error);
-            reject(error);
+            timeoutFailure = timeoutError(`batch task ${index}`);
+            controller.abort(timeoutFailure);
           }, taskDeadlineMs);
           Promise.resolve(task(index, { signal: controller.signal }))
-            .then(resolve, reject).finally(() => clearTimeout(timer));
+            .then((value) => {
+              if (timeoutFailure) reject(timeoutFailure);
+              else resolve(value);
+            }, (error) => {
+              reject(timeoutFailure || error);
+            })
+            .finally(() => clearTimeout(timer));
         } catch (error) {
           clearTimeout(timer);
           reject(error);

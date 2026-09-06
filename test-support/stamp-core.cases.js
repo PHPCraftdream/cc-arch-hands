@@ -21,6 +21,14 @@ export function registerStampCoreCases() {
     rmSync(result.hintHome, { recursive: true, force: true });
   });
 
+  it('awaits a deterministic slow close before cleaning the marker fixture', async () => {
+    const result = await runStampAsync('', {
+      CAH_TEST_ONLY_SLOW_CLOSE: '1', CAH_TEST_ONLY_SLOW_CLOSE_MS: '10',
+    }, { timeoutMs: 50, graceMs: 100 });
+    assert.equal(result.error?.code, 'ETIMEDOUT');
+    assert.ok(!existsSync(result.hintHome), 'fixture cleanup follows child close');
+  });
+
   it('empty stdin → no output, exit 0', () => {
     const { stdout, status } = runStamp('');
     assert.equal(stdout, '');

@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, utimesSync, readdirSync, unlinkSync, rmdirSync, symlinkSync, lstatSync, rmSync } from 'node:fs';
@@ -8,12 +8,14 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import {
   armChildDeadline, timeoutError, DEFAULT_CHILD_DEADLINE_MS, TERMINATION_GRACE_MS,
-  runConcurrentBatches,
+  runConcurrentBatches, terminateChild,
 } from '../test-support/process-batches.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BIN = join(__dirname, '..', 'bin', 'cah-checkpoint-hint.js');
 const RUNNER = join(__dirname, '..', 'test-support', 'run-companion.js');
+const hintChildren = new Set();
+const hintFixtures = new Set();
 
 // Spawn the bin as a black box: feed `stdinJson` (already a string), point
 // CAH_HINT_HOME at an isolated home, and capture stdout/exit code.
@@ -21,6 +23,8 @@ function runHint(stdin, home, extraEnv = {}) {
   const res = spawnSync(process.execPath, [RUNNER, 'hint'], {
     input: stdin,
     encoding: 'utf8',
+    timeout: DEFAULT_CHILD_DEADLINE_MS,
+    killSignal: 'SIGKILL',
     env: {
       ...process.env, CAH_TEST_ONLY: '0', ...extraEnv,
       CAH_HINT_HOME: home, HOME: home, USERPROFILE: home,
@@ -29,56 +33,41 @@ function runHint(stdin, home, extraEnv = {}) {
   return { stdout: res.stdout, status: res.status };
 }
 
-function runHintAsync(
+async function runHintAsync(
   stdin,
   home,
   extraEnv = {},
   { timeoutMs = DEFAULT_CHILD_DEADLINE_MS, graceMs = TERMINATION_GRACE_MS, signal } = {},
 ) {
-  return new Promise((resolve) => {
-    let child;
-    const result = { stdout: '', status: null, error: null };
-    let settled = false;
-    let terminationError = null;
-    let deadline;
-    const finish = (status, error = null) => {
-      if (settled) return;
-      settled = true;
-      deadline?.clear();
-      resolve({ ...result, status, error });
-    };
-    try {
-      child = spawn(process.execPath, [RUNNER, 'hint'], {
-        env: {
-          ...process.env, CAH_TEST_ONLY: '0', ...extraEnv,
-          CAH_HINT_HOME: home, HOME: home, USERPROFILE: home,
-        },
-        stdio: ['pipe', 'pipe', 'ignore'],
-      });
-    } catch (error) {
-      finish(null, error);
-      return;
-    }
-    let stdout = '';
-    const onSignalAbort = () => {
-      terminationError = timeoutError('checkpoint-hint child');
-      deadline?.terminate();
-    };
+  let child = null;
+  let closed = false;
+  let deadline = null;
+  let terminationError = null;
+  let stdout = '';
+  let closePromise = null;
+  const onSignalAbort = () => {
+    terminationError = timeoutError('checkpoint-hint child');
+    void deadline?.terminate();
+  };
+  try {
+    child = spawn(process.execPath, [RUNNER, 'hint'], {
+      env: {
+        ...process.env, CAH_TEST_ONLY: '0', ...extraEnv,
+        CAH_HINT_HOME: home, HOME: home, USERPROFILE: home,
+      },
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+    hintChildren.add(child);
+    child.once('close', () => hintChildren.delete(child));
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => { stdout += chunk; });
     child.stdout.on('error', (error) => { if (!terminationError) terminationError = error; });
     child.stdin.on('error', () => { /* close reports the child result */ });
     child.on('error', (error) => { if (!terminationError) terminationError = error; });
-    child.on('close', (status) => {
-      result.stdout = stdout;
-      const error = terminationError;
-      child.stdout.removeAllListeners();
-      child.stdin.removeAllListeners();
-      child.stdout.destroy();
-      child.stdin.destroy();
-      if (signal) signal.removeEventListener('abort', onSignalAbort);
-      finish(status, error);
-    });
+    closePromise = new Promise((resolve) => child.once('close', (status) => {
+      closed = true;
+      resolve(status);
+    }));
     deadline = armChildDeadline(child, {
       timeoutMs,
       graceMs,
@@ -89,12 +78,38 @@ function runHintAsync(
       else signal.addEventListener('abort', onSignalAbort, { once: true });
     }
     child.stdin.end(stdin);
-  });
+    const status = await closePromise;
+    return { stdout, status, error: terminationError };
+  } catch (error) {
+    return { stdout, status: null, error: terminationError || error };
+  } finally {
+    if (signal) signal.removeEventListener('abort', onSignalAbort);
+    if (child && !closed) {
+      void deadline?.terminate();
+    }
+    if (closePromise) await closePromise;
+    deadline?.clear();
+    if (child) {
+      hintChildren.delete(child);
+      child.stdout.removeAllListeners();
+      child.stdin.removeAllListeners();
+      child.stdout.destroy();
+      child.stdin.destroy();
+    }
+  }
 }
 
 function isolatedHome() {
-  return mkdtempSync(join(tmpdir(), 'cah-hint-'));
+  const home = mkdtempSync(join(tmpdir(), 'cah-hint-'));
+  hintFixtures.add(home);
+  return home;
 }
+
+afterEach(async () => {
+  await Promise.all([...hintChildren].map((child) => terminateChild(child)));
+  for (const home of hintFixtures) rmSync(home, { recursive: true, force: true });
+  hintFixtures.clear();
+});
 
 function cacheDir(home) {
   return join(home, '.claude', 'cah-bin', 'cache', 'hint-markers');
@@ -186,6 +201,18 @@ describe('cah-checkpoint-hint bin', () => {
     assert.equal(result.error?.code, 'ETIMEDOUT');
     assert.ok(Date.now() - started < 2_000, 'hung child must be bounded');
     assert.ok(existsSync(home), 'fixture remains available to the caller after close');
+  });
+
+  it('awaits a deterministic slow close before settling a timed-out child', async (t) => {
+    const home = isolatedHome();
+    t.after(() => rmSync(home, { recursive: true, force: true }));
+    const started = Date.now();
+    const result = await runHintAsync('', home, {
+      CAH_TEST_ONLY_SLOW_CLOSE: '1', CAH_TEST_ONLY_SLOW_CLOSE_MS: '10',
+    }, { timeoutMs: 50, graceMs: 100 });
+    assert.equal(result.error?.code, 'ETIMEDOUT');
+    assert.ok(Date.now() - started >= 10, 'settlement waits for the child close');
+    assert.ok(existsSync(home), 'fixture remains available until the child closes');
   });
 
   it('marker already exists → silent, no duplicate hint', () => {
