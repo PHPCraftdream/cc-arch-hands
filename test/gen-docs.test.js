@@ -5,7 +5,9 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AllModelCommands, AllCodexAgents } from '../lib/manifest.js';
-import { BinFiles } from '../lib/binstall.js';
+import {
+  BinFiles, deriveBinFilePublicationOrder, getBinFileImportGraph, validateBinFileOrder,
+} from '../lib/binstall.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(__dirname, '..', 'scripts', 'gen-docs.js');
@@ -31,24 +33,6 @@ const EXPECTED_SHARED_LIB_LEAVES = [
   'lib/transcript-stats.js',
   'lib/update-check.js',
 ];
-const EXPECTED_PUBLICATION_ORDER = [
-  'package.json',
-  'lib/sentinel.js',
-  'lib/fs-atomic-identity.js',
-  'lib/fs-atomic-publication.js',
-  'lib/lease-lock.js',
-  'lib/fs-atomic.js',
-  'lib/fsutil.js',
-  'lib/marker-capacity-stage.js',
-  'lib/marker-state.js',
-  'lib/transcript-stats.js',
-  'lib/update-check.js',
-  'bin/cah-checkpoint-hint.js',
-  'bin/cah-status.js',
-  'bin/cah-stamp.js',
-  'bin/cah-status-probe.js',
-];
-
 function sorted(values) {
   return [...values].sort();
 }
@@ -96,6 +80,18 @@ describe('gen-docs --check', () => {
     assert.deepEqual(sharedLibLeaves, EXPECTED_SHARED_LIB_LEAVES);
     assert.equal(runtimeBins.length, 4);
 
+    const installSectionStart = CLAUDE.indexOf('companion runtime bins and their shared library leaves');
+    const installSectionEnd = CLAUDE.indexOf('`~/.claude/cah-bin/`', installSectionStart);
+    const documentedSharedLibLeaves = [...CLAUDE
+      .slice(installSectionStart, installSectionEnd)
+      .matchAll(/`(lib\/[^`]+\.js)`/g)]
+      .map((match) => match[1]);
+    assert.deepEqual(
+      sorted(documentedSharedLibLeaves),
+      EXPECTED_SHARED_LIB_LEAVES,
+      'CLAUDE.md must list each shared companion leaf exactly once',
+    );
+
     for (const leaf of [...EXPECTED_RUNTIME_BINS, ...EXPECTED_SHARED_LIB_LEAVES]) {
       assert.ok(README.includes(leaf) || README.includes(leaf.slice(leaf.indexOf('/') + 1)),
         `README.md must name installed runtime leaf ${leaf}`);
@@ -106,12 +102,31 @@ describe('gen-docs --check', () => {
 
   it('keeps companion publication dependency-first', () => {
     assert.deepEqual(
+      deriveBinFilePublicationOrder(BinFiles).map((file) => file.dest),
       BinFiles.map((file) => file.dest),
-      EXPECTED_PUBLICATION_ORDER,
+      'BinFiles must be the order derived from the local source import graph',
+    );
+    const validation = validateBinFileOrder(BinFiles);
+    assert.deepEqual(validation.order, BinFiles.map((file) => file.dest));
+    const graph = getBinFileImportGraph(BinFiles);
+    for (const [importer, dependencies] of graph) {
+      for (const dependency of dependencies) {
+        assert.ok(
+          validation.order.indexOf(dependency) < validation.order.indexOf(importer),
+          `${dependency} must precede importer ${importer}`,
+        );
+      }
+    }
+    assert.ok(
+      validation.order.indexOf('lib/fs-atomic.js')
+        < validation.order.indexOf('lib/fsutil.js')
+        && validation.order.indexOf('lib/fsutil.js')
+        < validation.order.indexOf('lib/lease-lock.js'),
+      'the actual local import graph must place fs-atomic before fsutil before lease-lock',
     );
     assert.match(
       README,
-      /package\.json[\s\S]*sentinel\.js[\s\S]*fs-atomic-identity\.js[\s\S]*fs-atomic-publication\.js[\s\S]*lease-lock\.js[\s\S]*fs-atomic\.js[\s\S]*fsutil\.js[\s\S]*marker-capacity-stage\.js[\s\S]*marker-state\.js[\s\S]*transcript-stats\.js[\s\S]*update-check\.js[\s\S]*executable leaves/,
+      /package\.json[\s\S]*sentinel\.js[\s\S]*fs-atomic-identity\.js[\s\S]*fs-atomic-publication\.js[\s\S]*fs-atomic\.js[\s\S]*fsutil\.js[\s\S]*lease-lock\.js[\s\S]*marker-capacity-stage\.js[\s\S]*marker-state\.js[\s\S]*transcript-stats\.js[\s\S]*update-check\.js[\s\S]*executable leaves/,
       'README.md must describe the dependency-first runtime closure',
     );
   });

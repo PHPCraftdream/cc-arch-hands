@@ -42,8 +42,8 @@ The installed companion tree also contains a managed `package.json` with
 working on the package's supported Node >=18.19.0 runtime. A pre-existing foreign
 `~/.claude/cah-bin/package.json` is preserved and reported as foreign.
 Updates publish that package boundary first, then `sentinel.js`,
-`fs-atomic-identity.js`, `fs-atomic-publication.js`, `lease-lock.js`,
-`fs-atomic.js`, `fsutil.js`, `marker-capacity-stage.js`, `marker-state.js`,
+`fs-atomic-identity.js`, `fs-atomic-publication.js`, `fs-atomic.js`,
+`fsutil.js`, `lease-lock.js`, `marker-capacity-stage.js`, `marker-state.js`,
 `transcript-stats.js` and `update-check.js`, and
 only then replace executable leaves. This dependency-first closure keeps a new
 executable from becoming visible before its complete sibling dependency chain.

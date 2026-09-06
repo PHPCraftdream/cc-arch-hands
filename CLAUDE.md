@@ -61,10 +61,10 @@ wrong turn.
 
 **The `bins` install class (since 0.4.0).** `cah install` copies the four
 companion runtime bins and their shared library leaves
-(`lib/transcript-stats.js`, `lib/update-check.js`, `lib/lease-lock.js`,
-`lib/marker-state.js`, `lib/marker-capacity-stage.js`, `lib/fsutil.js`,
-`lib/fs-atomic.js`, `lib/fs-atomic-identity.js`, `lib/fs-atomic-publication.js`,
-`lib/lease-lock.js`, and `lib/sentinel.js`) into
+(`lib/sentinel.js`, `lib/fs-atomic-identity.js`, `lib/fs-atomic-publication.js`,
+`lib/fs-atomic.js`, `lib/fsutil.js`, `lib/lease-lock.js`,
+`lib/marker-capacity-stage.js`, `lib/marker-state.js`, `lib/transcript-stats.js`,
+and `lib/update-check.js`) into
 `~/.claude/cah-bin/`, mirroring the package's `bin/` + `lib/` layout so
 the bins' relative imports resolve unchanged. `settings.json` then references
 them by absolute path (`node "<HOME>/.claude/cah-bin/bin/cah-status.js"`)
@@ -82,8 +82,8 @@ SKILL.md migrate a pre-0.4.0 bare-name `command` to the absolute path on
 re-run.**
 
 Publication is dependency-first: the managed package boundary, `sentinel.js`,
-`fs-atomic-identity.js`, `fs-atomic-publication.js`, `lease-lock.js`,
-`fs-atomic.js`, `fsutil.js`, `marker-capacity-stage.js`, `marker-state.js`,
+`fs-atomic-identity.js`, `fs-atomic-publication.js`, `fs-atomic.js`, `fsutil.js`,
+`lease-lock.js`, `marker-capacity-stage.js`, `marker-state.js`,
 `transcript-stats.js`, and `update-check.js` are replaced before any executable
 bin. A new executable is
 never exposed before its complete mirrored dependency chain is present.

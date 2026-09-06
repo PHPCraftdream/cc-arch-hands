@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync,
+  existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -122,6 +122,40 @@ describe('conditional atomic publication', () => {
       },
     }), /changed concurrently|refusing operation/);
     assert.equal(readFileSync(dest, 'utf8'), 'C\n');
+    assert.equal(existsSync(`${dest}.cah-owned-publish`), false);
+  });
+
+  it('recovers a proof fence left after the atomic replacement boundary', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-conditional-recovery-'));
+    const dest = join(dir, 'leaf');
+    writeFileSync(dest, 'old\n');
+    const before = captureRegularFileSnapshot(dest);
+
+    assert.throws(() => writeFileAtomic(dest, 'new\n', {
+      expectedDestination: before.expectedDestination,
+      testInterlock: (phase) => {
+        if (phase === 'write-after-final-rename') throw new Error('simulated crash');
+      },
+    }), /simulated crash/);
+    assert.equal(readFileSync(dest, 'utf8'), 'new\n');
+    assert.ok(existsSync(`${dest}.cah-owned-publish`));
+
+    const successorBefore = captureRegularFileSnapshot(dest);
+    writeFileAtomic(dest, 'successor\n', { expectedDestination: successorBefore.expectedDestination });
+    assert.equal(readFileSync(dest, 'utf8'), 'successor\n');
+    assert.equal(existsSync(`${dest}.cah-owned-publish`), false);
+  });
+
+  it('reclaims an occupied proof-write fence before a successor publishes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-conditional-fence-'));
+    const dest = join(dir, 'leaf');
+    writeFileSync(dest, 'old\n');
+    mkdirSync(`${dest}.cah-owned-publish`);
+    writeFileSync(`${dest}.cah-owned-publish/publication.json.tmp`, '{"partial":');
+
+    const before = captureRegularFileSnapshot(dest);
+    writeFileAtomic(dest, 'successor\n', { expectedDestination: before.expectedDestination });
+    assert.equal(readFileSync(dest, 'utf8'), 'successor\n');
     assert.equal(existsSync(`${dest}.cah-owned-publish`), false);
   });
 });
