@@ -1,12 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync, utimesSync, mkdirSync, unlinkSync, rmdirSync, symlinkSync, lstatSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync, utimesSync, mkdirSync, unlinkSync, rmdirSync, symlinkSync, lstatSync, rmSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { runStamp, runStampAsync, isolatedDir, writeTranscript, updateMarkerDir, waitForPath, writeClaim, readClaim, stampSidecarPath } from './stamp-helpers.js';
+import { runConcurrentBatches } from './process-batches.js';
 
 export function registerStampUpdateCases() {
   describe('update notice', () => {
@@ -258,11 +259,13 @@ export function registerStampUpdateCases() {
       assert.equal(readdirSync(markerDir).filter((name) => /^cah-update-shown-[a-f0-9]{64}$/.test(name)).length, 64);
     });
 
-    it('24 concurrent Stop calls emit at most one update notice', async () => {
+    it('24 concurrent Stop calls emit at most one update notice in bounded batches', async (t) => {
       const dir = isolatedDir();
+      t.after(() => rmSync(dir, { recursive: true, force: true }));
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
       const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      t.after(() => rmSync(hintHome, { recursive: true, force: true }));
       const throttle = join(dir, 'last-stamp.json');
       const env = {
         CAH_UPDATE_CHECK_CACHE: updateCache,
@@ -272,9 +275,10 @@ export function registerStampUpdateCases() {
         CAH_RATE_LIMITS_CACHE: join(dir, 'missing-rate-limits.json'),
       };
       const payload = { session_id: 'parallel-update', transcript_path: tp, hook_event_name: 'Stop' };
-      const results = await Promise.all(Array.from({ length: 24 }, () => runStampAsync(payload, env)));
+      const results = await runConcurrentBatches(24, () => runStampAsync(payload, env));
       assert.equal(results.filter((result) => result.stdout.includes('99.0.0')).length, 1);
-      assert.ok(results.every((result) => result.status === 0));
+      assert.ok(results.every((result) => result.status === 0),
+        results.filter((result) => result.status !== 0).map((result) => result.error?.code).join(', '));
     });
 
     it('recovers an abandoned update claim before delivery', () => {

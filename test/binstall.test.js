@@ -66,7 +66,9 @@ function fakeSource(root) {
   );
 }
 
-function waitForPath(path, timeoutMs = 10000) {
+// Worker startup can be scheduler-delayed on a loaded Windows host; keep the
+// readiness bound finite but separate from the interlock's race semantics.
+function waitForPath(path, timeoutMs = 60000) {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolvePromise, reject) => {
     const poll = () => {
@@ -134,20 +136,27 @@ function runBinWorker(
       eval: true,
       workerData: { dst, src, interlock, phase, operation, leaseMs, moduleUrl, hooksUrl },
     });
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      callback(value);
+      worker.terminate().catch(() => {});
+    };
     worker.once('message', (value) => {
       if (!value?.__workerError) {
-        resolvePromise(value);
+        finish(resolvePromise, value);
         return;
       }
       const error = new Error(value.__workerError.message);
       error.name = value.__workerError.name || 'Error';
       if (value.__workerError.code) error.code = value.__workerError.code;
-      if (leaseMs !== null) resolvePromise(error);
-      else reject(error);
+      if (leaseMs !== null) finish(resolvePromise, error);
+      else finish(reject, error);
     });
-    worker.once('error', reject);
+    worker.once('error', (error) => finish(reject, error));
     worker.once('exit', (code) => {
-      if (code !== 0) reject(new Error(`bin worker exited with code ${code}`));
+      if (!settled && code !== 0) finish(reject, new Error(`bin worker exited with code ${code}`));
     });
   });
 }
@@ -689,6 +698,60 @@ describe('writeBins', () => {
       'a surviving executable must keep its dependency available');
     assert.ok(!existsSync(join(dst, 'lib', 'update-check.js')),
       'unrelated libraries remain eligible for rollback');
+  });
+
+  it('preflights disablement and removes importers before their dependencies', () => {
+    writeBins(dst, src);
+    writeFileSync(
+      join(src, 'bin', 'cah-status.js'),
+      "#!/usr/bin/env node\nimport { x } from '../lib/transcript-stats.js';\nconsole.log('new', x);\n",
+    );
+    writeFileSync(
+      join(src, 'lib', 'transcript-stats.js'),
+      "import { y } from './update-check.js';\nexport const x = y;\n",
+    );
+    writeFileSync(join(src, 'lib', 'update-check.js'), 'export const y = 2;\n');
+
+    const disableInterlocks = [];
+    const statusPath = join(dst, 'bin', 'cah-status.js');
+    const updateCheckPath = join(dst, 'lib', 'update-check.js');
+    let failure;
+    try {
+      writeBins(dst, src, {
+        testInterlock: (phase, dest) => {
+          if (phase === 'binstall-before-leaf-write' && dest === 'bin/cah-status-probe.js') {
+            throw new Error('test-only disablement failure');
+          }
+          if (phase === 'binstall-before-rollback' && dest === 'lib/update-check.js') {
+            rmSync(updateCheckPath, { force: true });
+            writeFileSync(updateCheckPath, 'foreign update-check successor\n');
+          }
+          if (phase === 'binstall-before-disable') {
+            disableInterlocks.push(dest);
+            if (dest === 'bin/cah-status.js') {
+              rmSync(statusPath, { force: true });
+              writeFileSync(statusPath, 'foreign status successor\n');
+            }
+          }
+        },
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    assert.ok(failure);
+    assert.deepEqual(disableInterlocks, ['bin/cah-status.js'],
+      'the importer is preflighted and attempted before its dependencies');
+    assert.ok(failure.rollback.disableFailures.some((entry) =>
+      entry.dest === 'bin/cah-status.js' && entry.reason === 'successor-preserved'));
+    assert.ok(failure.rollback.disableFailures.some((entry) =>
+      entry.dest === 'lib/update-check.js' && entry.reason === 'foreign-successor'));
+    assert.ok(failure.rollback.protected.some((entry) =>
+      entry.dest === 'lib/transcript-stats.js'
+      && entry.requiredBy.includes('bin/cah-status.js')));
+    assert.equal(readFileSync(statusPath, 'utf8'), 'foreign status successor\n');
+    assert.match(readFileSync(join(dst, 'lib', 'transcript-stats.js'), 'utf8'), /export const x = 1/,
+      'a failed importer disable must preserve its dependency');
   });
 
   it('reports failed executable restoration and preserves its dependency closure', () => {

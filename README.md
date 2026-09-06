@@ -398,6 +398,7 @@ npx cah install --only bins                         # companion bins (cah-status
                                                     #   cah-checkpoint-hint, cah-status-probe,
                                                     #   + shared lib leaves: transcript-stats.js,
                                                     #     update-check.js, lease-lock.js, marker-capacity-ops.js,
+                                                    #     fs-atomic-publication.js, marker-capacity-stage.js,
                                                     #     marker-capacity-recovery.js,
                                                     #     marker-state.js, fsutil.js,
                                                     #     fs-atomic-identity.js, fs-atomic.js,

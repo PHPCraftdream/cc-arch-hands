@@ -100,6 +100,16 @@ describe('gen-docs --check', () => {
       assert.ok(CLAUDE.includes(leaf) || CLAUDE.includes(leaf.slice(leaf.indexOf('/') + 1)),
         `CLAUDE.md must name installed runtime leaf ${leaf}`);
     }
+
+    const binsInstallStart = README.indexOf('npx cah install --only bins');
+    const binsInstallEnd = README.indexOf('\n\n# One example', binsInstallStart);
+    const binsInstall = README.slice(binsInstallStart, binsInstallEnd);
+    for (const leaf of EXPECTED_SHARED_LIB_LEAVES) {
+      assert.ok(
+        binsInstall.includes(leaf.slice(leaf.indexOf('/') + 1)),
+        `README.md bins inventory must name shared runtime leaf ${leaf}`,
+      );
+    }
   });
 
   it('keeps companion publication dependency-first', () => {

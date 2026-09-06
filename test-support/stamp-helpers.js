@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync, utimesSync, mkdirSync, unlinkSync, rmdirSync, symlinkSync, lstatSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync, utimesSync, mkdirSync, unlinkSync, rmdirSync, symlinkSync, lstatSync, rmSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -63,22 +63,37 @@ export function runStamp(stdinData, env) {
 export function runStampAsync(stdinData, env) {
   const input = typeof stdinData === 'string' ? stdinData : JSON.stringify(stdinData);
   const invocation = stampInvocationEnv(env);
+  const ownsHintHome = !env.CAH_STAMP_HINT_HOME;
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [RUNNER, 'stamp'], {
-      env: invocation.env,
-      stdio: ['pipe', 'pipe', 'ignore'],
-    });
+    let child;
+    const result = { stdout: '', status: null, error: null };
+    let settled = false;
+    const finish = (status, error = null) => {
+      if (settled) return;
+      settled = true;
+      if (ownsHintHome) rmSync(invocation.hintHome, { recursive: true, force: true });
+      resolve({ ...result, status, error,
+        hintHome: invocation.hintHome,
+        cachePath: invocation.cacheOverride,
+        throttlePath: invocation.throttleOverride,
+        updateCachePath: invocation.updateCacheOverride });
+    };
+    try {
+      child = spawn(process.execPath, [RUNNER, 'stamp'], {
+        env: invocation.env,
+        stdio: ['pipe', 'pipe', 'ignore'],
+      });
+    } catch (error) {
+      finish(null, error);
+      return;
+    }
     let stdout = '';
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.on('close', (status) => resolve({
-      stdout,
-      status,
-      hintHome: invocation.hintHome,
-      cachePath: invocation.cacheOverride,
-      throttlePath: invocation.throttleOverride,
-      updateCachePath: invocation.updateCacheOverride,
-    }));
+    child.stdout.on('error', (error) => finish(null, error));
+    child.stdin.on('error', () => { /* close reports the child result */ });
+    child.on('error', (error) => finish(null, error));
+    child.on('close', (status) => { result.stdout = stdout; finish(status); });
     child.stdin.end(input);
   });
 }

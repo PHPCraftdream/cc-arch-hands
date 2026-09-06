@@ -10,7 +10,9 @@ import {
   abortMarkerTransaction, compareFreshness, claimMarker, publishMarker,
   inspectPath, identityKey, releaseMarkerClaim, sessionHash,
 } from '../lib/marker-state.js';
-import { recoverLegacyCapacityState, victimFencePath } from '../lib/marker-capacity-ops.js';
+import {
+  recoverLegacyCapacityState, transactionRetirementPath, victimFencePath,
+} from '../lib/marker-capacity-ops.js';
 
 describe('marker state freshness ordering', () => {
   it('orders BigInt nanosecond mtimes exactly beyond Number safe range', () => {
@@ -362,6 +364,94 @@ describe('marker capacity staging', () => {
     });
     assert.equal(recovered.status, 0, recovered.stderr);
     assert.equal(existsSync(join(home, 'cache', '.markers-capacity-transaction')), false);
+    assert.equal(readFileSync(victim, 'utf8'), 'victim\n');
+  });
+
+  it('removes multiple empty stale retirement reservations without poisoning live state', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-marker-empty-retirements-'));
+    const markerDir = join(home, 'cache', 'markers');
+    mkdirSync(markerDir, { recursive: true });
+    const victim = join(markerDir, `marker-${sessionHash('empty-retirement-victim')}`);
+    writeFileSync(victim, 'victim\n');
+    const markerUrl = new URL('../lib/marker-state.js', import.meta.url).href;
+    const script = `
+      import { abortMarkerTransaction, claimMarker, releaseMarkerClaim } from ${JSON.stringify(markerUrl)};
+      const cfg = { markerDir: process.env.CAH_TEST_MARKER_DIR, namespace: 'marker-tests',
+        prefix: 'marker-', ttlMs: 86400000, maxSessions: 1, scanCap: 128, claimTtlMs: 100,
+        ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS', markerNameRe: /^marker-[a-f0-9]{64}$/ };
+      const claim = claimMarker({ ...cfg, sessionId: 'empty-retirement-recovery', nowMs: Date.now() });
+      if (!claim || !abortMarkerTransaction(claim)) process.exit(3);
+      releaseMarkerClaim(claim);
+    `;
+    const env = { ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
+      CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+      CAH_TEST_ONLY_CAPACITY_CRASH: 'after-victim-rename' };
+    const crashed = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { claimMarker } from ${JSON.stringify(markerUrl)};
+      const cfg = { markerDir: process.env.CAH_TEST_MARKER_DIR, namespace: 'marker-tests',
+        prefix: 'marker-', ttlMs: 86400000, maxSessions: 1, scanCap: 128, claimTtlMs: 30000,
+        ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS', markerNameRe: /^marker-[a-f0-9]{64}$/ };
+      claimMarker({ ...cfg, sessionId: 'empty-retirement-crash', nowMs: Date.now() });
+    `], { env });
+    assert.notEqual(crashed.status, 0, crashed.stderr);
+    const txDir = join(home, 'cache', '.markers-capacity-transaction');
+    const staleA = transactionRetirementPath(txDir, 'stale-a');
+    const staleB = transactionRetirementPath(txDir, 'stale-b');
+    mkdirSync(staleA);
+    mkdirSync(staleB);
+    const recovered = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      encoding: 'utf8', env: { ...env, CAH_TEST_ONLY_CAPACITY_CRASH: undefined },
+    });
+    assert.equal(recovered.status, 0, recovered.stderr);
+    assert.equal(existsSync(join(home, 'cache', '.markers-capacity-transaction')), false);
+    assert.equal(readFileSync(victim, 'utf8'), 'victim\n');
+    assert.equal(existsSync(staleA), false);
+    assert.equal(existsSync(staleB), false);
+  });
+
+  it('recovers a real crash after the transaction temp and before its publication proof', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-marker-pre-proof-crash-'));
+    const markerDir = join(home, 'cache', 'markers');
+    mkdirSync(markerDir, { recursive: true });
+    const victim = join(markerDir, `marker-${sessionHash('pre-proof-victim')}`);
+    writeFileSync(victim, 'victim\n');
+    const markerUrl = new URL('../lib/marker-state.js', import.meta.url).href;
+    const interlocksUrl = new URL('../test-support/interlocks.js', import.meta.url).href;
+    const script = `
+      import { abortMarkerTransaction, claimMarker, publishMarker, releaseMarkerClaim } from ${JSON.stringify(markerUrl)};
+      import { makeInterlock } from ${JSON.stringify(interlocksUrl)};
+      const cfg = { markerDir: process.env.CAH_TEST_MARKER_DIR, namespace: 'marker-tests',
+        prefix: 'marker-', ttlMs: 86400000, maxSessions: 1, scanCap: 128, claimTtlMs: 100,
+        ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS', markerNameRe: /^marker-[a-f0-9]{64}$/,
+        testInterlock: makeInterlock() };
+      if (process.env.CAH_TEST_RECOVER === '1') {
+        const claim = claimMarker({ ...cfg, sessionId: 'pre-proof-recovery', nowMs: Date.now() });
+        if (!claim || !abortMarkerTransaction(claim)) process.exit(3);
+        releaseMarkerClaim(claim);
+        process.exit(0);
+      }
+      const claim = claimMarker({ ...cfg, sessionId: 'pre-proof-crash', nowMs: Date.now() });
+      if (!claim || !publishMarker(claim, Buffer.from('new-marker\\n'), cfg)) process.exit(4);
+      releaseMarkerClaim(claim);
+    `;
+    const env = { ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
+      CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+      CAH_TEST_ONLY_OWNER_INTERLOCK: join(home, 'pre-proof-interlock'),
+      CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'write-before-final-publication' };
+    const crashed = spawn(process.execPath, ['--input-type=module', '-e', script], {
+      env, stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    await waitForPath(join(home, 'pre-proof-interlock.ready'));
+    crashed.kill('SIGKILL');
+    await new Promise((resolve) => crashed.on('close', resolve));
+    const txDir = join(home, 'cache', '.markers-capacity-transaction');
+    assert.ok(readdirSync(txDir).some((name) => name.startsWith('.cah-tmp-')));
+    const recovered = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      encoding: 'utf8', env: { ...env, CAH_TEST_ONLY_OWNER_INTERLOCK: undefined,
+        CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: undefined, CAH_TEST_RECOVER: '1' },
+    });
+    assert.equal(recovered.status, 0, recovered.stderr);
+    assert.equal(existsSync(txDir), false);
     assert.equal(readFileSync(victim, 'utf8'), 'victim\n');
   });
 

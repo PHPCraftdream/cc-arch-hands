@@ -1,11 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, utimesSync, readdirSync, unlinkSync, rmdirSync, symlinkSync, lstatSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, utimesSync, readdirSync, unlinkSync, rmdirSync, symlinkSync, lstatSync, rmSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+import { runConcurrentBatches } from '../test-support/process-batches.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BIN = join(__dirname, '..', 'bin', 'cah-checkpoint-hint.js');
@@ -26,16 +27,32 @@ function runHint(stdin, home, extraEnv = {}) {
 
 function runHintAsync(stdin, home, extraEnv = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [RUNNER, 'hint'], {
-      env: {
-        ...process.env, CAH_TEST_ONLY: '0', CAH_HINT_HOME: home, HOME: home, USERPROFILE: home, ...extraEnv,
-      },
-      stdio: ['pipe', 'pipe', 'ignore'],
-    });
+    let child;
+    const result = { stdout: '', status: null, error: null };
+    let settled = false;
+    const finish = (status, error = null) => {
+      if (settled) return;
+      settled = true;
+      resolve({ ...result, status, error });
+    };
+    try {
+      child = spawn(process.execPath, [RUNNER, 'hint'], {
+        env: {
+          ...process.env, CAH_TEST_ONLY: '0', CAH_HINT_HOME: home, HOME: home, USERPROFILE: home, ...extraEnv,
+        },
+        stdio: ['pipe', 'pipe', 'ignore'],
+      });
+    } catch (error) {
+      finish(null, error);
+      return;
+    }
     let stdout = '';
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.on('close', (status) => resolve({ stdout, status }));
+    child.stdout.on('error', (error) => finish(null, error));
+    child.stdin.on('error', () => { /* close reports the child result */ });
+    child.on('error', (error) => finish(null, error));
+    child.on('close', (status) => { result.stdout = stdout; finish(status); });
     child.stdin.end(stdin);
   });
 }
@@ -432,16 +449,18 @@ describe('cah-checkpoint-hint bin', () => {
     assert.equal(existsSync(join(home, 'escape')), false);
   });
 
-  it('24 concurrent claims emit at most one hint', async () => {
+  it('24 concurrent claims emit at most one hint in bounded batches', async (t) => {
     const home = isolatedHome();
+    t.after(() => rmSync(home, { recursive: true, force: true }));
     const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
     const input = JSON.stringify({ session_id: 'parallel-hint', transcript_path: tp });
-    const results = await Promise.all(Array.from({ length: 24 }, () =>
+    const results = await runConcurrentBatches(24, () =>
       runHintAsync(input, home, {
         CAH_RATE_LIMITS_CACHE: join(home, 'missing-rate-limits.json'),
-      })));
+      }));
     assert.equal(results.filter((result) => result.stdout === EXPECTED).length, 1);
-    assert.ok(results.every((result) => result.status === 0));
+    assert.ok(results.every((result) => result.status === 0),
+      results.filter((result) => result.status !== 0).map((result) => result.error?.code).join(', '));
   });
 
   it('does not overwrite a successor installed at the final atomic publication boundary', async () => {
@@ -469,8 +488,9 @@ describe('cah-checkpoint-hint bin', () => {
     assert.equal(readdirSync(cacheDir(home)).some((name) => name.startsWith('.cah-tmp-')), false);
   });
 
-  it('24 concurrent claims recover one expired marker without double delivery', async () => {
+  it('24 concurrent claims recover one expired marker without double delivery in bounded batches', async (t) => {
     const home = isolatedHome();
+    t.after(() => rmSync(home, { recursive: true, force: true }));
     const sessionId = 'parallel-expired-hint';
     const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
     const marker = join(cacheDir(home), `cah-hint-shown-${hash}`);
@@ -480,7 +500,7 @@ describe('cah-checkpoint-hint bin', () => {
     utimesSync(marker, old, old);
     const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
     const input = JSON.stringify({ session_id: sessionId, transcript_path: tp });
-    const results = await Promise.all(Array.from({ length: 24 }, () => runHintAsync(input, home)));
+    const results = await runConcurrentBatches(24, () => runHintAsync(input, home));
     assert.equal(results.filter((result) => result.stdout === EXPECTED).length, 1);
     assert.ok(results.every((result) => result.status === 0));
   });

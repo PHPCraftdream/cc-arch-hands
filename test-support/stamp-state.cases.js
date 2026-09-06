@@ -1,12 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync, utimesSync, mkdirSync, unlinkSync, rmdirSync, symlinkSync, lstatSync, linkSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync, utimesSync, mkdirSync, unlinkSync, rmdirSync, symlinkSync, lstatSync, linkSync, rmSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { runStamp, runStampAsync, isolatedDir, writeTranscript, stampSidecarPath, stampSidecars, waitForPath, writeClaim, readClaim } from './stamp-helpers.js';
+import { runConcurrentBatches } from './process-batches.js';
 
 export function registerStampStateCases() {
   it('throttle: a second stamp within MIN_INTERVAL is suppressed', () => {
@@ -444,8 +445,9 @@ export function registerStampStateCases() {
     assert.ok(second.stdout.trim(), 'different full request IDs must not dedupe');
   });
 
-  it('24 concurrent same-session/request calls emit at most one stamp', async () => {
+  it('24 concurrent same-session/request calls emit at most one stamp in bounded batches', async (t) => {
     const dir = isolatedDir();
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
     const tp = join(dir, 'transcript.jsonl');
     writeFileSync(tp, JSON.stringify({
       type: 'assistant',
@@ -460,9 +462,10 @@ export function registerStampStateCases() {
       CAH_UPDATE_CHECK_CACHE: join(dir, 'missing-update-cache.json'),
     };
     const payload = { session_id: 'parallel-stamp', transcript_path: tp };
-    const results = await Promise.all(Array.from({ length: 24 }, () => runStampAsync(payload, env)));
+    const results = await runConcurrentBatches(24, () => runStampAsync(payload, env));
     assert.equal(results.filter((result) => result.stdout.trim()).length, 1);
-    assert.ok(results.every((result) => result.status === 0));
+    assert.ok(results.every((result) => result.status === 0),
+      results.filter((result) => result.status !== 0).map((result) => result.error?.code).join(', '));
   });
 
   it('recovers an abandoned stale stamp lock', () => {
