@@ -546,7 +546,6 @@ export function registerStampUpdateCases() {
       for (let i = 0; i < 64; i += 1) {
         writeFileSync(join(markerDir, `cah-update-shown-${i.toString(16).padStart(64, '0')}`), `victim-${i}`);
       }
-      const victim = join(markerDir, `cah-update-shown-${'0'.repeat(64)}`);
       const sessionId = 'final-update-unlink-failure';
       const result = runStamp(
         { session_id: sessionId, transcript_path: tp, hook_event_name: 'Stop' },
@@ -559,9 +558,69 @@ export function registerStampUpdateCases() {
         },
       );
       assert.match(JSON.parse(result.stdout.trim()).systemMessage, /99\.0\.0/);
-      assert.equal(readFileSync(victim, 'utf8'), 'victim-0');
       assert.equal(existsSync(join(markerDir, `cah-update-shown-${createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex')}`)), true);
+      assert.ok(readdirSync(markerDir)
+        .filter((name) => /^cah-update-shown-[a-f0-9]{64}$/.test(name)).length <= 64);
+      assert.equal(readFileSync(join(dirname(markerDir), '.update-markers-capacity-transaction', 'victim'), 'utf8'), 'victim-0');
       assert.equal(readdirSync(markerDir).filter((name) => name.includes('.prune-')).length, 0);
+    });
+
+    it('reconciles update-marker capacity after restart at each publication boundary', () => {
+      for (const crash of ['after-victim-rename', 'after-marker-publish', 'after-final-unlink']) {
+        const dir = isolatedDir();
+        const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
+        const updateCache = freshUpdateCache(dir, '99.0.0');
+        const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+        const markerDir = updateMarkerDir(hintHome);
+        mkdirSync(markerDir, { recursive: true });
+        for (let i = 0; i < 64; i += 1) {
+          writeFileSync(join(markerDir, `cah-update-shown-${i.toString(16).padStart(64, '0')}`), `victim-${i}`);
+        }
+        const sessionId = `update-capacity-restart-${crash}`;
+        const env = {
+          CAH_UPDATE_CHECK_CACHE: updateCache,
+          CAH_STAMP_HINT_HOME: hintHome,
+          CAH_STAMP_THROTTLE_PATH: join(dir, 'last-stamp.json'),
+          CAH_TEST_ONLY: '1',
+          CAH_TEST_ONLY_CAPACITY_CRASH: crash,
+        };
+        const crashed = runStamp({ session_id: sessionId, transcript_path: tp, hook_event_name: 'Stop' }, env);
+        assert.notEqual(crashed.status, 0, `${crash} must leave a restart record`);
+        const recovered = runStamp({ session_id: sessionId, transcript_path: tp, hook_event_name: 'Stop' }, {
+          ...env,
+          CAH_TEST_ONLY: undefined,
+          CAH_TEST_ONLY_CAPACITY_CRASH: undefined,
+        });
+        assert.equal(recovered.status, 0);
+        assert.ok(readdirSync(markerDir).filter((name) => /^cah-update-shown-[a-f0-9]{64}$/.test(name)).length <= 64);
+        assert.equal(existsSync(join(hintHome, '.claude', 'cah-bin', 'cache', '.update-markers-capacity-transaction')), false);
+      }
+    });
+
+    it('directly migrates a live custom-path legacy state and .json.lock after the sentinel', () => {
+      const dir = isolatedDir();
+      const custom = join(dir, 'custom-cache');
+      mkdirSync(custom, { recursive: true });
+      for (let i = 0; i < 300; i += 1) writeFileSync(join(custom, `foreign-${i}`), 'foreign');
+      const throttle = join(custom, 'last-stamp.json');
+      const sessionId = 'custom-legacy-lock';
+      const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+      const legacyState = `${throttle}.session-${hash}.json`;
+      const legacyLock = `${legacyState}.lock`;
+      writeFileSync(legacyState, JSON.stringify({ version: 3, lastStampedAt: Date.now(), lastStampedRequestId: 'old' }));
+      writeClaim(legacyLock, { pid: process.pid, token: 'legacy-live', timestamp: Date.now() });
+      const namespace = join(custom, 'stamp-state');
+      mkdirSync(namespace, { recursive: true });
+      writeFileSync(join(namespace, '.migration-v1'), 'v1\n');
+      const result = runStamp(
+        { session_id: sessionId, transcript_path: writeTranscript(dir, 'claude-opus-4-7', 1000), hook_event_name: 'Stop' },
+        { CAH_UPDATE_CHECK_CACHE: freshUpdateCache(dir, '0.0.1'), CAH_STAMP_THROTTLE_PATH: throttle },
+      );
+      assert.equal(result.stdout, '', 'a live migrated legacy lock blocks duplicate work');
+      assert.equal(existsSync(legacyState), false);
+      assert.equal(existsSync(legacyLock), false);
+      assert.equal(existsSync(join(namespace, basename(legacyState))), true);
+      assert.equal(existsSync(join(namespace, basename(legacyLock))), true);
     });
 
     it('keeps huge unrelated cache entries outside routine update maintenance', () => {

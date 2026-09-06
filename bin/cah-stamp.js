@@ -9,7 +9,7 @@
 // It is deliberately fail-silent: any error, missing input, or filesystem
 // hiccup results in `exit 0` with no stdout, so it can never break the session.
 
-import { readFileSync, writeFileSync, writeSync, mkdirSync, openSync, closeSync, statSync, lstatSync, unlinkSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, writeSync, mkdirSync, openSync, closeSync, statSync, lstatSync, unlinkSync, renameSync, rmdirSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
@@ -24,13 +24,10 @@ import {
 import { CURRENT_VERSION, getLatestVersion, isNewerVersion } from '../lib/update-check.js';
 import { captureRegularFileSnapshot, isOlderThan, writeFileAtomic } from '../lib/fsutil.js';
 import {
-  acquireLease, leaseOwned, pathIdentity, releaseLease, samePathIdentity,
+  acquireLease, leaseOwned, pathIdentity, releaseLease, samePathIdentity, waitForLeaseTestInterlock,
   streamDirectoryEntries, removePathIfUnchangedRecoverable,
 } from '../lib/lease-lock.js';
 
-// Pro/Max rate_limits are only in the statusLine envelope; cah-status
-// persists them here so we can include them in the chat audit trail.
-// CAH_RATE_LIMITS_CACHE env override lets tests/CI redirect the read path.
 const RATE_LIMITS_CACHE =
   process.env.CAH_RATE_LIMITS_CACHE ||
   join(homedir(), '.claude', 'cah-bin', 'cache', 'rate-limits.json');
@@ -50,21 +47,10 @@ const FALLBACK_SESSION_KEY = '__no_session__';
 const STAMP_STATE_PREFIX = '.session-';
 const STAMP_STATE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const STAMP_LOCK_CLAIM_TTL_MS = 30_000;
-// Normal lock ownership lasts milliseconds. Fifteen minutes is a conservative
-// absolute lease that bounds PID reuse without stealing a live hook.
-// Request claims are bounded too: a process killed after persisting its
-// state cannot suppress a future retry forever. Anonymous turns use a short
-// fingerprint claim only to cover the handoff between concurrent hooks.
-
-// Shared with cah-status: whichever bin runs first populates this cache, so
-// the npm registry is only ever hit once per TTL window (see lib/update-check.js).
 const UPDATE_CHECK_CACHE =
   process.env.CAH_UPDATE_CHECK_CACHE ||
   join(homedir(), '.claude', 'cah-bin', 'cache', 'update-check.json');
 
-// One marker file per session gates the one-shot "new version" notice.
-// A separate nonce-owned claim gates stdout, and stale markers are swept on
-// each run so they never accumulate.
 const UPDATE_MARKER_PREFIX = 'cah-update-shown-';
 const UPDATE_MARKER_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const UPDATE_MARKER_CLAIM_TTL_MS = 30_000;
@@ -76,7 +62,7 @@ const UPDATE_MARKER_NAMESPACE = 'update-markers';
 const STAMP_NAMESPACE = 'stamp-state';
 const STAMP_PENDING_TTL_MS = positiveEnvMs('CAH_STAMP_PENDING_TTL_MS', 30_000);
 const ANONYMOUS_CLAIM_TTL_MS = 1000;
-
+const CAPACITY_TX_VERSION = 1;
 function positiveEnvMs(name, fallback) {
   const value = Number.parseInt(process.env[name] || '', 10);
   return Number.isFinite(value) && value > 0 ? value : fallback;
@@ -87,6 +73,101 @@ function updateMarkerNamespace(home) { return join(cacheRoot(home), UPDATE_MARKE
 function stampNamespace(path) {
   const parent = dirname(path);
   return basename(parent) === STAMP_NAMESPACE ? parent : join(parent, STAMP_NAMESPACE);
+}
+
+function capacityTransactionPath(markerDir) {
+  return join(dirname(markerDir), `.${basename(markerDir)}-capacity-transaction`);
+}
+
+function identityKey(identity) {
+  if (!identity) return null;
+  return [identity.dev, identity.ino, identity.mode, identity.size, identity.mtimeNs,
+    identity.nlink, identity.contentDigest, identity.isFile, identity.isDirectory,
+    identity.isSymbolicLink].map((value) => String(value)).join(':');
+}
+
+function capacityStatePath(markerDir) { return join(capacityTransactionPath(markerDir), 'transaction.json'); }
+
+function readCapacityState(markerDir) {
+  const txDir = capacityTransactionPath(markerDir);
+  const txIdentity = pathIdentity(txDir);
+  if (!txIdentity) return undefined;
+  if (!txIdentity.isDirectory) return null;
+  try {
+    const state = JSON.parse(readFileSync(capacityStatePath(markerDir), 'utf8'));
+    if (state?.version !== CAPACITY_TX_VERSION
+        || typeof state.marker !== 'string' || typeof state.victim !== 'string'
+        || typeof state.victimKey !== 'string' || typeof state.markerBeforeKey !== 'string'
+        || typeof state.nonce !== 'string') return null;
+    return state;
+  } catch {
+    if (pathIdentity(join(txDir, 'victim'))) return null;
+    try { unlinkSync(capacityStatePath(markerDir)); } catch { /* preserve an unreadable slot */ }
+    try { rmdirSync(txDir); } catch { /* preserve an unreadable slot */ }
+    return undefined;
+  }
+}
+
+function cleanupCapacityState(markerDir) {
+  try { unlinkSync(capacityStatePath(markerDir)); } catch { return false; }
+  try { rmdirSync(capacityTransactionPath(markerDir)); } catch { /* retry can finish it */ }
+  return true;
+}
+
+function markerPublicationMatches(state) {
+  const current = pathIdentity(state.marker);
+  if (!current?.isFile || identityKey(current) === state.markerBeforeKey) return false;
+  try {
+    const record = JSON.parse(readFileSync(state.marker, 'utf8'));
+    return record && (record.nonce === state.nonce || record.token === state.nonce);
+  } catch { return false; }
+}
+
+function restoreCapacityVictim(state) {
+  const slot = join(capacityTransactionPath(dirname(state.marker)), 'victim');
+  if (!pathIdentity(slot)) return Boolean(pathIdentity(state.victim));
+  if (!pathIdentity(state.victim)) {
+    try { renameSync(slot, state.victim); return true; } catch { return false; }
+  }
+  try { unlinkSync(slot); return true; } catch { return false; }
+}
+
+function finishCapacityEviction(markerDir, state) {
+  const slot = join(capacityTransactionPath(markerDir), 'victim');
+  try {
+    if (!pathIdentity(slot)) {
+      const victim = pathIdentity(state.victim);
+      if (victim && identityKey(victim) === state.victimKey) renameSync(state.victim, slot);
+    }
+    if (process.env.CAH_TEST_ONLY === '1'
+        && (process.env.CAH_TEST_ONLY_FINAL_UNLINK_FAILURE === '1'
+          || process.env.CAH_TEST_ONLY_MARKER_FINAL_UNLINK_FAILURE === '1'
+          || process.env.CAH_TEST_ONLY_CAPACITY_UNLINK_FAILURE === '1')) {
+      const error = new Error('test-only final unlink failure');
+      error.code = 'EACCES';
+      throw error;
+    }
+    if (pathIdentity(slot)) unlinkSync(slot);
+    if (process.env.CAH_TEST_ONLY === '1'
+        && (process.env.CAH_TEST_ONLY_CAPACITY_CRASH === 'after-final-unlink'
+          || process.env.CAH_TEST_ONLY_MARKER_CRASH === 'after-final-unlink')) process.exit(95);
+    return cleanupCapacityState(markerDir);
+  } catch {
+    try {
+      if (!markerPublicationMatches(state)
+          && pathIdentity(slot) && !pathIdentity(state.victim)) renameSync(slot, state.victim);
+    } catch { /* retain the fixed slot for restart reconciliation */ }
+    return false;
+  }
+}
+
+function reconcileCapacityTransaction(markerDir) {
+  const state = readCapacityState(markerDir);
+  if (state === undefined) return { ok: true, state: null };
+  if (!state) return { ok: false, state: null };
+  if (markerPublicationMatches(state)) return { ok: finishCapacityEviction(markerDir, state), state };
+  const restored = restoreCapacityVictim(state);
+  return { ok: restored && cleanupCapacityState(markerDir), state };
 }
 
 function directLegacyMarkerPrefix(name) {
@@ -113,6 +194,7 @@ function removeLegacyIfUnchanged(path, expected) {
 }
 
 function migrateLegacyFile(source, target, sourceStat) {
+  if (source === target) return true;
   try {
     const targetStat = lstatSync(target, { bigint: true });
     if (!targetStat.isFile()) return;
@@ -137,13 +219,26 @@ function migrateLegacyFile(source, target, sourceStat) {
   }
 }
 
-function migrateLegacyClaim(source, target) {
+function migrateLegacyClaim(source, target, leaseOptions = {}) {
+  if (source === target) return true;
   try {
-    if (pathIdentity(target)) return;
+    if (pathIdentity(target)) {
+      const stale = acquireLease(source, {
+        staleAfterMs: leaseOptions.staleAfterMs || UPDATE_MARKER_CLAIM_TTL_MS,
+        fenceSuffix: '.taken-',
+        interlockPhase: leaseOptions.interlockPhase || 'legacy-claim-reclaim',
+        releaseInterlockPhase: leaseOptions.releaseInterlockPhase || 'legacy-claim-release',
+        testLeaseEnv: leaseOptions.testLeaseEnv || 'CAH_UPDATE_OWNER_MAX_LEASE_MS',
+      });
+      if (stale) releaseLease(stale);
+      return Boolean(stale);
+    }
     const sourceStat = pathIdentity(source);
     if (!sourceStat?.isDirectory) return;
     renameSync(source, target);
+    return true;
   } catch { /* preserve a live legacy claim */ }
+  return false;
 }
 
 function migrateLegacyMarkers(home, markerDir, sessionId) {
@@ -154,6 +249,24 @@ function migrateLegacyMarkers(home, markerDir, sessionId) {
   const rawName = typeof sessionId === 'string' && sessionId.length > 0
     && !sessionId.includes('/') && !sessionId.includes('\\') && !sessionId.includes('\0')
     ? `${UPDATE_MARKER_PREFIX}${sessionId}` : null;
+  const claimPrefix = '.cah-marker-claim-';
+  const directClaims = [
+    { sourceName: `${claimPrefix}${hashName}`, targetName: `${claimPrefix}${hashName}` },
+    ...(rawName ? [{ sourceName: `${claimPrefix}${rawName}`, targetName: `${claimPrefix}${hashName}` }] : []),
+  ];
+  let currentLegacyClaimBlocked = false;
+  for (const sourceRoot of [flatDir, legacyDir]) {
+    for (const { sourceName, targetName } of directClaims) {
+      const source = join(sourceRoot, sourceName);
+      const target = join(markerDir, targetName);
+      try {
+        if (pathIdentity(source)) {
+          const migrated = migrateLegacyClaim(source, target);
+          if (!migrated && pathIdentity(source)) currentLegacyClaimBlocked = true;
+        }
+      } catch { currentLegacyClaimBlocked = true; }
+    }
+  }
   const direct = [join(flatDir, hashName), join(legacyDir, hashName), ...(rawName ? [join(legacyDir, rawName)] : [])];
   for (const source of direct) {
     const name = basename(source);
@@ -164,12 +277,12 @@ function migrateLegacyMarkers(home, markerDir, sessionId) {
     } catch { /* best effort */ }
   }
   const sentinel = join(markerDir, '.migration-v1');
-  if (pathIdentity(sentinel)) return;
+  if (pathIdentity(sentinel)) return { currentLegacyClaimBlocked };
   streamDirectoryEntries(flatDir, MIGRATION_SCAN_CAP, (entry) => {
     const name = entry.name;
     const suffix = name.startsWith(UPDATE_MARKER_PREFIX) ? name.slice(UPDATE_MARKER_PREFIX.length) : null;
-    const claimPrefix = `.cah-marker-claim-${UPDATE_MARKER_PREFIX}`;
-    const claimSuffix = name.startsWith(claimPrefix) ? name.slice(claimPrefix.length) : null;
+    const claimNamePrefix = `.cah-marker-claim-${UPDATE_MARKER_PREFIX}`;
+    const claimSuffix = name.startsWith(claimNamePrefix) ? name.slice(claimNamePrefix.length) : null;
     if (suffix !== null && /^[a-f0-9]{64}$/.test(suffix) && entry.isFile()) {
       const source = join(flatDir, name);
       const stat = pathIdentity(source);
@@ -188,6 +301,7 @@ function migrateLegacyMarkers(home, markerDir, sessionId) {
     }
   });
   try { writeFileSync(sentinel, 'v1\n', { flag: 'wx' }); } catch { /* another hook won */ }
+  return { currentLegacyClaimBlocked };
 }
 
 function pruneStaleMarkers(markerDir, nowMs, protectedMarker = null) {
@@ -216,36 +330,6 @@ function pruneStaleMarkers(markerDir, nowMs, protectedMarker = null) {
       // ignore individual failures — best-effort hygiene
     }
   });
-}
-
-// Capacity is a reservation, not hygiene. The caller has already acquired
-// the new session's marker claim, so a competing caller for that session fails
-// without evicting an unrelated fresh marker.
-function reserveUpdateMarkerCapacity(markerDir, nowMs, protectedMarker = null) {
-  let count = 0;
-  let oldest = null;
-  streamDirectoryEntries(markerDir, UPDATE_MARKER_SCAN_CAP, (entry) => {
-    if (!UPDATE_MARKER_NAME_RE.test(entry.name) || !entry.isFile()) return;
-    const p = join(markerDir, entry.name);
-    if (p === protectedMarker) return;
-    try {
-      const stat = pathIdentity(p);
-      if (stat?.isFile && !isOlderThan(stat, nowMs, UPDATE_MARKER_TTL_MS)) {
-        count += 1;
-        if (!oldest || stat.mtimeNs < oldest.mtimeNs) oldest = { path: p, identity: stat };
-      }
-    } catch { /* best effort */ }
-  });
-  if (count < UPDATE_MARKER_MAX_SESSIONS || !oldest) return true;
-  let claim;
-  try { claim = acquireUpdateMarkerClaim(oldest.path, nowMs); } catch { claim = null; }
-  if (!claim) return false;
-  try {
-    const current = pathIdentity(oldest.path);
-    if (!current?.isFile || isOlderThan(current, nowMs, UPDATE_MARKER_TTL_MS)) return true;
-    return removePathIfUnchangedRecoverable(oldest.path, current, 'marker-capacity').ok;
-  } catch { return false; }
-  finally { releaseUpdateMarkerClaim(claim); }
 }
 
 function sessionHash(sessionId) {
@@ -283,6 +367,94 @@ function acquireUpdateMarkerCapacityLease(markerDir, nowMs) {
   });
 }
 
+function reconcileLegacyCapacityFences(markerDir) {
+  const fenceSuffix = '.cah-capacity-fence';
+  streamDirectoryEntries(markerDir, UPDATE_MARKER_SCAN_CAP, (entry) => {
+    if (!entry.name.endsWith(fenceSuffix)) return;
+    const markerName = entry.name.slice(0, -fenceSuffix.length);
+    if (!UPDATE_MARKER_NAME_RE.test(markerName) || !entry.isFile()) return;
+    const fence = join(markerDir, entry.name);
+    const marker = join(markerDir, markerName);
+    try {
+      if (!pathIdentity(marker)) renameSync(fence, marker);
+      else unlinkSync(fence);
+    } catch { /* preserve the bounded legacy fence for the next pass */ }
+  });
+}
+
+function prepareCapacityEviction(markerDir, marker, markerBefore, nonce, nowMs, excludedPath = null) {
+  const result = reconcileCapacityTransaction(markerDir);
+  if (!result.ok) return null;
+  reconcileLegacyCapacityFences(markerDir);
+  let count = 0;
+  let oldest = null;
+  const scan = streamDirectoryEntries(markerDir, UPDATE_MARKER_SCAN_CAP, (entry) => {
+    if (!UPDATE_MARKER_NAME_RE.test(entry.name) || !entry.isFile()) return;
+    const p = join(markerDir, entry.name);
+    if (p === marker || p === excludedPath) return;
+    try {
+      const stat = pathIdentity(p);
+      if (stat?.isFile && !isOlderThan(stat, nowMs, UPDATE_MARKER_TTL_MS)) {
+        count += 1;
+        if (!oldest || stat.mtimeNs < oldest.mtimeNs) oldest = { path: p, identity: stat };
+      }
+    } catch { /* best effort */ }
+  });
+  if (!scan.complete || count < UPDATE_MARKER_MAX_SESSIONS || !oldest) return scan.complete
+    ? { state: null, victimClaim: null } : null;
+  const victimClaim = acquireUpdateMarkerClaim(oldest.path, nowMs);
+  if (!victimClaim) return null;
+  const txDir = capacityTransactionPath(markerDir);
+  const txState = capacityStatePath(markerDir);
+  try {
+    mkdirSync(txDir, { recursive: true });
+    if (pathIdentity(txState)) {
+      releaseUpdateMarkerClaim(victimClaim);
+      return null;
+    }
+    writeFileSync(txState, JSON.stringify({
+      version: CAPACITY_TX_VERSION,
+      marker,
+      markerBeforeKey: identityKey(markerBefore) || 'absent',
+      nonce,
+      victim: oldest.path,
+      victimKey: identityKey(oldest.identity),
+    }) + '\n', { flag: 'wx', mode: 0o600 });
+    waitForLeaseTestInterlock('marker-capacity');
+    if (!samePathIdentity(oldest.identity, pathIdentity(oldest.path))) {
+      cleanupCapacityState(markerDir);
+      releaseUpdateMarkerClaim(victimClaim);
+      return prepareCapacityEviction(markerDir, marker, markerBefore, nonce, nowMs, oldest.path);
+    }
+    renameSync(oldest.path, join(txDir, 'victim'));
+    if (process.env.CAH_TEST_ONLY === '1'
+        && (process.env.CAH_TEST_ONLY_CAPACITY_CRASH === 'after-victim-rename'
+          || process.env.CAH_TEST_ONLY_MARKER_CRASH === 'after-victim-rename')) process.exit(93);
+    const state = readCapacityState(markerDir);
+    if (!state || identityKey(pathIdentity(join(txDir, 'victim'))) !== state.victimKey) {
+      if (state) restoreCapacityVictim(state);
+      cleanupCapacityState(markerDir);
+      releaseUpdateMarkerClaim(victimClaim);
+      return null;
+    }
+    return { state, victimClaim };
+  } catch {
+    try {
+      const state = readCapacityState(markerDir);
+      if (state && !markerPublicationMatches(state)) restoreCapacityVictim(state);
+      if (pathIdentity(txState) && !pathIdentity(join(txDir, 'victim'))) cleanupCapacityState(markerDir);
+    } catch { /* preserve the fixed slot for reconciliation */ }
+    releaseUpdateMarkerClaim(victimClaim);
+    return null;
+  }
+}
+
+function abortCapacityEviction(markerDir, state) {
+  if (!state) return true;
+  if (markerPublicationMatches(state)) return finishCapacityEviction(markerDir, state);
+  return restoreCapacityVictim(state) && cleanupCapacityState(markerDir);
+}
+
 function updateMarkerClaimOwned(claim) {
   return Boolean(claim?.lease && leaseOwned(claim.lease));
 }
@@ -290,11 +462,17 @@ function updateMarkerClaimOwned(claim) {
 function releaseUpdateMarkerClaim(claim) {
   if (!claim?.lease) return;
   const capacityLease = claim.capacityLease;
+  const victimClaim = claim.victimClaim;
   claim.capacityLease = null;
+  claim.victimClaim = null;
   try {
     releaseLease(claim.lease);
   } finally {
-    if (capacityLease) releaseLease(capacityLease);
+    try {
+      if (victimClaim) releaseUpdateMarkerClaim(victimClaim);
+    } finally {
+      if (capacityLease) releaseLease(capacityLease);
+    }
   }
 }
 
@@ -303,7 +481,10 @@ function markUpdateDelivered(claim) {
   if (process.env.CAH_TEST_ONLY === '1'
       && (process.env.CAH_TEST_ONLY_MARKER_CRASH === 'before-durable'
         || process.env.CAH_TEST_ONLY_MARKER_CRASH === 'before-marker'
-        || process.env.CAH_TEST_ONLY_MARKER_WRITE_FAILURE === 'crash')) process.exit(92);
+        || process.env.CAH_TEST_ONLY_MARKER_WRITE_FAILURE === 'crash')) {
+    if (claim.capacityTransaction) abortCapacityEviction(dirname(claim.marker), claim.capacityTransaction);
+    process.exit(92);
+  }
   try {
     const expectedDestination = captureRegularFileSnapshot(claim.marker).expectedDestination;
     if (expectedDestination.exists && !isOlderThan(expectedDestination.identity, Date.now(), UPDATE_MARKER_TTL_MS)) return false;
@@ -315,6 +496,9 @@ function markUpdateDelivered(claim) {
       JSON.stringify({ nonce: claim.owner.nonce || claim.owner.token, deliveredAt: Date.now() }) + '\n',
       { expectedDestination },
     );
+    if (process.env.CAH_TEST_ONLY === '1'
+        && (process.env.CAH_TEST_ONLY_CAPACITY_CRASH === 'after-marker-publish'
+          || process.env.CAH_TEST_ONLY_MARKER_CRASH === 'after-marker-publish')) process.exit(94);
     return true;
   } catch { return false; }
 }
@@ -323,21 +507,22 @@ function claimUpdateMarker(markerDir, sessionId, nowMs) {
   const marker = join(markerDir, `${UPDATE_MARKER_PREFIX}${sessionHash(sessionId)}`);
   try {
     mkdirSync(markerDir, { recursive: true });
+    const capacityLease = acquireUpdateMarkerCapacityLease(markerDir, nowMs);
+    if (!capacityLease) return null;
+    if (!reconcileCapacityTransaction(markerDir).ok) {
+      releaseLease(capacityLease);
+      return null;
+    }
     try {
       const markerStat = pathIdentity(marker);
-      if (markerStat && !markerStat.isFile) return null;
-      if (markerStat && !isOlderThan(markerStat, nowMs, UPDATE_MARKER_TTL_MS)) return null;
+      if (markerStat && !markerStat.isFile) { releaseLease(capacityLease); return null; }
+      if (markerStat && !isOlderThan(markerStat, nowMs, UPDATE_MARKER_TTL_MS)) { releaseLease(capacityLease); return null; }
     } catch (statError) {
-      if (!statError || statError.code !== 'ENOENT') return null;
+      if (!statError || statError.code !== 'ENOENT') { releaseLease(capacityLease); return null; }
     }
     const claim = acquireUpdateMarkerClaim(marker, nowMs);
-    if (!claim) return null;
+    if (!claim) { releaseLease(capacityLease); return null; }
     try {
-      const capacityLease = acquireUpdateMarkerCapacityLease(markerDir, nowMs);
-      if (!capacityLease) {
-        releaseUpdateMarkerClaim(claim);
-        return null;
-      }
       claim.capacityLease = capacityLease;
       try {
         const markerStat = pathIdentity(marker);
@@ -355,6 +540,19 @@ function claimUpdateMarker(markerDir, sessionId, nowMs) {
           return null;
         }
       }
+      const capacity = prepareCapacityEviction(
+        markerDir,
+        marker,
+        pathIdentity(marker),
+        claim.owner.nonce || claim.owner.token,
+        nowMs,
+      );
+      if (!capacity) {
+        releaseUpdateMarkerClaim(claim);
+        return null;
+      }
+      claim.capacityTransaction = capacity.state;
+      claim.victimClaim = capacity.victimClaim;
       return claim;
     } catch {
       releaseUpdateMarkerClaim(claim);
@@ -365,18 +563,15 @@ function claimUpdateMarker(markerDir, sessionId, nowMs) {
   }
 }
 
-// Builds the one-shot "new version available" notice, or '' if none is due:
-// only on a real Stop event (never PostToolUse, which fires per tool call),
-// only once per session, and only when the cached registry check found a
-// newer version than CURRENT_VERSION.
 function buildUpdateNotice(payload, nowMs) {
-  if (payload.hook_event_name !== 'Stop') return null;
   const sessionId = payload.session_id;
   if (!sessionId) return null;
 
   const home = process.env.CAH_STAMP_HINT_HOME || homedir();
   const markerDir = updateMarkerNamespace(home);
-  migrateLegacyMarkers(home, markerDir, sessionId);
+  const markerMigration = migrateLegacyMarkers(home, markerDir, sessionId);
+  if (markerMigration?.currentLegacyClaimBlocked) return null;
+  if (payload.hook_event_name !== 'Stop') return null;
   const protectedMarker = process.env.CAH_TEST_ONLY === '1'
     && process.env.CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE === 'marker-remove'
     ? null : join(markerDir, `${UPDATE_MARKER_PREFIX}${sessionHash(sessionId)}`);
@@ -425,8 +620,6 @@ function requestIdsEqual(last, current) {
   const normalized = normalizeRequestId(current);
   if (normalized === null || typeof last.requestId !== 'string') return false;
   if (last.requestIdHash === true) return last.requestId === requestIdDigest(normalized);
-  // Pre-v3 sidecars stored requestId text. Accept exact legacy values, but
-  // never treat a 512-character prefix as a match for a longer full ID.
   return last.requestId === normalized;
 }
 
@@ -434,24 +627,61 @@ function sessionStatePath(path, sessionId) {
   return join(stampNamespace(path), `${basename(path)}${STAMP_STATE_PREFIX}${sessionHash(sessionId)}.json`);
 }
 
-function migrateLegacyStampState(path, home) {
+function migrateLegacyStampState(path, home, sessionId) {
   const namespace = stampNamespace(path);
   try { mkdirSync(namespace, { recursive: true }); } catch { return; }
-  const flatDir = cacheRoot(home);
   const prefix = `${basename(path)}${STAMP_STATE_PREFIX}`;
+  const stateName = `${basename(path)}${STAMP_STATE_PREFIX}${sessionHash(sessionId)}.json`;
+  const lockName = `${stateName}.lock`;
+  const roots = [...new Set([
+    dirname(path),
+    cacheRoot(home),
+    basename(dirname(path)) === STAMP_NAMESPACE ? dirname(dirname(path)) : null,
+  ].filter(Boolean))];
+  const targetState = join(namespace, stateName);
+  const targetLock = join(namespace, lockName);
+  let currentLegacyLockBlocked = false;
+
+  for (const root of roots) {
+    const sourceState = join(root, stateName);
+    const sourceLock = join(root, lockName);
+    try {
+      const stateStat = pathIdentity(sourceState);
+      if (stateStat?.isFile) migrateLegacyFile(sourceState, targetState, stateStat);
+      const lockStat = pathIdentity(sourceLock);
+      if (lockStat?.isDirectory) {
+        const migrated = migrateLegacyClaim(sourceLock, targetLock, {
+          staleAfterMs: STAMP_LOCK_CLAIM_TTL_MS,
+          testLeaseEnv: 'CAH_STAMP_OWNER_MAX_LEASE_MS',
+          interlockPhase: 'legacy-lock-reclaim',
+          releaseInterlockPhase: 'legacy-lock-release',
+        });
+        if (!migrated && pathIdentity(sourceLock)) currentLegacyLockBlocked = true;
+      }
+    } catch { currentLegacyLockBlocked = true; }
+  }
+
   const sentinel = join(namespace, '.migration-v1');
-  if (pathIdentity(sentinel)) return;
-  streamDirectoryEntries(flatDir, MIGRATION_SCAN_CAP, (entry) => {
-    const name = entry.name;
-    if (!name.startsWith(prefix) || !name.endsWith('.json')) return;
-    const source = join(flatDir, name);
-    const stat = pathIdentity(source);
-    if (stat?.isFile) migrateLegacyFile(source, join(namespace, name), stat);
-    else if (entry.isDirectory() && name.endsWith('.lock')) {
-      migrateLegacyClaim(source, join(namespace, name));
-    }
-  });
+  if (pathIdentity(sentinel)) return { currentLegacyLockBlocked };
+  for (const root of roots) {
+    streamDirectoryEntries(root, MIGRATION_SCAN_CAP, (entry) => {
+      const name = entry.name;
+      if (name.startsWith(prefix) && name.endsWith('.json') && !name.endsWith('.json.lock') && entry.isFile()) {
+        const source = join(root, name);
+        const stat = pathIdentity(source);
+        if (stat?.isFile) migrateLegacyFile(source, join(namespace, name), stat);
+      } else if (name.startsWith(prefix) && name.endsWith('.json.lock') && entry.isDirectory()) {
+        migrateLegacyClaim(join(root, name), join(namespace, name), {
+          staleAfterMs: STAMP_LOCK_CLAIM_TTL_MS,
+          testLeaseEnv: 'CAH_STAMP_OWNER_MAX_LEASE_MS',
+          interlockPhase: 'legacy-lock-reclaim',
+          releaseInterlockPhase: 'legacy-lock-release',
+        });
+      }
+    });
+  }
   try { writeFileSync(sentinel, 'v1\n', { flag: 'wx' }); } catch { /* another hook won */ }
+  return { currentLegacyLockBlocked };
 }
 
 function stampRecord(value) {
@@ -477,20 +707,17 @@ function readLastStamp(path, sessionId) {
     const sidecarState = JSON.parse(readFileSync(sidecar, 'utf8'));
     return stampRecord(sidecarState);
   } catch {
-    // Fall through to the pre-sidecar state for one-way compatibility.
   }
   try {
     const legacy = `${path}${STAMP_STATE_PREFIX}${sessionHash(sessionId)}.json`;
     return stampRecord(JSON.parse(readFileSync(legacy, 'utf8')));
   } catch {
-    // Fall through to the pre-sidecar state for one-way compatibility.
   }
   try {
     const obj = JSON.parse(readFileSync(path, 'utf8'));
     if (obj && typeof obj.sessions === 'object' && obj.sessions !== null) {
       return stampRecord(obj.sessions[sessionKey(sessionId)]);
     }
-    // Compatibility fallback for the pre-session-partition flat state.
     return stampRecord(obj);
   } catch {
     return { ts: null, requestId: null, fingerprint: null, deliveryState: 'delivered' };
@@ -513,13 +740,8 @@ function pruneStampSidecars(path, nowMs) {
         removePathIfUnchangedRecoverable(sidecar, stat, 'sidecar-prune');
         return;
       }
-      // Keep the complete scan-time identity, including the content digest.
-      // Capacity removal must act on this exact observation; rescanning the
-      // path after the interlock could turn a successor into the file we
-      // remove.
       candidates.push({ path: sidecar, identity: stat, mtimeNs: stat.mtimeNs });
     } catch {
-      // Best-effort cleanup; concurrent hook processes may be writing it.
     }
   });
   candidates.sort((a, b) => a.mtimeNs === b.mtimeNs ? 0 : a.mtimeNs > b.mtimeNs ? -1 : 1);
@@ -616,18 +838,15 @@ function main() {
     return; // malformed JSON — exit silent
   }
 
-  // Loop guard: don't stamp during agent-continue loops.
   if (payload.stop_hook_active === true) return;
 
   const transcriptPath = payload.transcript_path;
   if (!transcriptPath) return;
 
-  // Compute the notice before deciding whether the stamp itself is suppressed.
-  // A Stop can be the second hook for a turn already stamped by PostToolUse;
-  // in that case the notice must be delivered without replaying the stamp.
   const nowMs = Date.now();
   const stampHome = process.env.CAH_STAMP_HINT_HOME || homedir();
-  migrateLegacyStampState(STAMP_THROTTLE_PATH, stampHome);
+  const stampMigration = migrateLegacyStampState(STAMP_THROTTLE_PATH, stampHome, payload.session_id);
+  if (stampMigration?.currentLegacyLockBlocked) return;
   const stampLock = acquireStampLock(STAMP_THROTTLE_PATH, payload.session_id, nowMs);
   if (!stampLock) return;
   let updateNotice = null;
@@ -647,8 +866,6 @@ function main() {
     && lastAgeMs !== null
     && lastAgeMs < STAMP_MIN_INTERVAL_MS;
 
-  // HH:MM:SS so cadence bugs (e.g. throttle not honoured, dual-hook spam)
-  // are diagnosable from the chat scrollback alone.
   const time = currentHhMmSs();
 
   let usedTokens = null;
@@ -665,9 +882,6 @@ function main() {
     // transcript missing / unreadable — still emit with time only
   }
 
-  // Per-message dedup: every assistant entry of the same turn shares the same
-  // requestId (text + each tool_use block). If either this or the time guard
-  // suppresses the stamp, a due update notice is the only allowed output.
   const requestSuppressed = requestId !== null
     && requestIdsEqual(last, requestId)
     && lastAgeMs !== null
@@ -689,8 +903,13 @@ function main() {
         try {
           writeSync(1, JSON.stringify({ continue: true, systemMessage: updateNotice.text }) + '\n');
           if (markUpdateDelivered(updateNotice.claim)) {
-            reserveUpdateMarkerCapacity(dirname(updateNotice.claim.marker), Date.now(), updateNotice.claim.marker);
+            if (updateNotice.claim.capacityTransaction
+                && finishCapacityEviction(
+                  dirname(updateNotice.claim.marker), updateNotice.claim.capacityTransaction,
+                )) updateNotice.claim.capacityTransaction = null;
             pruneStaleMarkers(dirname(updateNotice.claim.marker), Date.now());
+          } else if (updateNotice.claim.capacityTransaction) {
+            abortCapacityEviction(dirname(updateNotice.claim.marker), updateNotice.claim.capacityTransaction);
           }
         } finally {
           releaseUpdateMarkerClaim(updateNotice.claim);
@@ -718,9 +937,6 @@ function main() {
     ? contextWindowLimit(modelId, envelopeLimit || (cachedState && cachedState.contextWindowSize))
     : null;
 
-  // If we have usedTokens but no modelId, we cannot compute a meaningful
-  // percentage without knowing the limit, so degrade to HH:MM.
-  // If we have modelId but no usedTokens, use model name without usage %.
   const displayName = modelId || null;
   const effectiveUsed = (usedTokens !== null && modelId !== null) ? usedTokens : null;
   const effectiveLimit = (usedTokens !== null && modelId !== null) ? limit : null;
@@ -736,12 +952,6 @@ function main() {
     // fail-silent — proceed without rate_limits
   }
 
-  // Effort is deliberately omitted here: Claude Code only ever exposes
-  // effort.level in the statusLine envelope, never in the Stop/PostToolUse
-  // hook payload or the transcript. Echoing the cached statusLine value into
-  // the chat stamp can show the previous turn's effort for one turn after a
-  // model/effort switch — better to omit it than show a value that isn't
-  // reliably tied to the turn being stamped.
   const line = formatStatusLine({
     time,
     displayName,
@@ -763,13 +973,16 @@ function main() {
     fingerprint,
     'pending',
   )) return;
-  // Mark delivered only after the small hook response reaches stdout
-  // synchronously. A write failure leaves the short-lived pending claim.
   writeSync(1, out + '\n');
   if (updateNotice) {
     if (markUpdateDelivered(updateNotice.claim)) {
-      reserveUpdateMarkerCapacity(dirname(updateNotice.claim.marker), Date.now(), updateNotice.claim.marker);
+      if (updateNotice.claim.capacityTransaction
+          && finishCapacityEviction(
+            dirname(updateNotice.claim.marker), updateNotice.claim.capacityTransaction,
+          )) updateNotice.claim.capacityTransaction = null;
       pruneStaleMarkers(dirname(updateNotice.claim.marker), Date.now());
+    } else if (updateNotice.claim.capacityTransaction) {
+      abortCapacityEviction(dirname(updateNotice.claim.marker), updateNotice.claim.capacityTransaction);
     }
     releaseUpdateMarkerClaim(updateNotice.claim);
     updateNotice = null;
@@ -783,7 +996,12 @@ function main() {
     'delivered',
   );
   } finally {
-    if (updateNotice) releaseUpdateMarkerClaim(updateNotice.claim);
+    if (updateNotice) {
+      if (updateNotice.claim.capacityTransaction) {
+        abortCapacityEviction(dirname(updateNotice.claim.marker), updateNotice.claim.capacityTransaction);
+      }
+      releaseUpdateMarkerClaim(updateNotice.claim);
+    }
     releaseStampLock(stampLock);
   }
 }

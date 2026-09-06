@@ -7,13 +7,13 @@
 // missing input, or filesystem hiccup results in `exit 0` with no stdout, so it
 // can never break the user's session.
 
-import { mkdirSync, openSync, closeSync, readFileSync, lstatSync, unlinkSync, writeSync, writeFileSync, renameSync } from 'node:fs';
+import { mkdirSync, openSync, closeSync, readFileSync, lstatSync, unlinkSync, writeSync, writeFileSync, renameSync, rmdirSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { readTranscriptStats, contextWindowLimit, readRateLimitsCache, validContextWindowSize } from '../lib/transcript-stats.js';
 import {
-  acquireLease, leaseOwned, pathIdentity, releaseLease, samePathIdentity,
+  acquireLease, leaseOwned, pathIdentity, releaseLease, samePathIdentity, waitForLeaseTestInterlock,
 } from '../lib/lease-lock.js';
 import { captureRegularFileSnapshot, isOlderThan, writeFileAtomic } from '../lib/fsutil.js';
 import { streamDirectoryEntries, removePathIfUnchangedRecoverable } from '../lib/lease-lock.js';
@@ -37,12 +37,124 @@ const MARKER_NAME_RE = /^cah-hint-shown-[a-f0-9]{64}$/;
 const MARKER_SCAN_CAP = MARKER_MAX_SESSIONS * 3 + 8;
 const MIGRATION_SCAN_CAP = 256;
 const MARKER_NAMESPACE = 'hint-markers';
+const CAPACITY_TX_VERSION = 1;
 const RATE_LIMITS_CACHE =
   process.env.CAH_RATE_LIMITS_CACHE ||
   join(homedir(), '.claude', 'cah-bin', 'cache', 'rate-limits.json');
 
 function cacheRoot(home) { return join(home, '.claude', 'cah-bin', 'cache'); }
 function markerNamespace(home) { return join(cacheRoot(home), MARKER_NAMESPACE); }
+
+function capacityTransactionPath(markerDir) {
+  return join(dirname(markerDir), `.${basename(markerDir)}-capacity-transaction`);
+}
+
+function identityKey(identity) {
+  if (!identity) return null;
+  return [identity.dev, identity.ino, identity.mode, identity.size, identity.mtimeNs,
+    identity.nlink, identity.contentDigest, identity.isFile, identity.isDirectory,
+    identity.isSymbolicLink].map((value) => String(value)).join(':');
+}
+
+function capacityStatePath(markerDir) {
+  return join(capacityTransactionPath(markerDir), 'transaction.json');
+}
+
+function readCapacityState(markerDir) {
+  const txDir = capacityTransactionPath(markerDir);
+  const txIdentity = pathIdentity(txDir);
+  if (!txIdentity) return undefined;
+  if (!txIdentity.isDirectory) return null;
+  try {
+    const state = JSON.parse(readFileSync(capacityStatePath(markerDir), 'utf8'));
+    if (state?.version !== CAPACITY_TX_VERSION
+        || typeof state.marker !== 'string'
+        || typeof state.victim !== 'string'
+        || typeof state.victimKey !== 'string'
+        || typeof state.markerBeforeKey !== 'string'
+        || typeof state.nonce !== 'string') return null;
+    return state;
+  } catch {
+    if (pathIdentity(join(txDir, 'victim'))) return null;
+    try { unlinkSync(capacityStatePath(markerDir)); } catch { /* preserve an unreadable slot */ }
+    try { rmdirSync(txDir); } catch { /* preserve an unreadable slot */ }
+    return undefined;
+  }
+}
+
+function cleanupCapacityState(markerDir) {
+  try { unlinkSync(capacityStatePath(markerDir)); } catch { return false; }
+  try { rmdirSync(capacityTransactionPath(markerDir)); } catch { /* already empty / concurrent retry */ }
+  return true;
+}
+
+function markerPublicationMatches(state) {
+  const current = pathIdentity(state.marker);
+  if (!current?.isFile || identityKey(current) === state.markerBeforeKey) return false;
+  try {
+    const record = JSON.parse(readFileSync(state.marker, 'utf8'));
+    return record && (record.nonce === state.nonce || record.token === state.nonce);
+  } catch { return false; }
+}
+
+function restoreCapacityVictim(state) {
+  const slot = join(capacityTransactionPath(dirname(state.marker)), 'victim');
+  const slotIdentity = pathIdentity(slot);
+  if (!slotIdentity) {
+    return Boolean(pathIdentity(state.victim));
+  }
+  const current = pathIdentity(state.victim);
+  if (!current) {
+    try { renameSync(slot, state.victim); return true; } catch { return false; }
+  }
+  // A successor now owns the canonical name. Preserve it and discard only
+  // the displaced managed victim held by this transaction.
+  try { unlinkSync(slot); return true; } catch { return false; }
+}
+
+function finishCapacityEviction(markerDir, state) {
+  const slot = join(capacityTransactionPath(markerDir), 'victim');
+  try {
+    if (!pathIdentity(slot)) {
+      const victim = pathIdentity(state.victim);
+      if (victim && identityKey(victim) === state.victimKey) renameSync(state.victim, slot);
+    }
+    if (process.env.CAH_TEST_ONLY === '1'
+        && (process.env.CAH_TEST_ONLY_FINAL_UNLINK_FAILURE === '1'
+          || process.env.CAH_TEST_ONLY_MARKER_FINAL_UNLINK_FAILURE === '1'
+          || process.env.CAH_TEST_ONLY_CAPACITY_UNLINK_FAILURE === '1')) {
+      const error = new Error('test-only final unlink failure');
+      error.code = 'EACCES';
+      throw error;
+    }
+    if (pathIdentity(slot)) unlinkSync(slot);
+    if (process.env.CAH_TEST_ONLY === '1'
+        && (process.env.CAH_TEST_ONLY_CAPACITY_CRASH === 'after-final-unlink'
+          || process.env.CAH_TEST_ONLY_MARKER_CRASH === 'after-final-unlink')) process.exit(95);
+    return cleanupCapacityState(markerDir);
+  } catch {
+    // Once publication is durable, keep the victim in the transaction slot
+    // while the final unlink is retried. Restoring it beside the published
+    // marker would expose 65 live markers until the next invocation. An
+    // uncommitted transaction is restored by the caller/reconciler instead.
+    try {
+      if (!markerPublicationMatches(state)
+          && pathIdentity(slot) && !pathIdentity(state.victim)) renameSync(slot, state.victim);
+    } catch { /* keep the slot recoverable */ }
+    return false;
+  }
+}
+
+function reconcileCapacityTransaction(markerDir) {
+  const state = readCapacityState(markerDir);
+  if (state === undefined) return { ok: true, state: null };
+  if (!state) return { ok: false, state: null };
+  if (markerPublicationMatches(state)) {
+    return { ok: finishCapacityEviction(markerDir, state), state };
+  }
+  const restored = restoreCapacityVictim(state);
+  return { ok: restored && cleanupCapacityState(markerDir), state };
+}
 
 function pruneStaleMarkers(markerDir, nowMs, protectedMarker = null) {
   streamDirectoryEntries(markerDir, MARKER_SCAN_CAP, (entry) => {
@@ -71,39 +183,6 @@ function pruneStaleMarkers(markerDir, nowMs, protectedMarker = null) {
   });
 }
 
-// Capacity is a reservation, not hygiene. The caller has already acquired
-// the new session's marker claim, so a competing caller for that session fails
-// without evicting an unrelated fresh marker.
-function reserveMarkerCapacity(markerDir, nowMs, protectedMarker = null) {
-  let count = 0;
-  let oldest = null;
-  streamDirectoryEntries(markerDir, MARKER_SCAN_CAP, (entry) => {
-    if (!MARKER_NAME_RE.test(entry.name) || !entry.isFile()) return;
-    const p = join(markerDir, entry.name);
-    if (p === protectedMarker) return;
-    try {
-      const stat = pathIdentity(p);
-      if (stat?.isFile && !isOlderThan(stat, nowMs, MARKER_TTL_MS)) {
-        count += 1;
-        if (!oldest || stat.mtimeNs < oldest.mtimeNs) oldest = { path: p, identity: stat };
-      }
-    } catch { /* best effort */ }
-  });
-  if (count < MARKER_MAX_SESSIONS || !oldest) return true;
-  let victimClaim;
-  try { victimClaim = acquireMarkerClaim(oldest.path, nowMs); } catch { victimClaim = null; }
-  if (!victimClaim) return false;
-  try {
-    const current = pathIdentity(oldest.path);
-    if (!current?.isFile || isOlderThan(current, nowMs, MARKER_TTL_MS)) return true;
-    return removePathIfUnchangedRecoverable(oldest.path, current, 'marker-capacity').ok;
-  } catch {
-    return false;
-  } finally {
-    releaseMarkerClaim(victimClaim);
-  }
-}
-
 function directLegacyMarkerPrefix(name) {
   if (typeof name !== 'string' || name.includes('/') || name.includes('\\') || name.includes('\0')) return null;
   return name.startsWith(MARKER_PREFIX) && name.length > MARKER_PREFIX.length
@@ -128,6 +207,7 @@ function removeLegacyIfUnchanged(path, expected) {
 }
 
 function migrateLegacyFile(source, target, sourceStat) {
+  if (source === target) return true;
   try {
     const targetStat = lstatSync(target, { bigint: true });
     if (!targetStat.isFile()) return;
@@ -154,11 +234,26 @@ function migrateLegacyFile(source, target, sourceStat) {
 
 function migrateLegacyClaim(source, target) {
   try {
-    if (pathIdentity(target)) return;
+    if (pathIdentity(target)) {
+      // Do not let a live old hook and a new hook own different claim paths.
+      // A stale legacy owner may be reclaimed; a live one blocks the new
+      // namespace until the old owner releases it.
+      const stale = acquireLease(source, {
+        staleAfterMs: MARKER_CLAIM_TTL_MS,
+        fenceSuffix: '.taken-',
+        interlockPhase: 'legacy-claim-reclaim',
+        releaseInterlockPhase: 'legacy-claim-release',
+        testLeaseEnv: 'CAH_HINT_OWNER_MAX_LEASE_MS',
+      });
+      if (stale) releaseLease(stale);
+      return Boolean(stale);
+    }
     const sourceStat = pathIdentity(source);
     if (!sourceStat?.isDirectory) return;
     renameSync(source, target);
+    return true;
   } catch { /* best effort; a live claim remains authoritative */ }
+  return false;
 }
 
 function migrateLegacyMarkers(home, markerDir, sessionId) {
@@ -169,6 +264,24 @@ function migrateLegacyMarkers(home, markerDir, sessionId) {
   const rawName = typeof sessionId === 'string' && sessionId.length > 0
     && !sessionId.includes('/') && !sessionId.includes('\\') && !sessionId.includes('\0')
     ? `${MARKER_PREFIX}${sessionId}` : null;
+  const claimPrefix = '.cah-marker-claim-';
+  const directClaims = [
+    { sourceName: `${claimPrefix}${hashName}`, targetName: `${claimPrefix}${hashName}` },
+    ...(rawName ? [{ sourceName: `${claimPrefix}${rawName}`, targetName: `${claimPrefix}${hashName}` }] : []),
+  ];
+  let currentLegacyClaimBlocked = false;
+  for (const sourceRoot of [flatDir, legacyDir]) {
+    for (const { sourceName, targetName } of directClaims) {
+      const source = join(sourceRoot, sourceName);
+      const target = join(markerDir, targetName);
+      try {
+        if (pathIdentity(source)) {
+          const migrated = migrateLegacyClaim(source, target);
+          if (!migrated && pathIdentity(source)) currentLegacyClaimBlocked = true;
+        }
+      } catch { currentLegacyClaimBlocked = true; }
+    }
+  }
   const direct = [
     join(flatDir, hashName), join(legacyDir, hashName),
     ...(rawName ? [join(legacyDir, rawName)] : []),
@@ -179,9 +292,7 @@ function migrateLegacyMarkers(home, markerDir, sessionId) {
     try {
       const sourceStat = pathIdentity(source);
       if (sourceStat?.isFile) migrateLegacyFile(source, join(markerDir, targetName), sourceStat);
-      else if (sourceStat?.isDirectory && name.startsWith('.cah-marker-claim-')) {
-        migrateLegacyClaim(source, join(markerDir, name));
-      }
+      else if (sourceStat?.isDirectory && name.startsWith(claimPrefix)) migrateLegacyClaim(source, join(markerDir, name));
     } catch { /* best effort */ }
   }
 
@@ -189,7 +300,7 @@ function migrateLegacyMarkers(home, markerDir, sessionId) {
   // hooks only inspect the owned namespace, so unrelated cache entries never
   // become routine hook work.
   const sentinel = join(markerDir, '.migration-v1');
-  if (pathIdentity(sentinel)) return;
+  if (pathIdentity(sentinel)) return { currentLegacyClaimBlocked };
   streamDirectoryEntries(flatDir, MIGRATION_SCAN_CAP, (entry) => {
     const name = entry.name;
     const suffix = name.startsWith(MARKER_PREFIX) ? name.slice(MARKER_PREFIX.length) : null;
@@ -213,6 +324,7 @@ function migrateLegacyMarkers(home, markerDir, sessionId) {
     }
   });
   try { writeFileSync(sentinel, 'v1\n', { flag: 'wx' }); } catch { /* another hook won */ }
+  return { currentLegacyClaimBlocked };
 }
 
 function sessionHash(sessionId) {
@@ -249,6 +361,103 @@ function acquireMarkerCapacityLease(markerDir, nowMs) {
   });
 }
 
+function reconcileLegacyCapacityFences(markerDir) {
+  const fenceSuffix = '.cah-capacity-fence';
+  streamDirectoryEntries(markerDir, MARKER_SCAN_CAP, (entry) => {
+    if (!entry.name.endsWith(fenceSuffix)) return;
+    const markerName = entry.name.slice(0, -fenceSuffix.length);
+    if (!MARKER_NAME_RE.test(markerName) || !entry.isFile()) return;
+    const fence = join(markerDir, entry.name);
+    const marker = join(markerDir, markerName);
+    try {
+      if (!pathIdentity(marker)) renameSync(fence, marker);
+      else unlinkSync(fence);
+    } catch { /* preserve the bounded legacy fence for the next pass */ }
+  });
+}
+
+function prepareCapacityEviction(markerDir, marker, markerBefore, nonce, nowMs, excludedPath = null) {
+  const result = reconcileCapacityTransaction(markerDir);
+  if (!result.ok) return null;
+  reconcileLegacyCapacityFences(markerDir);
+  let count = 0;
+  let oldest = null;
+  const scan = streamDirectoryEntries(markerDir, MARKER_SCAN_CAP, (entry) => {
+    if (!MARKER_NAME_RE.test(entry.name) || !entry.isFile()) return;
+    const p = join(markerDir, entry.name);
+    if (p === marker || p === excludedPath) return;
+    try {
+      const stat = pathIdentity(p);
+      if (stat?.isFile && !isOlderThan(stat, nowMs, MARKER_TTL_MS)) {
+        count += 1;
+        if (!oldest || stat.mtimeNs < oldest.mtimeNs) oldest = { path: p, identity: stat };
+      }
+    } catch { /* best effort */ }
+  });
+  // A partial namespace scan cannot prove that publication leaves room. Keep
+  // the bounded transaction slot untouched and retry on a later invocation.
+  if (!scan.complete) return null;
+  if (count < MARKER_MAX_SESSIONS || !oldest) return { state: null, victimClaim: null };
+
+  const victimClaim = acquireMarkerClaim(oldest.path, nowMs);
+  if (!victimClaim) return null;
+  const txDir = capacityTransactionPath(markerDir);
+  const txState = capacityStatePath(markerDir);
+  try {
+    mkdirSync(txDir, { recursive: true });
+    if (pathIdentity(txState)) {
+      releaseMarkerClaim(victimClaim);
+      return null;
+    }
+    writeFileSync(txState, JSON.stringify({
+      version: CAPACITY_TX_VERSION,
+      marker,
+      markerBeforeKey: identityKey(markerBefore) || 'absent',
+      nonce,
+      victim: oldest.path,
+      victimKey: identityKey(oldest.identity),
+    }) + '\n', { flag: 'wx', mode: 0o600 });
+    waitForLeaseTestInterlock('marker-capacity');
+    if (!samePathIdentity(oldest.identity, pathIdentity(oldest.path))) {
+      cleanupCapacityState(markerDir);
+      releaseMarkerClaim(victimClaim);
+      return prepareCapacityEviction(markerDir, marker, markerBefore, nonce, nowMs, oldest.path);
+    }
+    const slot = join(txDir, 'victim');
+    renameSync(oldest.path, slot);
+    if (process.env.CAH_TEST_ONLY === '1'
+        && (process.env.CAH_TEST_ONLY_CAPACITY_CRASH === 'after-victim-rename'
+          || process.env.CAH_TEST_ONLY_MARKER_CRASH === 'after-victim-rename')) process.exit(93);
+    const state = readCapacityState(markerDir);
+    if (!state || identityKey(pathIdentity(slot)) !== state.victimKey) {
+      if (state) restoreCapacityVictim(state);
+      cleanupCapacityState(markerDir);
+      releaseMarkerClaim(victimClaim);
+      return null;
+    }
+    return { state, victimClaim };
+  } catch {
+    try {
+      const state = readCapacityState(markerDir);
+      if (state && !markerPublicationMatches(state)) restoreCapacityVictim(state);
+      if (pathIdentity(txState) && !pathIdentity(join(txDir, 'victim'))) cleanupCapacityState(markerDir);
+    } catch { /* preserve the fixed slot for reconciliation */ }
+    releaseMarkerClaim(victimClaim);
+    return null;
+  }
+}
+
+function abortCapacityEviction(markerDir, state) {
+  if (!state) return true;
+  // A publisher can report failure after the atomic rename (for example, if
+  // its post-publication verification loses a race). Treat the durable
+  // marker as committed so abort cannot restore a second live victim beside
+  // it and briefly exceed the marker cap.
+  if (markerPublicationMatches(state)) return finishCapacityEviction(markerDir, state);
+  const restored = restoreCapacityVictim(state);
+  return restored && cleanupCapacityState(markerDir);
+}
+
 function markerClaimOwned(claim) {
   return Boolean(claim?.lease && leaseOwned(claim.lease));
 }
@@ -256,11 +465,17 @@ function markerClaimOwned(claim) {
 function releaseMarkerClaim(claim) {
   if (!claim?.lease) return;
   const capacityLease = claim.capacityLease;
+  const victimClaim = claim.victimClaim;
   claim.capacityLease = null;
+  claim.victimClaim = null;
   try {
     releaseLease(claim.lease);
   } finally {
-    if (capacityLease) releaseLease(capacityLease);
+    try {
+      if (victimClaim) releaseMarkerClaim(victimClaim);
+    } finally {
+      if (capacityLease) releaseLease(capacityLease);
+    }
   }
 }
 
@@ -270,6 +485,7 @@ function markDelivered(claim) {
       && (process.env.CAH_TEST_ONLY_MARKER_CRASH === 'before-durable'
         || process.env.CAH_TEST_ONLY_MARKER_CRASH === 'before-marker'
         || process.env.CAH_TEST_ONLY_MARKER_WRITE_FAILURE === 'crash')) {
+    if (claim.capacityTransaction) abortCapacityEviction(dirname(claim.marker), claim.capacityTransaction);
     process.exit(91);
   }
   try {
@@ -280,9 +496,12 @@ function markDelivered(claim) {
           || process.env.CAH_TEST_ONLY_MARKER_STATE_WRITE_FAILURE === '1')) return false;
     writeFileAtomic(
       claim.marker,
-      JSON.stringify({ nonce: claim.owner.nonce, deliveredAt: Date.now() }) + '\n',
+      JSON.stringify({ nonce: claim.owner.nonce || claim.owner.token, deliveredAt: Date.now() }) + '\n',
       { expectedDestination },
     );
+    if (process.env.CAH_TEST_ONLY === '1'
+        && (process.env.CAH_TEST_ONLY_CAPACITY_CRASH === 'after-marker-publish'
+          || process.env.CAH_TEST_ONLY_MARKER_CRASH === 'after-marker-publish')) process.exit(94);
     return true;
   } catch { return false; }
 }
@@ -293,21 +512,22 @@ function claimMarker(markerDir, sessionId, nowMs) {
   const marker = join(markerDir, `${MARKER_PREFIX}${sessionHash(sessionId)}`);
   try {
     mkdirSync(markerDir, { recursive: true });
+    const capacityLease = acquireMarkerCapacityLease(markerDir, nowMs);
+    if (!capacityLease) return null;
+    if (!reconcileCapacityTransaction(markerDir).ok) {
+      releaseLease(capacityLease);
+      return null;
+    }
     try {
       const markerStat = pathIdentity(marker);
-      if (markerStat && !markerStat.isFile) return null;
-      if (markerStat && !isOlderThan(markerStat, nowMs, MARKER_TTL_MS)) return null;
+      if (markerStat && !markerStat.isFile) { releaseLease(capacityLease); return null; }
+      if (markerStat && !isOlderThan(markerStat, nowMs, MARKER_TTL_MS)) { releaseLease(capacityLease); return null; }
     } catch (error) {
-      if (!error || error.code !== 'ENOENT') return null;
+      if (!error || error.code !== 'ENOENT') { releaseLease(capacityLease); return null; }
     }
     const claim = acquireMarkerClaim(marker, nowMs);
-    if (!claim) return null;
+    if (!claim) { releaseLease(capacityLease); return null; }
     try {
-      const capacityLease = acquireMarkerCapacityLease(markerDir, nowMs);
-      if (!capacityLease) {
-        releaseMarkerClaim(claim);
-        return null;
-      }
       claim.capacityLease = capacityLease;
       try {
         const markerStat = pathIdentity(marker);
@@ -325,6 +545,19 @@ function claimMarker(markerDir, sessionId, nowMs) {
           return null;
         }
       }
+      const capacity = prepareCapacityEviction(
+        markerDir,
+        marker,
+        pathIdentity(marker),
+        claim.owner.nonce || claim.owner.token,
+        nowMs,
+      );
+      if (!capacity) {
+        releaseMarkerClaim(claim);
+        return null;
+      }
+      claim.capacityTransaction = capacity.state;
+      claim.victimClaim = capacity.victimClaim;
       return claim;
     } catch {
       releaseMarkerClaim(claim);
@@ -363,7 +596,8 @@ function main() {
 
   const home = process.env.CAH_HINT_HOME || homedir();
   const markerDir = markerNamespace(home);
-  migrateLegacyMarkers(home, markerDir, sessionId);
+  const migration = migrateLegacyMarkers(home, markerDir, sessionId);
+  if (migration?.currentLegacyClaimBlocked) return;
   const protectedMarker = process.env.CAH_TEST_ONLY === '1'
     && process.env.CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE === 'marker-remove'
     ? null : join(markerDir, `${MARKER_PREFIX}${sessionHash(sessionId)}`);
@@ -412,8 +646,11 @@ function main() {
     if (!markerClaimOwned(claim)) return;
     writeSync(1, MESSAGE + '\n');
     if (markDelivered(claim)) {
-      reserveMarkerCapacity(markerDir, Date.now(), claim.marker);
+      if (claim.capacityTransaction
+          && finishCapacityEviction(markerDir, claim.capacityTransaction)) claim.capacityTransaction = null;
       pruneStaleMarkers(markerDir, Date.now());
+    } else if (claim.capacityTransaction) {
+      abortCapacityEviction(markerDir, claim.capacityTransaction);
     }
   } finally {
     releaseMarkerClaim(claim);

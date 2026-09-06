@@ -14,7 +14,7 @@ import { SentinelBin } from '../lib/sentinel.js';
 import {
   writeBins, removeBins, BinFiles, binLifecycleLockPath,
 } from '../lib/binstall.js';
-import { enumerateRecoveryArtifacts } from '../lib/fs-atomic.js';
+import { enumerateRecoveryArtifacts, maintainRecoveryArtifacts } from '../lib/fs-atomic.js';
 import { Scope } from '../lib/scope.js';
 
 function tmpDir() {
@@ -394,6 +394,59 @@ describe('writeBins', () => {
       assert.equal(installed.maintenance.truncated, false);
       const removed = removeBins(dst);
       assert.equal(removed.maintenance.incomplete, true);
+    } finally {
+      if (priorTest === undefined) delete process.env.CAH_TEST_ONLY;
+      else process.env.CAH_TEST_ONLY = priorTest;
+      if (priorFailure === undefined) delete process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
+      else process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = priorFailure;
+    }
+  });
+
+  it('merges root and cache maintenance visits exactly once for install and uninstall', () => {
+    const cache = join(dst, 'cache');
+    mkdirSync(cache, { recursive: true });
+
+    const baseline = writeBins(dst, src);
+    writeFileSync(join(dst, '.cah-tmp-root-maintenance'), 'root recovery\n');
+    writeFileSync(join(cache, '.cah-tmp-cache-maintenance'), 'cache recovery\n');
+
+    const installed = writeBins(dst, src);
+    const cacheVisits = maintainRecoveryArtifacts(cache).visits;
+    // The root temp is observed once by each of the three bounded recovery
+    // category scans. The cache report contributes its own visits once.
+    assert.equal(installed.maintenance.visits, baseline.maintenance.visits + 3 + cacheVisits);
+    assert.equal(new Set(installed.maintenance.recovery).size,
+      installed.maintenance.recovery.length);
+    assert.equal(new Set(installed.maintenance.unprovedTemps).size,
+      installed.maintenance.unprovedTemps.length);
+
+    const removed = removeBins(dst);
+    // After the runtime leaves are removed, the root scan sees only cache and
+    // the preserved root temp: two entries across three category scans.
+    assert.equal(removed.maintenance.visits, cacheVisits + 6);
+    assert.equal(new Set(removed.maintenance.recovery).size,
+      removed.maintenance.recovery.length);
+    assert.equal(new Set(removed.maintenance.unprovedTemps).size,
+      removed.maintenance.unprovedTemps.length);
+  });
+
+  it('reports each root and cache maintenance failure exactly once', () => {
+    const cache = join(dst, 'cache');
+    mkdirSync(cache, { recursive: true });
+    const priorTest = process.env.CAH_TEST_ONLY;
+    const priorFailure = process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
+    process.env.CAH_TEST_ONLY = '1';
+    process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = 'opendir';
+    try {
+      const installed = writeBins(dst, src);
+      assert.equal(installed.maintenance.failures.length, 4);
+      assert.equal(installed.maintenance.failures.filter((failure) => failure.path === 'cache').length, 1);
+      assert.ok(installed.maintenance.failures.every((failure) => failure.code === 'EACCES'));
+
+      const removed = removeBins(dst);
+      assert.equal(removed.maintenance.failures.length, 4);
+      assert.equal(removed.maintenance.failures.filter((failure) => failure.path === 'cache').length, 1);
+      assert.ok(removed.maintenance.failures.every((failure) => failure.code === 'EACCES'));
     } finally {
       if (priorTest === undefined) delete process.env.CAH_TEST_ONLY;
       else process.env.CAH_TEST_ONLY = priorTest;

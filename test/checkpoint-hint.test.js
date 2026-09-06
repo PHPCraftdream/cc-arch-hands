@@ -711,14 +711,58 @@ describe('cah-checkpoint-hint bin', () => {
     for (let i = 0; i < 64; i += 1) {
       writeFileSync(join(markerDir, `cah-hint-shown-${i.toString(16).padStart(64, '0')}`), `victim-${i}`);
     }
-    const victim = join(markerDir, `cah-hint-shown-${'0'.repeat(64)}`);
     const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
     const env = { CAH_TEST_ONLY: '1', CAH_TEST_ONLY_FINAL_UNLINK_FAILURE: '1' };
     const result = runHint(JSON.stringify({ session_id: 'final-unlink-failure', transcript_path: tp }), home, env);
     assert.equal(result.stdout, EXPECTED);
-    assert.equal(readFileSync(victim, 'utf8'), 'victim-0');
     assert.equal(markerExists(home, 'final-unlink-failure'), true);
+    assert.ok(readdirSync(markerDir)
+      .filter((name) => /^cah-hint-shown-[a-f0-9]{64}$/.test(name)).length <= 64);
+    assert.equal(readFileSync(join(dirname(markerDir), '.hint-markers-capacity-transaction', 'victim'), 'utf8'), 'victim-0');
     assert.equal(readdirSync(markerDir).filter((name) => name.includes('.prune-')).length, 0);
+  });
+
+  it('reconciles a capacity transaction after restart at each publication boundary', () => {
+    for (const crash of ['after-victim-rename', 'after-marker-publish', 'after-final-unlink']) {
+      const home = isolatedHome();
+      const markerDir = cacheDir(home);
+      mkdirSync(markerDir, { recursive: true });
+      for (let i = 0; i < 64; i += 1) {
+        writeFileSync(join(markerDir, `cah-hint-shown-${i.toString(16).padStart(64, '0')}`), `victim-${i}`);
+      }
+      const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+      const sessionId = `capacity-restart-${crash}`;
+      const crashed = runHint(JSON.stringify({ session_id: sessionId, transcript_path: tp }), home, {
+        CAH_TEST_ONLY: '1',
+        CAH_TEST_ONLY_CAPACITY_CRASH: crash,
+      });
+      assert.notEqual(crashed.status, 0, `${crash} must leave a restart record`);
+      const recovered = runHint(JSON.stringify({ session_id: sessionId, transcript_path: tp }), home);
+      assert.ok(recovered.status === 0);
+      const markers = readdirSync(markerDir).filter((name) => /^cah-hint-shown-[a-f0-9]{64}$/.test(name));
+      const txPath = join(home, '.claude', 'cah-bin', 'cache', '.hint-markers-capacity-transaction');
+      assert.ok(markers.length <= 64, `${crash} converges marker capacity (${markers.length}), tx=${existsSync(txPath)}`);
+      assert.equal(existsSync(txPath), false);
+    }
+  });
+
+  it('directly migrates a post-sentinel current-session legacy claim beyond the scan cap', () => {
+    const home = isolatedHome();
+    const sessionId = 'post-sentinel-legacy-claim';
+    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const cache = join(home, '.claude', 'cah-bin', 'cache');
+    const markerDir = cacheDir(home);
+    mkdirSync(cache, { recursive: true });
+    mkdirSync(markerDir, { recursive: true });
+    writeFileSync(join(markerDir, '.migration-v1'), 'v1\n');
+    for (let i = 0; i < 300; i += 1) writeFileSync(join(cache, `foreign-${i}`), 'foreign');
+    const legacyClaim = join(cache, `.cah-marker-claim-cah-hint-shown-${hash}`);
+    writeClaim(legacyClaim, { pid: process.pid, token: 'legacy-live', timestamp: Date.now() });
+    const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
+    const result = runHint(JSON.stringify({ session_id: sessionId, transcript_path: tp }), home);
+    assert.equal(result.stdout, '');
+    assert.equal(existsSync(legacyClaim), false);
+    assert.equal(existsSync(join(markerDir, basename(legacyClaim))), true);
   });
 
   it('ignores a large unrelated shared cache while maintaining the owned namespace', () => {

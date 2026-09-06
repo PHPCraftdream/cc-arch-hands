@@ -428,6 +428,38 @@ describe('run install/uninstall --only bins', () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+  it('reports combined root and cache maintenance failures once on install and uninstall', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
+    const priorTest = process.env.CAH_TEST_ONLY;
+    const priorFailure = process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
+    try {
+      withHome(home, () => {
+        const binDir = join(home, '.claude', 'cah-bin');
+        const cache = join(binDir, 'cache');
+        mkdirSync(cache, { recursive: true });
+        writeFileSync(join(binDir, '.cah-tmp-root-cli'), 'root recovery\n');
+        writeFileSync(join(cache, '.cah-tmp-cache-cli'), 'cache recovery\n');
+        process.env.CAH_TEST_ONLY = '1';
+        process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = 'opendir';
+
+        const installed = captureStdout(() => assert.equal(run(['install', '--only', 'bins']), 0));
+        const installCacheFailures = installed.split(/\r?\n/)
+          .filter((line) => line === '    maintenance failure: EACCES cache');
+        assert.equal(installCacheFailures.length, 1);
+
+        const removed = captureStdout(() => assert.equal(run(['uninstall', '--only', 'bins']), 0));
+        const uninstallCacheFailures = removed.split(/\r?\n/)
+          .filter((line) => line === '    maintenance failure: EACCES cache');
+        assert.equal(uninstallCacheFailures.length, 1);
+      });
+    } finally {
+      if (priorTest === undefined) delete process.env.CAH_TEST_ONLY;
+      else process.env.CAH_TEST_ONLY = priorTest;
+      if (priorFailure === undefined) delete process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
+      else process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = priorFailure;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
   it('propagates generic command maintenance failures to the CLI report', () => {
     const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
     const priorTest = process.env.CAH_TEST_ONLY;
