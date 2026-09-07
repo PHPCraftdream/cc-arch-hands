@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { makeInterlock } from '../test-support/interlocks.js';
+import { fileURLToPath } from 'node:url';
+import { makeInterlock, STAGE_NAMES } from '../test-support/interlocks.js';
 
 const fixtures = new Set();
 
@@ -75,5 +76,38 @@ describe('interlock argument parser', () => {
     const { fired, threw } = rendezvousFires('before', ['lease-reclaim', 'before']);
     assert.equal(threw, null);
     assert.equal(fired, false, "a declared stage must be consumed as the stage, not leak into candidates");
+  });
+
+  it('keeps STAGE_NAMES in lockstep with the production stage literals', () => {
+    // An undeclared stage silently becomes a phase-agnostic rendezvous
+    // candidate that fires at every unrelated call site using the same stage,
+    // so the declared set must track the literals production actually passes.
+    // Every current call site is single-line, so a bounded same-line argument
+    // scan is exact today; if a call site ever spans lines this test fails on
+    // the resulting set mismatch and the scan must be extended with it.
+    const root = dirname(dirname(fileURLToPath(import.meta.url)));
+    const callSiteRe = /testInterlock(?:\s*\?.\s*)?\(([^)\n]*)\)/g;
+    const literalRe = /^'([^']+)'$|^"([^"]+)"$/;
+    const found = new Set();
+    const visit = (directory) => {
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        if (entry.isDirectory()) visit(path);
+        else if (entry.isFile() && entry.name.endsWith('.js')) {
+          for (const match of readFileSync(path, 'utf8').matchAll(callSiteRe)) {
+            const args = match[1].split(',');
+            const literal = args.length > 1 ? literalRe.exec(args[1].trim()) : null;
+            if (literal) found.add(literal[1] ?? literal[2]);
+          }
+        }
+      }
+    };
+    visit(join(root, 'lib'));
+    visit(join(root, 'bin'));
+    assert.deepEqual(
+      [...found].sort(),
+      [...STAGE_NAMES].sort(),
+      'STAGE_NAMES must exactly match the testInterlock() stage literals in lib/ and bin/',
+    );
   });
 });

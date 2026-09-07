@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
 import { spawn } from 'node:child_process';
+import { Worker } from 'node:worker_threads';
 import { basename, join } from 'node:path';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,6 +18,22 @@ function spinWait(ms) {
   const until = Date.now() + ms;
   while (Date.now() < until) { /* synchronous settle */ }
 }
+
+// Restores a sabotaged fence directory's mode after a fixed delay, from an
+// independent thread that keeps running while the test thread is blocked
+// inside the library's synchronous retry loops.
+const RESTORE_MODE_WORKER_SOURCE = `
+const { chmodSync } = require('node:fs');
+const { workerData } = require('node:worker_threads');
+const deadline = Date.now() + workerData.delayMs;
+(function poll() {
+  if (Date.now() >= deadline) {
+    try { chmodSync(workerData.fenceDir, workerData.mode); } catch { /* removed concurrently */ }
+    return;
+  }
+  setTimeout(poll, 5);
+})();
+`;
 
 // Windows refuses to rename a directory that a live child process holds as
 // its CWD (EBUSY). Other platforms rename it freely, so the repro below can
@@ -221,27 +238,37 @@ describe('lease release recovery budget', () => {
   });
 
   it('bounds a fully-contended release to the documented ceiling and disposes of the spent fence', function () {
-    if (process.platform !== 'win32') {
-      // POSIX has no portable way to make unlinkSync fail with a TRANSIENT
-      // code for a sustained window inside the removal and disposal shares.
-      return this.skip('platform does not make unlinkSync of a directory fail transiently');
-    }
     const home = mkdtempSync(join(tmpdir(), 'cah-lease-release-ceiling-'));
     fixtures.add(home);
     const leasePath = join(home, 'claim');
+    const posix = process.platform !== 'win32';
+    let fenceDir = null;
     let claimRemovals = 0;
+    let restoreWorker = null;
     const testInterlock = (phase, stage) => {
       if (phase !== 'lease-release') return;
       if (stage === 'claim-removal') {
         claimRemovals += 1;
-        if (claimRemovals === 1) {
+        if (claimRemovals !== 1) return;
+        const taken = readdirSync(home).find((name) => name.startsWith(`${basename(leasePath)}.taken-`));
+        assert.ok(taken, 'fence directory must exist at the first removal interlock');
+        fenceDir = join(home, taken);
+        if (posix) {
+          // POSIX: a read-only fence directory makes unlinkSync fail with
+          // EACCES (transient), genuinely spending the removal share. An
+          // independent worker thread restores the mode ~50ms into the
+          // disposal share (the removal share is 250ms of the documented
+          // 1250ms total), which must still converge on its own fresh budget.
+          chmodSync(fenceDir, 0o555);
+          restoreWorker = new Worker(RESTORE_MODE_WORKER_SOURCE, {
+            eval: true, workerData: { fenceDir, delayMs: 300, mode: 0o755 },
+          });
+        } else {
           // Replace owner.json with a same-named DIRECTORY: every unlink in
           // the removal share fails with EPERM (transient) until that share
           // expires, and the disposal must still converge on its own fresh share.
-          const taken = readdirSync(home).find((name) => name.startsWith(`${basename(leasePath)}.taken-`));
-          assert.ok(taken, 'fence directory must exist at the first removal interlock');
-          unlinkSync(join(home, taken, 'owner.json'));
-          mkdirSync(join(home, taken, 'owner.json'));
+          unlinkSync(join(fenceDir, 'owner.json'));
+          mkdirSync(join(fenceDir, 'owner.json'));
         }
       }
     };
@@ -249,21 +276,30 @@ describe('lease release recovery budget', () => {
     assert.notEqual(lease, null);
     if (!lease) return;
 
-    const startedAt = Date.now();
-    const released = releaseLease(lease);
-    const elapsed = Date.now() - startedAt;
-    assert.equal(released, true, 'the disposal fallback must converge on its own fresh share after the removal share is spent');
-    assert.equal(claimRemovals, 1, 'the removal is one genuine attempt, not a decorative retry loop');
-    assert.ok(
-      elapsed < RELEASE_TOTAL_WAIT_MS + 250,
-      `a fully-contended release must stay bounded by the documented ${RELEASE_TOTAL_WAIT_MS}ms ceiling, got ${elapsed}ms`,
-    );
-    const leftover = readdirSync(home).filter((name) => name.startsWith(`${basename(leasePath)}.taken-`));
-    assert.equal(leftover.length, 0, 'no stranded `.taken-` fence entry may remain beside the lease path');
+    try {
+      const startedAt = Date.now();
+      const released = releaseLease(lease);
+      const elapsed = Date.now() - startedAt;
+      assert.equal(released, true, 'the disposal fallback must converge on its own fresh share after the removal share is spent');
+      assert.equal(claimRemovals, 1, 'the removal is one genuine attempt, not a decorative retry loop');
+      if (posix) {
+        assert.ok(elapsed >= 250,
+          `the transient obstruction must genuinely spend the removal share, got ${elapsed}ms`);
+      }
+      assert.ok(
+        elapsed < RELEASE_TOTAL_WAIT_MS + 250,
+        `a fully-contended release must stay bounded by the documented ${RELEASE_TOTAL_WAIT_MS}ms ceiling, got ${elapsed}ms`,
+      );
+      const leftover = readdirSync(home).filter((name) => name.startsWith(`${basename(leasePath)}.taken-`));
+      assert.equal(leftover.length, 0, 'no stranded `.taken-` fence entry may remain beside the lease path');
 
-    const successor = acquireLease(leasePath);
-    assert.notEqual(successor, null, 'the disposed fence must not block a later same-process acquire');
-    if (successor) releaseLease(successor);
+      const successor = acquireLease(leasePath);
+      assert.notEqual(successor, null, 'the disposed fence must not block a later same-process acquire');
+      if (successor) releaseLease(successor);
+    } finally {
+      if (restoreWorker) restoreWorker.terminate();
+      try { if (fenceDir && existsSync(fenceDir)) chmodSync(fenceDir, 0o755); } catch { /* best effort */ }
+    }
   });
 
   it('disposes of a reclaimed expired-claim fence holding a stray entry and lets the acquire proceed', async () => {

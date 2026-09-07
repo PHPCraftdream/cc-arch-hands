@@ -4,7 +4,7 @@ import {
   mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, mkdtempSync, statSync, lstatSync,
   symlinkSync, linkSync,
 } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +21,7 @@ import { Scope } from '../lib/scope.js';
 import {
   DEFAULT_CHILD_DEADLINE_MS, DEFAULT_WORKER_DEADLINE_MS, TERMINATION_GRACE_MS, runWorker,
 } from '../test-support/process-batches.js';
+import { stampInvocationEnv, writeTranscript } from '../test-support/stamp-helpers.js';
 
 function tmpDir() {
   return mkdtempSync(join(tmpdir(), 'cah-bin-test-'));
@@ -193,6 +194,52 @@ function runBinWorker(
   });
 }
 
+// P2 regression fixtures: a real writeFileAtomic() publisher paused at the
+// library's own write-after-proof-before-final-operation crash boundary
+// (proof + temp on disk, canonical rename not yet done), raced against the
+// installer's cache-maintenance sweep.
+const P2_INTERLOCK_PHASE = 'write-after-proof-before-final-operation';
+const RUN_COMPANION = join(dirname(fileURLToPath(import.meta.url)), '..', 'test-support', 'run-companion.js');
+
+function p2PublisherScript() {
+  const fsutilUrl = new URL('../lib/fsutil.js', import.meta.url).href;
+  const interlocksUrl = new URL('../test-support/interlocks.js', import.meta.url).href;
+  return `
+    import { writeFileAtomic, captureRegularFileSnapshot } from ${JSON.stringify(fsutilUrl)};
+    import { makeInterlock } from ${JSON.stringify(interlocksUrl)};
+    const dest = process.env.CAH_TEST_P2_DEST;
+    try {
+      writeFileAtomic(dest, 'child-payload\\n', {
+        expectedDestination: captureRegularFileSnapshot(dest).expectedDestination,
+        testInterlock: makeInterlock(),
+      });
+      process.stdout.write('PUBLISHED\\n');
+    } catch (error) {
+      process.stdout.write('FAILED:' + (error.code || '') + ':' + error.message + '\\n');
+      process.exit(3);
+    }
+  `;
+}
+
+function spawnPausedPublisher(dest, interlockBase) {
+  const child = spawn(process.execPath, ['--input-type=module', '-e', p2PublisherScript()], {
+    env: {
+      ...process.env,
+      HOME: dirname(dest), USERPROFILE: dirname(dest),
+      CAH_TEST_ONLY: '1',
+      CAH_TEST_P2_DEST: dest,
+      CAH_TEST_ONLY_OWNER_INTERLOCK: interlockBase,
+      CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: P2_INTERLOCK_PHASE,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  const exited = new Promise((resolve) => child.once('close', (code) => resolve({ code, stdout })));
+  return { child, exited };
+}
+
 describe('writeBins', () => {
   let src, dst;
   beforeEach(() => {
@@ -204,6 +251,94 @@ describe('writeBins', () => {
     rmSync(src, { recursive: true, force: true });
     rmSync(dst, { recursive: true, force: true });
     rmSync(binLifecycleLockPath(dst), { recursive: true, force: true });
+  });
+
+  it('does not sweep a publication fence whose publisher is paused mid-write', async () => {
+    const stateDir = join(dst, 'cache', 'stamp-state');
+    mkdirSync(stateDir, { recursive: true });
+    const dest = join(stateDir, 'last-stamp.json.session-p2race.json');
+    writeFileSync(dest, 'ORIGINAL\n');
+    const interlockBase = join(dst, 'p2-live-publisher-interlock');
+    const { exited } = spawnPausedPublisher(dest, interlockBase);
+    await waitForPath(`${interlockBase}.ready`, 60000);
+    const result = writeBins(dst, src);
+    writeFileSync(`${interlockBase}.go`, 'go');
+    const { code, stdout } = await exited;
+    assert.equal(code, 0, `the paused publisher must complete its write, got: ${stdout}`);
+    assert.equal(stdout, 'PUBLISHED\n');
+    assert.equal(readFileSync(dest, 'utf8'), 'child-payload\n',
+      'the canonical destination must receive the publisher payload');
+    assert.equal((result.maintenance?.swept || []).some((p) => p.includes('stamp-state')), false,
+      `a live publisher's fence must be preserved, not swept: ${JSON.stringify(result.maintenance?.swept)}`);
+  });
+
+  it('still recovers a publication fence whose publisher crashed at the same boundary', async () => {
+    const stateDir = join(dst, 'cache', 'stamp-state');
+    mkdirSync(stateDir, { recursive: true });
+    const dest = join(stateDir, 'last-stamp.json.session-p2crash.json');
+    writeFileSync(dest, 'ORIGINAL\n');
+    const interlockBase = join(dst, 'p2-crashed-publisher-interlock');
+    const { child, exited } = spawnPausedPublisher(dest, interlockBase);
+    await waitForPath(`${interlockBase}.ready`, 60000);
+    child.kill('SIGKILL');
+    await exited;
+    // The proof's createdAtMs must pass the 1000 ms fence-staleness check so
+    // recovery treats the fence as genuinely abandoned.
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    const result = writeBins(dst, src);
+    assert.ok((result.maintenance?.swept || []).some((p) => p.includes('stamp-state')
+      && p.endsWith('.cah-owned-publish')),
+      `the crashed publisher's fence must still be recovered: ${JSON.stringify(result.maintenance)}`);
+    assert.equal(readFileSync(dest, 'utf8'), 'ORIGINAL\n',
+      'recovering an unpublished temp must not touch the canonical destination');
+  });
+
+  it('a concurrent install does not drop the stamp of a paused cah-stamp child', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-bin-p2-e2e-'));
+    const stateDir = join(dst, 'cache', 'stamp-state');
+    mkdirSync(stateDir, { recursive: true });
+    const transcript = writeTranscript(home, 'Opus 5', 1000);
+    const interlockBase = join(dst, 'p2-e2e-stamp-interlock');
+    const invocation = stampInvocationEnv({
+      CAH_STAMP_HINT_HOME: home,
+      CAH_STAMP_THROTTLE_PATH: join(dst, 'cache', 'last-stamp.json'),
+      CAH_TEST_ONLY: '1',
+      CAH_TEST_ONLY_OWNER_INTERLOCK: interlockBase,
+      CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: P2_INTERLOCK_PHASE,
+    });
+    const child = spawn(process.execPath, [RUN_COMPANION, 'stamp'], {
+      env: invocation.env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    const closed = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`stamp child did not exit; stdout=${stdout} stderr=${stderr}`)), 30000);
+      child.once('close', (code) => { clearTimeout(timer); resolve(code); });
+    });
+    child.stdin.end(JSON.stringify({
+      session_id: 'p2-e2e-race', hook_event_name: 'Stop', transcript_path: transcript,
+    }));
+    try {
+      await waitForPath(`${interlockBase}.ready`, 60000);
+      const result = writeBins(dst, src);
+      writeFileSync(`${interlockBase}.go`, 'go');
+      const code = await closed;
+      assert.equal(code, 0, `the stamp child must exit cleanly, stdout=${stdout} stderr=${stderr}`);
+      const line = stdout.split(/\r?\n/).find((entry) => entry.includes('systemMessage'));
+      assert.ok(line, `the stamp must not be dropped, stdout=${JSON.stringify(stdout)}`);
+      const envelope = JSON.parse(line);
+      assert.match(envelope.systemMessage, /\d{2}:\d{2}/);
+      assert.equal((result.maintenance?.swept || []).some((p) => p.includes('stamp-state')), false,
+        `the install must not sweep the stamp child's in-flight fence: ${JSON.stringify(result.maintenance?.swept)}`);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      child.kill('SIGKILL');
+    }
   });
 
   it('copies every bin file mirroring bin/ + lib/ structure', () => {

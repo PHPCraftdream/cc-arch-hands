@@ -405,6 +405,48 @@ describe('run install/uninstall --only bins', () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+  it('surfaces maintenance-swept recovery artifacts in the install report', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
+    try {
+      withHome(home, () => {
+        const binDir = join(home, '.claude', 'cah-bin');
+        const cache = join(binDir, 'cache');
+        mkdirSync(cache, { recursive: true });
+        // An empty removal reservation is provably ours: maintenance sweeps
+        // it, and the destructive action must be visible in the report.
+        mkdirSync(join(cache, 'crashed.cah-owned-remove'));
+
+        const installed = captureStdout(() => {
+          assert.equal(run(['install', '--only', 'bins']), 0);
+        });
+        assert.match(installed, /maintenance: visits \d+, recovery \d+, temps \d+, swept 1/);
+        assert.match(installed, /maintenance swept: cache[\\/]crashed\.cah-owned-remove/);
+        assert.ok(!existsSync(join(cache, 'crashed.cah-owned-remove')),
+          'the empty reservation must be swept');
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+  it('reports unproved crash temps inside cache/rate-context through install maintenance', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
+    try {
+      withHome(home, () => {
+        const rateContext = join(home, '.claude', 'cah-bin', 'cache', 'rate-context');
+        mkdirSync(rateContext, { recursive: true });
+        writeFileSync(join(rateContext, '.cah-tmp-crashed-rate'), 'unproved crash leftover\n');
+
+        const installed = captureStdout(() => {
+          assert.equal(run(['install', '--only', 'bins']), 0);
+        });
+        assert.match(installed, /recovery: cache[\\/]rate-context[\\/]\.cah-tmp-crashed-rate/);
+        assert.ok(existsSync(join(rateContext, '.cah-tmp-crashed-rate')),
+          'unproved cache temp must be preserved');
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
   it('warns but does not fail when cache maintenance cannot enumerate', () => {
     const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
     const priorTest = process.env.CAH_TEST_ONLY;
@@ -1070,6 +1112,28 @@ describe('probe recovery guidance', () => {
       assert.match(error, new RegExp(`fix the JSON in ${settingsPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
       assert.doesNotMatch(error, /unexpected error/);
       assert.match(error, /then retry start[.]/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('status reports ordinary filesystem errors like start and stop, not as unexpected', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-probe-cli-status-eisdir-'));
+    const claude = join(home, '.claude');
+    try {
+      mkdirSync(claude, { recursive: true });
+      // settings.json as a DIRECTORY: readFileSync fails with EISDIR before
+      // any JSON parsing, so the generic scoped fallback (not the
+      // MalformedSettingsError branch) must handle it.
+      mkdirSync(join(claude, 'settings.json'));
+
+      let rc;
+      const error = withHome(home, () => captureStderr(() => {
+        rc = run(['probe', 'statusline', 'status']);
+      }));
+      assert.equal(rc, 1);
+      assert.match(error, /cah probe status: EISDIR/);
+      assert.doesNotMatch(error, /unexpected error/);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

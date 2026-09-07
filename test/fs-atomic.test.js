@@ -6,7 +6,8 @@ import {
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
-  captureRegularFileSnapshot, enumerateRecoveryArtifacts, maintainRecoveryArtifacts, removeOwnedRegularFile,
+  captureRegularFileSnapshot, enumerateRecoveryArtifacts, isQuarantineName, isQuarantinePath,
+  maintainRecoveryArtifacts, removeOwnedRegularFile,
 } from '../lib/fs-atomic.js';
 
 describe('empty atomic-removal reservations', () => {
@@ -100,5 +101,14 @@ describe('lease-quarantine recovery artifacts', () => {
       if (priorFailure === undefined) delete process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
       else process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = priorFailure;
     }
+  });
+
+  it('recognizes the lease-quarantine namespace as a recovery marker', () => {
+    // The predicates and describeRecoveryArtifact() must agree about what
+    // the string means, or orphan sweeps treat a recovery namespace as user
+    // data.
+    assert.equal(isQuarantineName('.cah-lease-quarantine'), true);
+    assert.equal(isQuarantinePath(join('x', '.cah-lease-quarantine', 'claim.taken-1-a')), true);
+    assert.equal(isQuarantineName('plain-name'), false);
   });
 });

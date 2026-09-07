@@ -3,7 +3,9 @@ import { lstatSync, writeFileSync } from 'node:fs';
 // Every stage name used by the codebase's testInterlock(phase, stage, ...)
 // call sites (verified by grep across lib/): 'before', 'vacancy',
 // 'claim-removal' in lib/lease-lock.js, and 'after' in lib/marker-capacity-ops.js.
-const STAGE_NAMES = new Set(['before', 'vacancy', 'claim-removal', 'after']);
+// Exported for test/interlocks.test.js, which asserts this set stays in
+// lockstep with the stage literals production actually passes.
+export const STAGE_NAMES = new Set(['before', 'vacancy', 'claim-removal', 'after']);
 
 // Test-only synchronization. Production modules receive this callback as an
 // explicit option; no hook protocol or test environment variables are part of
