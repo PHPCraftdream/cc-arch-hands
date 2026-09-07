@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import {
   copyFileSync, existsSync, mkdirSync, mkdtempSync as rawMkdtempSync, readdirSync, readFileSync,
-  unlinkSync, writeFileSync, rmSync, utimesSync,
+  renameSync, unlinkSync, writeFileSync, rmSync, utimesSync,
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -29,6 +29,32 @@ function mkdtempSync(...args) {
   const path = rawMkdtempSync(...args);
   markerFixtures.add(path);
   return path;
+}
+
+function spinUntil(ms) {
+  const until = Date.now() + ms;
+  while (Date.now() < until) { /* synchronous settle */ }
+}
+
+// Windows refuses to rename a directory that a live child process holds as
+// its CWD (EBUSY). Other platforms rename it freely, so the CWD-busy repro
+// can only be built where this probe fails to rename.
+async function renameBlockedWhileChildHoldsCwd() {
+  const probe = mkdtempSync(join(tmpdir(), 'cah-cwd-probe-'));
+  markerFixtures.add(`${probe}-moved`);
+  const child = spawnMarker(process.execPath, ['-e', 'setTimeout(() => {}, 120)'], {
+    cwd: probe, stdio: 'ignore',
+  });
+  spinUntil(60);
+  let blocked = false;
+  try {
+    renameSync(probe, `${probe}-moved`);
+    renameSync(`${probe}-moved`, probe);
+  } catch {
+    blocked = true;
+  }
+  await new Promise((resolve) => child.once('exit', resolve));
+  return blocked;
 }
 
 function spawnMarker(...args) {
@@ -1033,6 +1059,56 @@ describe('legacy claim migration lease release', () => {
       testLeaseEnv: 'CAH_STAMP_OWNER_MAX_LEASE_MS',
     });
     assert.notEqual(lock, null);
+    if (lock) releaseLease(lock);
+  });
+
+  it('retries a transiently stuck target-claim release so the next acquire succeeds', async function () {
+    if (!(await renameBlockedWhileChildHoldsCwd())) {
+      return this.skip('platform does not block rename of a directory held as a child process CWD');
+    }
+    const home = mkdtempSync(join(tmpdir(), 'marker-state-stall-'));
+    const stateDir = join(home, 'stamp-state');
+    const sessionId = 'stamp-migration-release-stall';
+    const hash = sessionHash(sessionId);
+    const stateName = `last-stamp.json.session-${hash}.json`;
+    const lockName = `${stateName}.lock`;
+    const sourceLock = join(home, lockName);
+    const targetLock = join(stateDir, lockName);
+    writeClaimOwner(targetLock, Date.now() - 60_000);
+    writeClaimOwner(sourceLock, Date.now());
+    assertSourceWins(sourceLock, targetLock);
+
+    // The target claim's release runs under the 'legacy-claim-reclaim-release'
+    // interlock phase. Hold the target lock directory as a live child's CWD
+    // from that moment: the release fence rename fails with EBUSY until the
+    // child exits, so the release only succeeds when it is retried.
+    let child = null;
+    const result = migrateLegacyStateFiles({
+      prefix: 'last-stamp.json.session-', namespace: 'stamp-state', namespaceDir: stateDir,
+      home, sessionId, stateName, lockName, roots: [home],
+      ttlMs: 24 * 60 * 60 * 1000, claimTtlMs: 30_000, maxSessions: 64, scanCap: 200,
+      ownerTestEnv: 'CAH_STAMP_OWNER_MAX_LEASE_MS',
+      testInterlock: (phase) => {
+        if (phase === 'legacy-claim-reclaim-release' && child === null) {
+          child = spawnMarker(process.execPath, ['-e', 'setTimeout(() => {}, 400)'], {
+            cwd: targetLock, stdio: 'ignore',
+          });
+          spinUntil(50);
+        }
+      },
+    });
+
+    assert.notEqual(child, null, 'target claim release must have been reached');
+    assert.equal(result?.blocked, false, 'migration must recover once the transient contention clears');
+    const token = randomUUID();
+    const nowMs = Date.now();
+    const lock = acquireLease(targetLock, {
+      nowMs, owner: { pid: process.pid, token, nonce: token, timestamp: nowMs, startedAt: nowMs },
+      staleAfterMs: 30_000, fenceSuffix: '.taken-',
+      interlockPhase: 'lock-reclaim', releaseInterlockPhase: 'lock-release',
+      testLeaseEnv: 'CAH_STAMP_OWNER_MAX_LEASE_MS',
+    });
+    assert.notEqual(lock, null, 'the re-acquire after migration must not see a stranded live-owner lease');
     if (lock) releaseLease(lock);
   });
 

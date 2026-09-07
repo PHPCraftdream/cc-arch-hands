@@ -11,7 +11,6 @@ import {
 } from './process-batches.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const BIN = join(__dirname, '..', 'bin', 'cah-stamp.js');
 const RUNNER = join(__dirname, 'run-companion.js');
 const stampFixtures = new Set();
 

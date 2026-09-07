@@ -283,4 +283,40 @@ describe('conditional atomic publication', () => {
     assert.equal(readFileSync(dest, 'utf8'), 'retry\n');
     assert.equal(existsSync(fence), false);
   });
+
+  it('keeps the original publication error when the unwind abort itself throws', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-conditional-abort-'));
+    const dest = join(dir, 'leaf');
+    const tempPath = join(dir, 'temp-src');
+    writeFileSync(tempPath, 'new\n');
+    const tempSnapshot = captureRegularFileSnapshot(tempPath);
+    const fence = `${dest}.cah-owned-publish`;
+
+    process.env.CAH_TEST_ONLY = '1';
+    try {
+      assert.throws(() => publishWithFence(
+        dest, tempPath, tempSnapshot.expectedDestination.identity,
+        { exists: false, identity: null },
+        {
+          testInterlock: (phase) => {
+            if (phase === 'write-before-final-rename') {
+              throw new Error('test-only forward publication failure');
+            }
+            if (phase === 'write-unwind-reinspect') {
+              process.env.CAH_TEST_ONLY_ABORT_PUBLICATION_FAILURE = '1';
+            }
+          },
+        },
+      ), (error) => error.message === 'test-only forward publication failure');
+    } finally {
+      delete process.env.CAH_TEST_ONLY_ABORT_PUBLICATION_FAILURE;
+      delete process.env.CAH_TEST_ONLY;
+    }
+
+    // A throwing abort counts as attempted: the caller's original error must
+    // surface, not a replacement from the unwind, and no recovery-required
+    // error may take its place either.
+    assert.equal(existsSync(tempPath), true, 'a throwing abort must not have removed the temp');
+    assert.equal(existsSync(fence), true, 'a throwing abort must not have cleaned the fence');
+  });
 });

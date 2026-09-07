@@ -101,7 +101,7 @@ never exposed before its complete mirrored dependency chain is present.
 | `bin/cah-status-probe.js` | diagnostic statusLine bin: captures raw envelopes for `cah probe` |
 | `lib/cli.js` | CLI dispatch, arg parsing (`node:util parseArgs`), presentation |
 | `lib/manifest.js` | `AllModelCommands` registry + `AllCodexAgents` registry + `AllSkills` list |
-| `lib/sentinel.js` | Sentinel constants, `classifyContent`, `isOurs` |
+| `lib/sentinel.js` | Sentinel constants, `classifyContent` |
 | `lib/scope.js` | `Scope` class, `resolve*Dir()`, strict-mode guard |
 | `lib/templates.js` | Bundled / disk template abstraction, `skillTree` walker |
 | `lib/fsutil.js` | Read/list/prune helpers plus compatibility re-exports for filesystem primitives |

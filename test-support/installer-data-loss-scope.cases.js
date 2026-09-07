@@ -516,7 +516,7 @@ describe('strict scope', { concurrency: false }, () => {
     assert.equal(scope.resolveCommandsDir(), join(dir, '.claude', 'commands'));
   });
 
-  it('.claude exists as a file, not a dir Ã¢â‚¬â€ strict refuses', () => {
+  it('.claude exists as a file, not a dir — strict refuses', () => {
     const dir = tmpDir();
     writeFileSync(join(dir, '.claude'), 'not a dir');
     const scope = new Scope({ strict: true, cwd: dir });

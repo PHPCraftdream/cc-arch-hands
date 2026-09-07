@@ -184,8 +184,6 @@ function removeStampSidecar(sidecar, expected, currentLease, nowMs, phase, testI
 }
 
 function pruneStampSidecars(path, nowMs, lease, testInterlock = null) {
-  const stateDir = stampNamespace(path);
-  const prefix = basename(path) + STAMP_STATE_PREFIX;
   // Partial recovery is useful progress; the bounded sidecar scan below also
   // handles known stale records. Incomplete scans only suppress capacity
   // decisions, never safe cleanup of entries already observed.

@@ -427,7 +427,7 @@ describe('removeModelAgents', { concurrency: false }, () => {
     // Pre-0.2.0 file at agents/ao2m.md with the crush-era sentinel.
     const legacyCrush = join(agentsDir, 'ao2m.md');
     writeFileSync(legacyCrush, `crush legacy\n${LegacyModelAgent}\n`);
-    // Foreign a-prefixed file â€” must not be touched.
+    // Foreign a-prefixed file — must not be touched.
     const foreignA = join(agentsDir, 'ao2l.md');
     writeFileSync(foreignA, 'someone else');
 
