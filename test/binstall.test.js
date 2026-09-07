@@ -556,6 +556,28 @@ describe('writeBins', () => {
       removed.maintenance.unprovedTemps.length);
   });
 
+  it('reports lease quarantines produced inside the cah-owned cache sub-namespaces', () => {
+    const cache = join(dst, 'cache');
+    const stampQuarantine = join(cache, 'stamp-state', '.cah-lease-quarantine', 'last-stamp.json.lock.taken-1-a');
+    const markerQuarantine = join(cache, 'update-markers', '.cah-lease-quarantine', 'claim.taken-2-b');
+    mkdirSync(stampQuarantine, { recursive: true });
+    writeFileSync(join(stampQuarantine, 'stray'), 'stray');
+    mkdirSync(markerQuarantine, { recursive: true });
+    writeFileSync(join(markerQuarantine, 'owner.json'), 'displaced\n');
+
+    const installed = writeBins(dst, src);
+    assert.ok(installed.maintenance.recovery.includes('cache/stamp-state/.cah-lease-quarantine'),
+      'stamp-state quarantine root must surface in the install maintenance report');
+    assert.ok(installed.maintenance.recovery.includes('cache/update-markers/.cah-lease-quarantine'),
+      'update-markers quarantine root must surface in the install maintenance report');
+    assert.equal(new Set(installed.maintenance.recovery).size,
+      installed.maintenance.recovery.length, 'recovery paths must stay unique');
+
+    const removed = removeBins(dst);
+    assert.ok(removed.maintenance.recovery.includes('cache/stamp-state/.cah-lease-quarantine'));
+    assert.ok(removed.maintenance.recovery.includes('cache/update-markers/.cah-lease-quarantine'));
+  });
+
   it('reports each root and cache maintenance failure exactly once', () => {
     const cache = join(dst, 'cache');
     mkdirSync(cache, { recursive: true });

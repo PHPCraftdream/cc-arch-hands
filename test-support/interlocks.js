@@ -1,5 +1,10 @@
 import { lstatSync, writeFileSync } from 'node:fs';
 
+// Every stage name used by the codebase's testInterlock(phase, stage, ...)
+// call sites (verified by grep across lib/): 'before', 'vacancy',
+// 'claim-removal' in lib/lease-lock.js, and 'after' in lib/marker-capacity-ops.js.
+const STAGE_NAMES = new Set(['before', 'vacancy', 'claim-removal', 'after']);
+
 // Test-only synchronization. Production modules receive this callback as an
 // explicit option; no hook protocol or test environment variables are part of
 // the installed runtime.
@@ -22,8 +27,13 @@ export function makeInterlock(env = process.env) {
   const interlock = (...args) => {
     if (env.CAH_TEST_ONLY !== '1') return;
     const phase = args[0];
-    const stage = typeof args[1] === 'string' && args[1] !== '' ? args[1] : 'before';
-    const aliases = args.slice(2);
+    // The protocol has two shapes: (phase, stage, ...aliases) with stage one of
+    // the declared stage names, and (phase, ...aliases) with no stage. args[1]
+    // is a stage only when it names one; otherwise it is the first alias and
+    // must stay a rendezvous candidate.
+    const isStage = typeof args[1] === 'string' && STAGE_NAMES.has(args[1]);
+    const stage = isStage ? args[1] : 'before';
+    const aliases = isStage ? args.slice(2) : args.slice(1);
     const candidates = [phase, ...aliases];
     const fsPhases = String(env.CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE || '')
       .split(',').filter(Boolean);

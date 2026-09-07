@@ -6,7 +6,7 @@ import {
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
-  captureRegularFileSnapshot, maintainRecoveryArtifacts, removeOwnedRegularFile,
+  captureRegularFileSnapshot, enumerateRecoveryArtifacts, maintainRecoveryArtifacts, removeOwnedRegularFile,
 } from '../lib/fs-atomic.js';
 
 describe('empty atomic-removal reservations', () => {
@@ -41,5 +41,64 @@ describe('empty atomic-removal reservations', () => {
     const second = maintainRecoveryArtifacts(dir);
     assert.equal(second.swept.includes(occupied), false);
     assert.equal(readFileSync(join(occupied, 'foreign'), 'utf8'), 'keep\n');
+  });
+});
+
+describe('lease-quarantine recovery artifacts', () => {
+  it('classifies lease-quarantine roots as displaced, empty, or regular-file', () => {
+    const base = mkdtempSync(join(tmpdir(), 'cah-lease-quarantine-'));
+    const displaced = join(base, 'displaced', '.cah-lease-quarantine');
+    mkdirSync(join(displaced, 'claim.taken-1-a'), { recursive: true });
+    writeFileSync(join(displaced, 'claim.taken-1-a', 'stray'), 'stray');
+    mkdirSync(join(base, 'empty', '.cah-lease-quarantine'), { recursive: true });
+    mkdirSync(join(base, 'plain'), { recursive: true });
+    writeFileSync(join(base, 'plain', '.cah-lease-quarantine'), 'not a directory');
+
+    const expected = new Map([
+      ['displaced', true],
+      ['empty', false],
+      ['plain', false],
+    ]);
+    for (const [name, expectDisplaced] of expected) {
+      const artifacts = enumerateRecoveryArtifacts(join(base, name));
+      const found = artifacts.filter((artifact) => artifact.kind === 'lease-quarantine');
+      assert.equal(found.length, 1, `${name}: exactly one lease-quarantine artifact expected`);
+      assert.equal(found[0].path, join(base, name, '.cah-lease-quarantine'));
+      assert.equal(found[0].displacedData, expectDisplaced, `${name}: unexpected displacedData`);
+      assert.equal(found[0].inspectionIncomplete, false, `${name}: must be fully inspected`);
+    }
+
+    const report = maintainRecoveryArtifacts(join(base, 'displaced'));
+    assert.deepEqual(report.swept, [], 'a lease-quarantine namespace is never swept');
+    assert.ok(report.recovery.includes(displaced), 'a displaced quarantine root must be reported as recovery');
+    assert.equal(report.incomplete, false);
+  });
+
+  it('reports an uninspectable quarantine root as inspection-incomplete instead of dropping it', () => {
+    const base = mkdtempSync(join(tmpdir(), 'cah-lease-quarantine-eacces-'));
+    const root = join(base, '.cah-lease-quarantine');
+    mkdirSync(root);
+    const priorTest = process.env.CAH_TEST_ONLY;
+    const priorFailure = process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
+    process.env.CAH_TEST_ONLY = '1';
+    process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = 'empty';
+    try {
+      const artifacts = enumerateRecoveryArtifacts(base);
+      const found = artifacts.filter((artifact) => artifact.kind === 'lease-quarantine');
+      assert.equal(found.length, 1, 'the artifact must be reported, not dropped');
+      assert.equal(found[0].inspectionIncomplete, true);
+      assert.equal(found[0].displacedData, false);
+      assert.equal(artifacts.incomplete, true);
+      assert.ok(artifacts.failures.some((failure) => failure.path === root));
+
+      const report = maintainRecoveryArtifacts(base);
+      assert.ok(report.recovery.includes(root), 'an inspection-incomplete root stays in the recovery report');
+      assert.equal(report.incomplete, true);
+    } finally {
+      if (priorTest === undefined) delete process.env.CAH_TEST_ONLY;
+      else process.env.CAH_TEST_ONLY = priorTest;
+      if (priorFailure === undefined) delete process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
+      else process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = priorFailure;
+    }
   });
 });

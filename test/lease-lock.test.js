@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { basename, join } from 'node:path';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { acquireLease, releaseLease } from '../lib/lease-lock.js';
+import { acquireLease, leaseOwned, releaseLease, RELEASE_TOTAL_WAIT_MS } from '../lib/lease-lock.js';
 
 const fixtures = new Set();
 
@@ -94,25 +94,22 @@ describe('lease release recovery budget', () => {
     assert.equal(existsSync(leasePath), false, 'lease directory must be removed after a successful release');
   });
 
-  it('resumes removal from the fence when the claim path removal fails after takeFence', () => {
+  it('converges through terminal disposal when the fence removal is rejected', () => {
     const home = mkdtempSync(join(tmpdir(), 'cah-lease-fence-resume-'));
     fixtures.add(home);
     const leasePath = join(home, 'claim');
-    let fenceDir = null;
     let claimRemovals = 0;
     const testInterlock = (phase, stage) => {
       if (phase !== 'lease-release') return;
       if (stage === 'vacancy') {
         // The fence rename just happened, so lease.path is vacant and exactly
         // one `.taken-` entry sits beside it. Contaminate the fence so the
-        // first removal attempt fails the stray-entry guard.
+        // single removal attempt fails the stray-entry guard.
         const taken = readdirSync(home).find((name) => name.startsWith(`${basename(leasePath)}.taken-`));
         assert.ok(taken, 'fence directory must exist after the vacancy interlock');
-        fenceDir = join(home, taken);
-        writeFileSync(join(fenceDir, 'stray'), 'stray');
+        writeFileSync(join(home, taken, 'stray'), 'stray');
       } else if (stage === 'claim-removal') {
         claimRemovals += 1;
-        if (claimRemovals === 2) unlinkSync(join(fenceDir, 'stray'));
       }
     };
     const lease = acquireLease(leasePath, { testInterlock });
@@ -120,14 +117,20 @@ describe('lease release recovery budget', () => {
     if (!lease) return;
 
     const released = releaseLease(lease);
-    assert.equal(released, true, 'release must retry removal from the fence, not re-enter from the vacant lease.path and strand the fence');
-    assert.ok(claimRemovals > 1, 'removal must actually be retried at the fence for this repro to be meaningful');
+    assert.equal(released, true, 'a rejected fence removal must converge through terminal disposal at the fence');
+    assert.equal(claimRemovals, 1, 'the removal must run at the fence exactly once; the retry loop is gone by design');
+    const quarantineRoot = join(home, '.cah-lease-quarantine');
+    const quarantined = readdirSync(quarantineRoot)
+      .find((name) => name.startsWith(`${basename(leasePath)}.taken-`));
+    assert.ok(quarantined, 'the rejected fence body must be quarantined beside the lease path');
+    assert.equal(readdirSync(join(quarantineRoot, quarantined)).includes('stray'), true,
+      'quarantine must preserve the fence contents that blocked the removal');
     const leftover = readdirSync(home).filter((name) => name.startsWith(`${basename(leasePath)}.taken-`));
     assert.equal(leftover.length, 0, 'no stranded fence entry may remain beside the lease path');
     assert.equal(existsSync(leasePath), false, 'lease directory must be gone after release');
 
     const successor = acquireLease(leasePath);
-    assert.notEqual(successor, null, 'a stranded fence must not block a later acquire');
+    assert.notEqual(successor, null, 'a quarantined fence must not block a later acquire');
     if (successor) releaseLease(successor);
   });
 
@@ -217,36 +220,28 @@ describe('lease release recovery budget', () => {
     if (successor) releaseLease(successor);
   });
 
-  it('recovers a transient obstruction that outlasts the first removal attempt, else quarantines the remainder', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-lease-transient-budget-'));
+  it('bounds a fully-contended release to the documented ceiling and disposes of the spent fence', function () {
+    if (process.platform !== 'win32') {
+      // POSIX has no portable way to make unlinkSync fail with a TRANSIENT
+      // code for a sustained window inside the removal and disposal shares.
+      return this.skip('platform does not make unlinkSync of a directory fail transiently');
+    }
+    const home = mkdtempSync(join(tmpdir(), 'cah-lease-release-ceiling-'));
     fixtures.add(home);
     const leasePath = join(home, 'claim');
-    let fenceDir = null;
-    let claimRemovalCalls = 0;
+    let claimRemovals = 0;
     const testInterlock = (phase, stage) => {
       if (phase !== 'lease-release') return;
-      if (stage === 'vacancy') {
-        const taken = readdirSync(home).find((name) => name.startsWith(`${basename(leasePath)}.taken-`));
-        assert.ok(taken, 'fence directory must exist after the vacancy interlock');
-        fenceDir = join(home, taken);
-      } else if (stage === 'claim-removal') {
-        claimRemovalCalls += 1;
-        if (claimRemovalCalls === 1) {
-          if (process.platform === 'win32') {
-            // Windows: make owner.json un-unlinkable with a TRANSIENT code
-            // (EPERM) for the whole first attempt, so the removal budget
-            // expires before the terminal disposal.
-            unlinkSync(join(fenceDir, 'owner.json'));
-            mkdirSync(join(fenceDir, 'owner.json'));
-          } else {
-            // POSIX: a read-only fence directory makes unlinkSync fail with
-            // EACCES (transient) until the mode is restored below, which
-            // happens only at the second attempt — i.e. after the first
-            // attempt has burned its whole share of the budget.
-            chmodSync(fenceDir, 0o555);
-          }
-        } else if (claimRemovalCalls === 2 && process.platform !== 'win32') {
-          chmodSync(fenceDir, 0o755);
+      if (stage === 'claim-removal') {
+        claimRemovals += 1;
+        if (claimRemovals === 1) {
+          // Replace owner.json with a same-named DIRECTORY: every unlink in
+          // the removal share fails with EPERM (transient) until that share
+          // expires, and the disposal must still converge on its own fresh share.
+          const taken = readdirSync(home).find((name) => name.startsWith(`${basename(leasePath)}.taken-`));
+          assert.ok(taken, 'fence directory must exist at the first removal interlock');
+          unlinkSync(join(home, taken, 'owner.json'));
+          mkdirSync(join(home, taken, 'owner.json'));
         }
       }
     };
@@ -257,30 +252,45 @@ describe('lease release recovery budget', () => {
     const startedAt = Date.now();
     const released = releaseLease(lease);
     const elapsed = Date.now() - startedAt;
-    assert.equal(released, true, 'release must converge once the obstruction clears or the fence body is quarantined');
-    assert.ok(claimRemovalCalls >= 2, 'the removal loop must actually retry at the fence for this repro to be meaningful');
-    assert.ok(elapsed >= 700, `the removal budget must span the restored ~750ms window, got ${elapsed}ms`);
+    assert.equal(released, true, 'the disposal fallback must converge on its own fresh share after the removal share is spent');
+    assert.equal(claimRemovals, 1, 'the removal is one genuine attempt, not a decorative retry loop');
+    assert.ok(
+      elapsed < RELEASE_TOTAL_WAIT_MS + 250,
+      `a fully-contended release must stay bounded by the documented ${RELEASE_TOTAL_WAIT_MS}ms ceiling, got ${elapsed}ms`,
+    );
     const leftover = readdirSync(home).filter((name) => name.startsWith(`${basename(leasePath)}.taken-`));
     assert.equal(leftover.length, 0, 'no stranded `.taken-` fence entry may remain beside the lease path');
-    if (process.platform !== 'win32') {
-      // The obstruction cleared inside the budget: removal completes outright
-      // and no quarantine is needed at all.
-      assert.equal(existsSync(leasePath), false, 'lease directory must be gone after release');
-      assert.equal(existsSync(join(home, '.cah-lease-quarantine')), false,
-        'no quarantine may be created when removal ultimately succeeds');
-    } else {
-      // The obstruction (EPERM on a same-named directory) survives the budget:
-      // the fence body must be quarantined, not stranded.
-      const quarantineRoot = join(home, '.cah-lease-quarantine');
-      const quarantined = readdirSync(quarantineRoot)
-        .find((name) => name.startsWith(`${basename(leasePath)}.taken-`));
-      assert.ok(quarantined, 'the undisposed fence body must be quarantined beside the lease path');
-      assert.equal(existsSync(join(quarantineRoot, quarantined, 'owner.json')), true,
-        'quarantine must preserve the fence contents');
-    }
 
     const successor = acquireLease(leasePath);
     assert.notEqual(successor, null, 'the disposed fence must not block a later same-process acquire');
     if (successor) releaseLease(successor);
+  });
+
+  it('disposes of a reclaimed expired-claim fence holding a stray entry and lets the acquire proceed', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-lease-reclaim-stray-'));
+    fixtures.add(home);
+    const leasePath = join(home, 'claim');
+    // A genuinely dead pid, exactly the expired state the reclaim exists to clear.
+    const dead = spawn(process.execPath, ['-e', '']);
+    await new Promise((resolve) => dead.once('exit', resolve));
+    mkdirSync(leasePath);
+    writeFileSync(join(leasePath, 'owner.json'), `${JSON.stringify({
+      pid: dead.pid, token: 'reclaim-me', generation: 'reclaim-gen', timestamp: Date.now(),
+    })}\n`);
+    writeFileSync(join(leasePath, 'stray'), 'stray');
+
+    const lease = acquireLease(leasePath);
+    assert.notEqual(lease, null, 'a stray entry inside an expired claim must not fail the reclaim');
+    const leftover = readdirSync(home).filter((name) => name.startsWith(`${basename(leasePath)}.taken-`));
+    assert.equal(leftover.length, 0, 'the rejected removal must not strand a `.taken-` fence beside the claim');
+    const quarantineRoot = join(home, '.cah-lease-quarantine');
+    const quarantined = readdirSync(quarantineRoot)
+      .find((name) => name.startsWith(`${basename(leasePath)}.taken-`));
+    assert.ok(quarantined, 'the displaced expired claim must be quarantined for reporting');
+    assert.equal(readdirSync(join(quarantineRoot, quarantined)).includes('stray'), true,
+      'quarantine must preserve the stray entry that blocked the plain removal');
+    assert.equal(leaseOwned(lease), true, 'the reclaimed lease must be owned');
+    assert.equal(releaseLease(lease), true, 'the reclaimed lease must be releasable');
+    assert.equal(existsSync(leasePath), false, 'lease directory must be gone after release');
   });
 });

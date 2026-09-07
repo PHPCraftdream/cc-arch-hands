@@ -1050,4 +1050,28 @@ describe('probe recovery guidance', () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  it('start reports malformed settings JSON with a recovery hint like stop and status', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-probe-cli-start-malformed-'));
+    const claude = join(home, '.claude');
+    const settingsPath = join(claude, 'settings.json');
+    try {
+      mkdirSync(claude, { recursive: true });
+      mkdirSync(join(claude, 'cah-bin', 'bin'), { recursive: true });
+      writeFileSync(join(claude, 'cah-bin', 'bin', 'cah-status-probe.js'), 'probe bin placeholder');
+      writeFileSync(settingsPath, '{ malformed settings');
+
+      let rc;
+      const error = withHome(home, () => captureStderr(() => {
+        rc = run(['probe', 'statusline', 'start']);
+      }));
+      assert.equal(rc, 1);
+      assert.match(error, /cah probe start:/);
+      assert.match(error, new RegExp(`fix the JSON in ${settingsPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+      assert.doesNotMatch(error, /unexpected error/);
+      assert.match(error, /then retry start[.]/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
