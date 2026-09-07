@@ -15,11 +15,11 @@ import {
   writeBins, removeBins, BinFiles, binLifecycleLockPath,
   deriveBinFilePublicationOrder, getBinFileImportGraph,
 } from '../lib/binstall.js';
+import { sameRollbackState } from '../lib/binstall-repair.js';
 import { enumerateRecoveryArtifacts, maintainRecoveryArtifacts } from '../lib/fs-atomic.js';
 import { Scope } from '../lib/scope.js';
 import {
-  armWorkerDeadline, timeoutError, DEFAULT_CHILD_DEADLINE_MS, DEFAULT_WORKER_DEADLINE_MS,
-  TERMINATION_GRACE_MS,
+  DEFAULT_CHILD_DEADLINE_MS, DEFAULT_WORKER_DEADLINE_MS, TERMINATION_GRACE_MS, runWorker,
 } from '../test-support/process-batches.js';
 
 function tmpDir() {
@@ -146,8 +146,7 @@ function runBinWorker(
         process.env.CAH_TEST_ONLY_BIN_LEASE_MS = String(workerData.leaseMs);
       }
       if (workerData.hang) {
-        await new Promise(() => {});
-        return;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
       }
       if (workerData.slowClose) {
         await new Promise((resolve) => {
@@ -172,50 +171,19 @@ function runBinWorker(
       }
     })().catch((error) => { setImmediate(() => { throw error; }); });
   `;
-  return new Promise((resolvePromise, reject) => {
-    const worker = new Worker(source, {
-      eval: true,
-      workerData: {
-        dst, src, interlock, phase, operation, leaseMs, hang, slowClose, moduleUrl, hooksUrl,
-      },
-    });
-    let finishing = false;
-    let deadline;
-    let timeoutFailure = null;
-    const finish = async (callback, value) => {
-      if (finishing) return;
-      finishing = true;
-      deadline?.clear();
-      try {
-        await worker.terminate();
-        callback(value);
-      } catch (error) {
-        reject(error);
-      }
-    };
-    worker.once('message', (value) => {
-      if (!value?.__workerError) {
-        void finish(timeoutFailure ? reject : resolvePromise, timeoutFailure || value);
-        return;
-      }
-      const error = new Error(value.__workerError.message);
-      error.name = value.__workerError.name || 'Error';
-      if (value.__workerError.code) error.code = value.__workerError.code;
-      if (leaseMs !== null) void finish(resolvePromise, error);
-      else void finish(reject, error);
-    });
-    worker.once('error', (error) => void finish(reject, error));
-    worker.once('exit', (code) => {
-      if (!finishing && code !== 0) {
-        void finish(reject, new Error(`bin worker exited with code ${code}`));
-      }
-    });
-    deadline = armWorkerDeadline(worker, {
-      timeoutMs,
-      graceMs,
-      onTimeout: () => { timeoutFailure = timeoutError('binstall worker'); },
-      onForce: () => void finish(reject, timeoutFailure),
-    });
+  const worker = new Worker(source, {
+    eval: true,
+    workerData: {
+      dst, src, interlock, phase, operation, leaseMs, hang, slowClose, moduleUrl, hooksUrl,
+    },
+  });
+  return runWorker(worker, { label: 'binstall worker', timeoutMs, graceMs }).then((value) => {
+    if (!value?.__workerError) return value;
+    const error = new Error(value.__workerError.message);
+    error.name = value.__workerError.name || 'Error';
+    if (value.__workerError.code) error.code = value.__workerError.code;
+    if (leaseMs !== null) return error;
+    throw error;
   });
 }
 
@@ -717,6 +685,43 @@ describe('writeBins', () => {
       'a failed run must not report or leave a successfully usable bin tree');
     assert.ok(!existsSync(join(dst, 'lib', 'transcript-stats.js')),
       'rollback must remove leaves published by this invocation');
+  });
+
+  it('enrolls a leaf whose atomic publication commits before throwing', () => {
+    let threw = false;
+    let failure;
+    try {
+      writeBins(dst, src, {
+        testInterlock: (phase) => {
+          if (phase === 'write-after-rename' && !threw) {
+            threw = true;
+            throw new Error('test-only post-publication failure');
+          }
+        },
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    assert.equal(threw, true);
+    assert.ok(failure);
+    assert.ok(!existsSync(join(dst, 'package.json')),
+      'a committed boundary must be rolled back after its publication throws');
+    assert.ok(!existsSync(join(dst, 'bin', 'cah-status.js')),
+      'rollback must not leave an untracked committed runtime leaf');
+  });
+
+  it('does not accept content-equivalent rollback state with a corrupted mode', () => {
+    if (process.platform === 'win32') return;
+    const state = (mode) => ({
+      present: true,
+      contentDigest: 'same-content',
+      contentBytes: 12,
+      expectedDestination: { identity: { mode } },
+    });
+
+    assert.equal(sameRollbackState(state(0o640), state(0o755)), false);
+    assert.equal(sameRollbackState(state(0o755), state(0o755)), true);
   });
 
   it('keeps C during boundary rollback without a publication vacancy', async () => {
@@ -1385,6 +1390,33 @@ describe('removeBins', () => {
     assert.throws(() => removeBins(dst), /foreign managed runtime leaf.*fsutil\.js/);
     assert.equal(readFileSync(foreign, 'utf8'), 'not ours\n');
     assert.ok(existsSync(join(dst, 'bin', 'cah-status.js')), 'zero-mutation rejection must keep executables');
+  });
+
+  it('protects dependencies when an importer survives an uninstall race', () => {
+    writeBins(dst, src);
+    const importer = join(dst, 'bin', 'cah-status.js');
+    let preserved = false;
+    const result = removeBins(dst, src, {
+      testInterlock: (phase, dest) => {
+        if (phase === 'binstall-before-leaf-remove'
+            && dest === 'bin/cah-status.js' && !preserved) {
+          preserved = true;
+          rmSync(importer, { force: true });
+          writeFileSync(importer, 'foreign importer successor\n', { mode: 0o755 });
+        }
+      },
+    });
+
+    assert.equal(preserved, true);
+    assert.equal(readFileSync(importer, 'utf8'), 'foreign importer successor\n');
+    assert.ok(existsSync(join(dst, 'lib', 'transcript-stats.js')),
+      'a preserved importer must keep its direct dependency');
+    assert.ok(existsSync(join(dst, 'package.json')),
+      'a preserved importer must keep the ESM boundary');
+    assert.ok(!existsSync(join(dst, 'lib', 'update-check.js')),
+      'unrelated dependencies remain removable');
+    assert.ok(result.skipped.includes('lib/transcript-stats.js'));
+    assert.ok(result.skipped.includes('package.json'));
   });
 
   it('rejects non-regular declared leaves before removing any managed files', (t) => {

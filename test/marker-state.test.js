@@ -5,7 +5,7 @@ import {
   copyFileSync, existsSync, mkdirSync, mkdtempSync as rawMkdtempSync, readdirSync, readFileSync,
   unlinkSync, writeFileSync, rmSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   abortMarkerTransaction, compareFreshness, claimMarker, publishMarker,
@@ -171,14 +171,21 @@ function replaceWithSuccessorChild(home, markerDir, stagePath, content = 'succes
 }
 
 function stagedTransaction(markerDir) {
+  const marker = join(markerDir, `marker-${sessionHash('staged-marker')}`);
+  const victim = join(markerDir, `marker-${sessionHash('staged-victim')}`);
   return JSON.stringify({
     version: 2,
-    marker: join(markerDir, `marker-${sessionHash('staged-marker')}`),
-    victim: join(markerDir, `marker-${sessionHash('staged-victim')}`),
+    marker, victim,
     victimKey: 'victim-key', markerBeforeKey: 'absent', nonce: 'staged-nonce',
-    markerClaimPath: join(markerDir, '.staged-marker-claim'),
-    victimClaimPath: join(markerDir, '.staged-victim-claim'),
+    markerClaimPath: join(markerDir, `.cah-marker-claim-${basename(marker)}`),
+    victimClaimPath: join(markerDir, `.cah-marker-claim-${basename(victim)}`),
     capacityLeasePath: join(markerDir, '.cah-marker-capacity-marker-tests'),
+    markerClaimToken: 'staged-marker-token', sessionLeaseToken: 'staged-marker-token',
+    victimLeaseToken: 'staged-victim-token', capacityLeaseToken: 'staged-capacity-token',
+    capacityLeaseGeneration: 'staged-capacity-generation',
+    victimFenceGeneration: 'staged-capacity-generation',
+    sessionLeaseGeneration: 'staged-session-generation',
+    victimLeaseGeneration: 'staged-victim-generation',
   }) + '\n';
 }
 

@@ -34,6 +34,7 @@ import {
   PROBE_NAME,
 } from '../lib/probe.js';
 import { regularFileIdentity, sameFileIdentity } from '../lib/fsutil.js';
+import { runWorker } from '../test-support/process-batches.js';
 
 function harness() {
   const root = mkdtempSync(join(tmpdir(), 'cah-probe-'));
@@ -53,13 +54,22 @@ async function waitForPath(path) {
   }
 }
 
-function runProbeWorker(action, paths, interlock, phase, fsInterlock = null, fsPhase = null) {
+function runProbeWorker(
+  action,
+  paths,
+  interlock,
+  phase,
+  fsInterlock = null,
+  fsPhase = null,
+  { timeoutMs, graceMs, hang = false } = {},
+) {
   const probeUrl = new URL('../lib/probe.js', import.meta.url).href;
   const hooksUrl = new URL('../test-support/interlocks.js', import.meta.url).href;
   const source = `
     const { parentPort, workerData } = require('node:worker_threads');
     (async () => {
       process.env.CAH_TEST_ONLY = '1';
+      if (workerData.hang) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
       process.env.CAH_TEST_ONLY_PROBE_INTERLOCK = workerData.interlock;
       process.env.CAH_TEST_ONLY_PROBE_INTERLOCK_PHASE = workerData.phase;
       if (workerData.fsInterlock && workerData.fsPhase) {
@@ -77,13 +87,16 @@ function runProbeWorker(action, paths, interlock, phase, fsInterlock = null, fsP
       }
     })().catch((error) => { setImmediate(() => { throw error; }); });
   `;
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(source, {
-      eval: true,
-      workerData: { action, paths, interlock, phase, fsInterlock, fsPhase, probeUrl, hooksUrl },
-    });
-    worker.once('message', resolve);
-    worker.once('error', reject);
+  const worker = new Worker(source, {
+    eval: true,
+    workerData: {
+      action, paths, interlock, phase, fsInterlock, fsPhase, probeUrl, hooksUrl, hang,
+    },
+  });
+  return runWorker(worker, {
+    label: 'probe worker',
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+    ...(graceMs === undefined ? {} : { graceMs }),
   });
 }
 
@@ -316,6 +329,20 @@ describe('disableProbe', () => {
 });
 
 describe('probe concurrency', () => {
+  it('terminates a deterministically hung worker before rejecting', async () => {
+    const h = harness();
+    const started = Date.now();
+    await assert.rejects(
+      runProbeWorker('enableProbe', h, join(h.settingsPath, '..', 'hung-probe'), 'unused', null, null, {
+        timeoutMs: 50,
+        graceMs: 25,
+        hang: true,
+      }),
+      (error) => error?.code === 'ETIMEDOUT',
+    );
+    assert.ok(Date.now() - started < 2_000, 'hung worker must be bounded');
+  });
+
   it('does not overwrite a settings edit made during enable', async () => {
     const h = harness();
     const original = { type: 'command', command: 'before-edit', padding: 0 };

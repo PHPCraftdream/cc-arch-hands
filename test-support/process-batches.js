@@ -122,6 +122,62 @@ export function armWorkerDeadline(
   };
 }
 
+// A message is not completion: wait for exit/termination before settling.
+export function runWorker(
+  worker,
+  {
+    label = 'worker',
+    timeoutMs = DEFAULT_WORKER_DEADLINE_MS,
+    graceMs = TERMINATION_GRACE_MS,
+    requireMessage = true,
+  } = {},
+) {
+  return new Promise((resolve, reject) => {
+    let messageReceived = false;
+    let messageValue;
+    let exitCode = null;
+    let settled = false;
+    let timeoutFailure = null;
+    let deadline;
+
+    const finish = (error = null) => {
+      if (settled) return;
+      settled = true;
+      deadline?.clear();
+      void (async () => {
+        let terminationError = null;
+        try {
+          await worker.terminate();
+        } catch (cause) {
+          terminationError = cause;
+        }
+        if (terminationError) reject(terminationError);
+        else if (timeoutFailure) reject(timeoutFailure);
+        else if (error) reject(error);
+        else if (exitCode !== 0) reject(new Error(`${label} exited with code ${exitCode}`));
+        else if (requireMessage && !messageReceived) reject(new Error(`${label} exited without a message`));
+        else resolve(messageValue);
+      })();
+    };
+
+    worker.once('message', (value) => {
+      messageReceived = true;
+      messageValue = value;
+    });
+    worker.once('error', (error) => finish(error));
+    worker.once('exit', (code) => {
+      exitCode = code;
+      finish();
+    });
+    deadline = armWorkerDeadline(worker, {
+      timeoutMs,
+      graceMs,
+      onTimeout: () => { timeoutFailure = timeoutError(label); },
+      onForce: () => finish(),
+    });
+  });
+}
+
 export async function runConcurrentBatches(
   count,
   task,

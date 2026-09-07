@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { tmpDir, waitForPath, runSkillWorker } from './installer-test-helpers.js';
+import { runWorker } from './process-batches.js';
 import { SentinelSkill } from '../lib/sentinel.js';
 import { AllModelCommands, AllSkills } from '../lib/manifest.js';
 import { Scope, StrictMissingRootError, SKILL_MANIFEST_LEAF } from '../lib/scope.js';
@@ -296,10 +297,7 @@ describe('skill data-loss protection', { concurrency: false }, () => {
         sentinelUrl: new URL('../lib/sentinel.js', import.meta.url).href, hooksUrl,
       },
     });
-    const resultPromise = new Promise((resolve, reject) => {
-      worker.once('message', resolve);
-      worker.once('error', reject);
-    });
+    const resultPromise = runWorker(worker, { label: 'orphan prune worker' });
     await waitForPath(`${interlock}.ready`);
     const fd = openSync(orphan, 'r+');
     writeSync(fd, Buffer.from(successor), 0, Buffer.byteLength(successor), 0);

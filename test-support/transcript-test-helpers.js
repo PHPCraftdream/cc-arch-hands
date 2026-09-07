@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { runWorker } from './process-batches.js';
 
 export function isolatedDir() {
   return mkdtempSync(join(tmpdir(), 'cah-ts-'));
@@ -45,15 +46,9 @@ export function runRateCacheWorker(cachePath, nowMs, interlock) {
       setImmediate(() => { throw error; });
     });
   `;
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(source, {
-      eval: true,
-      workerData: { cachePath, interlock, nowMs, transcriptStatsUrl, hooksUrl },
-    });
-    worker.once('message', resolve);
-    worker.once('error', reject);
-    worker.once('exit', (code) => {
-      if (code !== 0) reject(new Error(`rate-cache worker exited with code ${code}`));
-    });
+  const worker = new Worker(source, {
+    eval: true,
+    workerData: { cachePath, interlock, nowMs, transcriptStatsUrl, hooksUrl },
   });
+  return runWorker(worker, { label: 'rate-cache worker' });
 }

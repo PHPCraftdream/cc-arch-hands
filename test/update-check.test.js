@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { isNewerVersion, getLatestVersion, CURRENT_VERSION } from '../lib/update-check.js';
 import { isOlderThan, mtimeMsForAge, sameDeviceIdentity, sameFileIdentity, writeFileAtomic } from '../lib/fsutil.js';
+import { runWorker } from '../test-support/process-batches.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -54,7 +55,13 @@ async function resolveWithin(promise, timeoutMs, label) {
   }
 }
 
-function runUpdateWorker(cachePath, nowMs, fetchSpecPath, env = {}) {
+function runUpdateWorker(
+  cachePath,
+  nowMs,
+  fetchSpecPath,
+  env = {},
+  { timeoutMs, graceMs, hang = false } = {},
+) {
   const updateCheckUrl = new URL('../lib/update-check.js', import.meta.url).href;
   const hooksUrl = new URL('../test-support/interlocks.js', import.meta.url).href;
   const source = `
@@ -62,6 +69,7 @@ function runUpdateWorker(cachePath, nowMs, fetchSpecPath, env = {}) {
     (async () => {
       const { readFileSync, writeFileSync } = require('node:fs');
       process.env.CAH_TEST_ONLY = '1';
+      if (workerData.hang) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
       for (const [key, value] of Object.entries(workerData.env)) process.env[key] = value;
       const { getLatestVersion } = await import(workerData.updateCheckUrl);
       const { makeInterlock } = await import(workerData.hooksUrl);
@@ -94,24 +102,23 @@ function runUpdateWorker(cachePath, nowMs, fetchSpecPath, env = {}) {
       setImmediate(() => { throw error; });
     });
   `;
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(source, {
-      eval: true,
-      workerData: {
-        cachePath,
-        fetchSpecPath,
-        nowMs,
-        hooksUrl,
-        ttlMs: 10_000,
-        updateCheckUrl,
-        env,
-      },
-    });
-    worker.once('message', resolve);
-    worker.once('error', reject);
-    worker.once('exit', (code) => {
-      if (code !== 0) reject(new Error(`update-check worker exited with code ${code}`));
-    });
+  const worker = new Worker(source, {
+    eval: true,
+    workerData: {
+      cachePath,
+      fetchSpecPath,
+      nowMs,
+      hooksUrl,
+      ttlMs: 10_000,
+      updateCheckUrl,
+      env,
+      hang,
+    },
+  });
+  return runWorker(worker, {
+    label: 'update-check worker',
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+    ...(graceMs === undefined ? {} : { graceMs }),
   });
 }
 
@@ -154,6 +161,20 @@ describe('getLatestVersion caching', () => {
       throw e;
     }
   }
+
+  it('terminates a deterministically hung worker before rejecting', async () => {
+    const cachePath = isolatedCachePath();
+    const started = Date.now();
+    await assert.rejects(
+      runUpdateWorker(cachePath, Date.now(), join(dirname(cachePath), 'unused-fetch.json'), {}, {
+        timeoutMs: 50,
+        graceMs: 25,
+        hang: true,
+      }),
+      (error) => error?.code === 'ETIMEDOUT',
+    );
+    assert.ok(Date.now() - started < 2_000, 'hung worker must be bounded');
+  });
 
   it('returns the cached value directly when within the TTL window (no network call)', () => {
     const cachePath = isolatedCachePath();

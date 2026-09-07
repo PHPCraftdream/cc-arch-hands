@@ -147,7 +147,7 @@ function writeLastStamp(path, sessionId, ts, requestId, fingerprint, deliverySta
       lastStampedAt: ts, lastStampedRequestId: typeof requestId === 'string' ? requestIdDigest(requestId) : null,
       lastStampedTranscript: typeof fingerprint === 'string' ? fingerprint.slice(0, MAX_FINGERPRINT_LENGTH) : null,
       deliveryState: deliveryState === 'pending' ? 'pending' : 'delivered' }) + '\n', {
-      expectedDestination, testInterlock,
+      expectedDestination, testInterlock, lifecycleLease: lease,
       assertOwnership: () => renewLease(lease),
     });
     return pruneStampSidecars(path, ts, lease, testInterlock);

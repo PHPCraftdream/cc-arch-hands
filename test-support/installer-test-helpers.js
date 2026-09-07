@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, lstatSyn
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
+import { runWorker } from './process-batches.js';
 
 export const FABLE_ORACLE = [
   ['fl', 'claude-fable-5-1', 'low'],
@@ -21,13 +22,7 @@ export function tmpDir() {
 }
 
 export function waitForWorker(worker) {
-  return new Promise((resolve, reject) => {
-    worker.once('error', reject);
-    worker.once('exit', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`atomic-write worker exited with code ${code}`));
-    });
-  });
+  return runWorker(worker, { label: 'atomic-write worker', requireMessage: false }).then(() => undefined);
 }
 
 export function waitForPath(path, timeoutMs = 5000) {
@@ -76,17 +71,11 @@ export function runSkillWorker(action, dir, interlock, phase, subset = undefined
       setImmediate(() => { throw error; });
     });
   `;
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(source, {
-      eval: true,
-      workerData: { action, dir, interlock, phase, subset, skillsUrl, templatesUrl, scopeUrl, hooksUrl },
-    });
-    worker.once('message', resolve);
-    worker.once('error', reject);
-    worker.once('exit', (code) => {
-      if (code !== 0) reject(new Error(`skill worker exited with code ${code}`));
-    });
+  const worker = new Worker(source, {
+    eval: true,
+    workerData: { action, dir, interlock, phase, subset, skillsUrl, templatesUrl, scopeUrl, hooksUrl },
   });
+  return runWorker(worker, { label: 'skill worker' });
 }
 
 export function runOwnedRemovalWorker(
@@ -117,17 +106,11 @@ export function runOwnedRemovalWorker(
       parentPort.postMessage(result);
     })().catch((error) => { setImmediate(() => { throw error; }); });
   `;
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(source, {
-      eval: true,
-      workerData: { dest, interlock, phase, failures, ownershipLossPath, fsutilUrl, hooksUrl },
-    });
-    worker.once('message', resolve);
-    worker.once('error', reject);
-    worker.once('exit', (code) => {
-      if (code !== 0) reject(new Error(`owned removal worker exited with code ${code}`));
-    });
+  const worker = new Worker(source, {
+    eval: true,
+    workerData: { dest, interlock, phase, failures, ownershipLossPath, fsutilUrl, hooksUrl },
   });
+  return runWorker(worker, { label: 'owned removal worker' });
 }
 
 export function runLeafWriterWorker(kind, dir, interlock) {
@@ -158,24 +141,18 @@ export function runLeafWriterWorker(kind, dir, interlock) {
       parentPort.postMessage(result);
     })().catch((error) => { setImmediate(() => { throw error; }); });
   `;
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(source, {
-      eval: true,
-      workerData: {
-        kind,
-        dir,
-        interlock,
-        writerUrl: moduleUrls[kind],
-        scopeUrl: moduleUrls.scope,
-        hooksUrl,
-      },
-    });
-    worker.once('message', resolve);
-    worker.once('error', reject);
-    worker.once('exit', (code) => {
-      if (code !== 0) reject(new Error(`${kind} worker exited with code ${code}`));
-    });
+  const worker = new Worker(source, {
+    eval: true,
+    workerData: {
+      kind,
+      dir,
+      interlock,
+      writerUrl: moduleUrls[kind],
+      scopeUrl: moduleUrls.scope,
+      hooksUrl,
+    },
   });
+  return runWorker(worker, { label: `${kind} worker` });
 }
 
 export function runAtomicRetryWorker(dest, interlock) {
@@ -199,15 +176,9 @@ export function runAtomicRetryWorker(dest, interlock) {
       parentPort.postMessage('published');
     })().catch((error) => { setImmediate(() => { throw error; }); });
   `;
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(source, {
-      eval: true,
-      workerData: { dest, interlock, fsutilUrl, hooksUrl },
-    });
-    worker.once('message', resolve);
-    worker.once('error', reject);
-    worker.once('exit', (code) => {
-      if (code !== 0) reject(new Error(`retry worker exited with code ${code}`));
-    });
+  const worker = new Worker(source, {
+    eval: true,
+    workerData: { dest, interlock, fsutilUrl, hooksUrl },
   });
+  return runWorker(worker, { label: 'retry worker' });
 }

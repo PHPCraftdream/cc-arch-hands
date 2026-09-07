@@ -4,7 +4,10 @@ import { chmodSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSyn
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
-import { tmpDir, waitForWorker, waitForPath, runOwnedRemovalWorker, runAtomicRetryWorker } from './installer-test-helpers.js';
+import {
+  tmpDir, waitForWorker, waitForPath, runOwnedRemovalWorker, runAtomicRetryWorker,
+} from './installer-test-helpers.js';
+import { runWorker } from './process-batches.js';
 import { SentinelModelCommand } from '../lib/sentinel.js';
 import {
   enumerateRecoveryArtifacts, removeOwnedRegularFile, regularFileIdentity, sameFileIdentity,
@@ -164,10 +167,7 @@ describe('writeFileAtomic', { concurrency: false }, () => {
       eval: true,
       workerData: { dest, fsutilUrl, interlock, payload, hooksUrl },
     });
-    const resultPromise = new Promise((resolve, reject) => {
-      worker.once('message', resolve);
-      worker.once('error', reject);
-    });
+    const resultPromise = runWorker(worker, { label: 'successor worker' });
 
     await waitForPath(`${interlock}.ready`);
     unlinkSync(dest);
@@ -177,10 +177,6 @@ describe('writeFileAtomic', { concurrency: false }, () => {
     assert.equal(result.ok, false);
     assert.match(result.message, /destination leaf changed concurrently|refusing operation/);
     assert.equal(readFileSync(dest, 'utf8'), payload);
-    await new Promise((resolve, reject) => {
-      worker.once('error', reject);
-      worker.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`worker exited ${code}`)));
-    });
   });
 
   it('rejects a mode-only successor before rename', async (t) => {
@@ -218,10 +214,7 @@ describe('writeFileAtomic', { concurrency: false }, () => {
       eval: true,
       workerData: { dest, fsutilUrl, interlock, hooksUrl },
     });
-    const resultPromise = new Promise((resolve, reject) => {
-      worker.once('message', resolve);
-      worker.once('error', reject);
-    });
+    const resultPromise = runWorker(worker, { label: 'mode successor worker' });
     await waitForPath(`${interlock}.ready`);
     chmodSync(dest, 0o600);
     writeFileSync(`${interlock}.go`, 'go');

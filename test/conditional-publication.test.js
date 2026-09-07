@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { captureRegularFileSnapshot, writeFileAtomic } from '../lib/fs-atomic.js';
+import { runWorker } from '../test-support/process-batches.js';
 
 function waitForPath(path) {
   const deadline = Date.now() + 10_000;
@@ -49,10 +50,7 @@ function runWrite(dest, interlock, payload, expected = true) {
     eval: true,
     workerData: { dest, expected, fsutilUrl, interlock, payload, hooksUrl },
   });
-  return new Promise((resolve, reject) => {
-    worker.once('message', resolve);
-    worker.once('error', reject);
-  });
+  return runWorker(worker, { label: 'conditional publication worker' });
 }
 
 describe('conditional atomic publication', () => {
