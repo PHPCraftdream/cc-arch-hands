@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // cah-stamp — Claude Code Stop hook.
 
-import { readFileSync, writeFileSync, writeSync, mkdirSync, statSync, lstatSync } from 'node:fs';
+import { readFileSync, writeFileSync, writeSync, statSync, lstatSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
@@ -12,8 +12,9 @@ import {
 } from '../lib/transcript-stats.js';
 import { CURRENT_VERSION, getLatestVersion, isNewerVersion } from '../lib/update-check.js';
 import { captureRegularFileSnapshot, isOlderThan, writeFileAtomic } from '../lib/fsutil.js';
-import { acquireLease, leaseOwned, renewLease, pathIdentity, releaseLease, streamDirectoryEntries,
-  recoverOwnedFileFences, removeOwnedFileForGeneration } from '../lib/lease-lock.js';
+import { acquireLease, renewLease, pathIdentity, releaseLease, streamDirectoryEntries,
+  recoverOwnedFileFences, removeOwnedFileForGeneration, readDirectoryScanStats,
+  resetDirectoryScanStats } from '../lib/lease-lock.js';
 import {
   sessionHash, markerNamespace, migrateMarkerState, pruneMarkers, claimMarker,
   markerClaimOwned, releaseMarkerClaim, publishMarker, finishMarkerTransaction,
@@ -156,17 +157,20 @@ function recoverStampSidecarFences(path, currentLease, nowMs, testInterlock = nu
   return scan.complete && ok;
 }
 
-function removeStampSidecar(sidecar, expected, currentLease, nowMs, phase, testInterlock = null) {
+function removeStampSidecar(sidecar, expected, currentLease, nowMs, phase, testInterlock = null,
+  options = {}) {
   const lock = sameLeasePath(`${sidecar}.lock`, currentLease)
     ? currentLease : acquireSidecarLease(sidecar, nowMs, testInterlock);
   if (!lock) return false;
   try {
     const assertOwnership = sidecarAuthority(lock);
-    const recovered = recoverOwnedFileFences(sidecar, lock, {
-      marker: STAMP_SIDECAR_FENCE_MARKER, limit: STAMP_SIDECAR_RECOVERY_LIMIT,
-      assertOwnership, testInterlock,
-    });
-    if (!recovered.ok && recovered.complete) return false;
+    if (options.recoverFences !== false) {
+      const recovered = recoverOwnedFileFences(sidecar, lock, {
+        marker: STAMP_SIDECAR_FENCE_MARKER, limit: STAMP_SIDECAR_RECOVERY_LIMIT,
+        assertOwnership, testInterlock,
+      });
+      if (!recovered.ok && recovered.complete) return false;
+    }
     const current = pathIdentity(sidecar);
     if (!current || (phase === 'sidecar-prune' && !isOlderThan(current, nowMs, STAMP_STATE_TTL_MS))) {
       return false;
@@ -186,6 +190,21 @@ function pruneStampSidecars(path, nowMs, lease, testInterlock = null) {
   // handles known stale records. Incomplete scans only suppress capacity
   // decisions, never safe cleanup of entries already observed.
   recoverStampSidecarFences(path, lease, nowMs, testInterlock);
+  const statsPath = process.env.CAH_TEST_ONLY === '1'
+    ? process.env.CAH_TEST_ONLY_SCAN_STATS_PATH : undefined;
+  if (statsPath) resetDirectoryScanStats();
+  try {
+    return pruneStampSidecarsScan(path, nowMs, lease, testInterlock);
+  } finally {
+    if (statsPath) {
+      try { writeFileSync(statsPath, JSON.stringify(readDirectoryScanStats())); } catch { /* best effort */ }
+    }
+  }
+}
+
+function pruneStampSidecarsScan(path, nowMs, lease, testInterlock = null) {
+  const stateDir = stampNamespace(path);
+  const prefix = basename(path) + STAMP_STATE_PREFIX;
   const candidates = [];
   let owned = true;
   const scan = streamDirectoryEntries(stateDir, MAX_STAMP_SESSIONS * 2 + 8, (entry) => {
@@ -197,7 +216,8 @@ function pruneStampSidecars(path, nowMs, lease, testInterlock = null) {
       const identity = pathIdentity(sidecar);
       if (!identity) return;
       if (isOlderThan(identity, nowMs, STAMP_STATE_TTL_MS)) {
-        removeStampSidecar(sidecar, identity, lease, nowMs, 'sidecar-prune', testInterlock);
+        removeStampSidecar(sidecar, identity, lease, nowMs, 'sidecar-prune', testInterlock,
+          { recoverFences: false });
         if (!renewLease(lease)) owned = false;
       } else candidates.push({ path: sidecar, identity, mtimeNs: identity.mtimeNs });
     } catch { /* preserve indeterminate state */ }
@@ -207,7 +227,7 @@ function pruneStampSidecars(path, nowMs, lease, testInterlock = null) {
   for (const entry of candidates.slice(MAX_STAMP_SESSIONS)) {
     try {
       removeStampSidecar(entry.path, entry.identity, lease, nowMs,
-        'sidecar-prune-capacity', testInterlock);
+        'sidecar-prune-capacity', testInterlock, { recoverFences: false });
     } catch { /* best effort */ }
   }
   return renewLease(lease);

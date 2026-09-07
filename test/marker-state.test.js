@@ -3,14 +3,18 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import {
   copyFileSync, existsSync, mkdirSync, mkdtempSync as rawMkdtempSync, readdirSync, readFileSync,
-  unlinkSync, writeFileSync, rmSync,
+  unlinkSync, writeFileSync, rmSync, utimesSync,
 } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import {
   abortMarkerTransaction, compareFreshness, claimMarker, publishMarker,
   inspectPath, identityKey, releaseMarkerClaim, sessionHash,
+  migrateLegacyStateFiles, migrateMarkerState,
 } from '../lib/marker-state.js';
+import { acquireLease, releaseLease } from '../lib/lease-lock.js';
+import { semanticFreshness } from '../lib/marker-capacity-ops.js';
 import {
   recoverLegacyCapacityState, transactionRetirementPath, victimFencePath,
 } from '../lib/marker-capacity-ops.js';
@@ -984,5 +988,144 @@ describe('marker capacity staging', () => {
     assert.equal(result.status, 0, result.stderr);
     assert.equal(readFileSync(marker, 'utf8'), JSON.stringify({ deliveredAt: 2 }) + '\n');
     assert.equal(readFileSync(fence, 'utf8'), 'successor\n');
+  });
+});
+
+describe('legacy claim migration lease release', () => {
+  function writeClaimOwner(dir, timestamp) {
+    const token = randomUUID();
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'owner.json'),
+      JSON.stringify({ pid: 99999999, token, nonce: token, timestamp, startedAt: timestamp }) + '\n');
+  }
+
+  function assertSourceWins(sourcePath, targetPath) {
+    const source = semanticFreshness(sourcePath, inspectPath(join(sourcePath, 'owner.json'), { content: true }));
+    const target = semanticFreshness(targetPath, inspectPath(join(targetPath, 'owner.json'), { content: true }));
+    assert.equal(compareFreshness(source, target) > 0, true);
+  }
+
+  it('releases the migrated stamp lock so the next acquire succeeds', () => {
+    const home = mkdtempSync(join(tmpdir(), 'marker-state-stamp-'));
+    const stateDir = join(home, 'stamp-state');
+    const sessionId = 'stamp-migration-claim-test';
+    const hash = sessionHash(sessionId);
+    const stateName = `last-stamp.json.session-${hash}.json`;
+    const lockName = `${stateName}.lock`;
+    const sourceLock = join(home, lockName);
+    const targetLock = join(stateDir, lockName);
+    writeClaimOwner(targetLock, Date.now() - 60_000);
+    writeClaimOwner(sourceLock, Date.now());
+    assertSourceWins(sourceLock, targetLock);
+    const result = migrateLegacyStateFiles({
+      prefix: 'last-stamp.json.session-', namespace: 'stamp-state', namespaceDir: stateDir,
+      home, sessionId, stateName, lockName, roots: [home],
+      ttlMs: 24 * 60 * 60 * 1000, claimTtlMs: 30_000, maxSessions: 64, scanCap: 200,
+      ownerTestEnv: 'CAH_STAMP_OWNER_MAX_LEASE_MS',
+    });
+    assert.equal(result?.blocked, false);
+    const token = randomUUID();
+    const nowMs = Date.now();
+    const lock = acquireLease(targetLock, {
+      nowMs, owner: { pid: process.pid, token, nonce: token, timestamp: nowMs, startedAt: nowMs },
+      staleAfterMs: 30_000, fenceSuffix: '.taken-',
+      interlockPhase: 'lock-reclaim', releaseInterlockPhase: 'lock-release',
+      testLeaseEnv: 'CAH_STAMP_OWNER_MAX_LEASE_MS',
+    });
+    assert.notEqual(lock, null);
+    if (lock) releaseLease(lock);
+  });
+
+  it('releases the migrated marker claim so claimMarker succeeds', () => {
+    const home = mkdtempSync(join(tmpdir(), 'marker-state-claim-'));
+    const markerDir = join(home, 'cache', 'marker-tests');
+    const cfg = markerConfig(markerDir);
+    const sessionId = 'migration-claim-test';
+    const hash = sessionHash(sessionId);
+    const marker = join(markerDir, `marker-${hash}`);
+    mkdirSync(markerDir, { recursive: true });
+    writeFileSync(marker, JSON.stringify({ claimedAt: Date.now() - 25 * 3_600_000 }) + '\n');
+    utimesSync(marker, Date.now() / 1000 - 25 * 3600, Date.now() / 1000 - 25 * 3600);
+    const claimName = `.cah-marker-claim-marker-${hash}`;
+    const sourceClaim = join(home, '.claude', 'cah-bin', 'cache', claimName);
+    const targetClaim = join(markerDir, claimName);
+    writeClaimOwner(targetClaim, Date.now() - 60_000);
+    writeClaimOwner(sourceClaim, Date.now());
+    assertSourceWins(sourceClaim, targetClaim);
+    const result = migrateMarkerState({ ...cfg, home, sessionId });
+    assert.equal(result?.blocked, false);
+    const claim = claimMarker({ ...cfg, sessionId, nowMs: Date.now() });
+    assert.notEqual(claim, null);
+    if (claim) releaseMarkerClaim(claim);
+  });
+});
+
+describe('claimMarker capacity lease lifecycle', () => {
+  it('releases the capacity lease when capacity eviction is not prepared', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-marker-lease-leak-'));
+    const markerDir = join(home, 'cache', 'markers');
+    mkdirSync(markerDir, { recursive: true });
+    const cfg = markerConfig(markerDir);
+    const stale = Date.now() / 1000 - 25 * 3600;
+    const sessionId = 'lease-leak-test';
+    const target = join(markerDir, `marker-${sessionHash(sessionId)}`);
+    const otherHash = sessionHash('lease-leak-other');
+    const other = join(markerDir, `marker-${otherHash}`);
+    writeFileSync(target, 'target\n');
+    writeFileSync(other, 'other\n');
+    utimesSync(target, stale, stale);
+    const token = randomUUID();
+    const now = Date.now();
+    mkdirSync(join(markerDir, `.cah-marker-claim-marker-${otherHash}`), { recursive: true });
+    writeFileSync(join(markerDir, `.cah-marker-claim-marker-${otherHash}`, 'owner.json'),
+      JSON.stringify({ pid: process.pid, token, nonce: token, timestamp: now, startedAt: now }) + '\n');
+    const claim = claimMarker({ ...cfg, sessionId, nowMs: Date.now() });
+    assert.equal(claim, null);
+    const capacityLease = acquireLease(join(markerDir, '.cah-marker-capacity-marker-tests'), {
+      nowMs: Date.now(),
+      owner: { pid: process.pid, token: randomUUID(), nonce: randomUUID(),
+        timestamp: Date.now(), startedAt: Date.now() },
+      staleAfterMs: 30_000, fenceSuffix: '.taken-',
+      interlockPhase: 'marker-capacity-lease-reclaim',
+      releaseInterlockPhase: 'marker-capacity-lease-reclaim-release',
+    });
+    assert.notEqual(capacityLease, null,
+      'capacity lease should have been released after failed eviction preparation');
+    if (capacityLease) releaseLease(capacityLease);
+  });
+
+  it('bounds capacity eviction retries so the claim still succeeds', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-marker-retry-bound-'));
+    const markerDir = join(home, 'cache', 'markers');
+    mkdirSync(markerDir, { recursive: true });
+    const cfg = markerConfig(markerDir);
+    const txDir = join(dirname(markerDir), `.${basename(markerDir)}-capacity-transaction`);
+    const stale = Date.now() / 1000 - 25 * 3600;
+    const fresh = Date.now() / 1000;
+    const target = join(markerDir, `marker-${sessionHash('retry-bound')}`);
+    writeFileSync(target, 'target\n');
+    utimesSync(target, stale, stale);
+    // Fresh (non-stale) markers fill the capacity slot; eviction retries target
+    // the oldest of them until the exclusion set empties the candidate pool.
+    const others = ['retry-bound-a', 'retry-bound-b'].map((id, index) => {
+      const path = join(markerDir, `marker-${sessionHash(id)}`);
+      writeFileSync(path, `${id}\n`);
+      utimesSync(path, fresh - 7200 + index * 1800, fresh - 7200 + index * 1800);
+      return path;
+    });
+    let slotFires = 0;
+    const testInterlock = (phase) => {
+      if (phase !== 'marker-capacity-slot') return;
+      slotFires += 1;
+      // Replace the chosen victim right before the CAS move so the move fails
+      // deterministically on every attempt, driving the retry path.
+      const state = JSON.parse(readFileSync(join(txDir, 'transaction.json'), 'utf8'));
+      writeFileSync(state.victim, `successor-${slotFires}\n`);
+    };
+    const claim = claimMarker({ ...cfg, sessionId: 'retry-bound', nowMs: Date.now(), testInterlock });
+    assert.notEqual(claim, null, 'claim should succeed once candidates are exhausted');
+    assert.ok(slotFires > 1, `expected the eviction retry loop to cycle, fired ${slotFires} times`);
+    assert.ok(slotFires <= 6, `retry loop must be bounded, fired ${slotFires} times`);
+    if (claim) releaseMarkerClaim(claim);
   });
 });

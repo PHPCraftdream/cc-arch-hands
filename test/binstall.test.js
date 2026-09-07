@@ -34,6 +34,12 @@ function runBinSync(file, args, options = {}) {
   });
 }
 
+function smokeEnv(home) {
+  const env = { ...process.env, HOME: home, USERPROFILE: home };
+  delete env.FORCE_COLOR;
+  return env;
+}
+
 // A throwaway package layout that mirrors what writeBins reads from: a bin/
 // with shebang'd entry points and a lib/ dependency.
 function fakeSource(root) {
@@ -1022,7 +1028,7 @@ describe('writeBins', () => {
     try {
       const result = runBinSync(process.execPath, [join(dst, 'bin', 'cah-status.js')], {
         cwd: smokeHome,
-        env: { ...process.env, HOME: smokeHome, USERPROFILE: smokeHome },
+        env: smokeEnv(smokeHome),
         encoding: 'utf8',
         timeout: 10_000,
       });
@@ -1175,7 +1181,7 @@ describe('writeBins', () => {
     try {
       const result = runBinSync(process.execPath, [statusPath], {
         cwd: smokeHome,
-        env: { ...process.env, HOME: smokeHome, USERPROFILE: smokeHome },
+        env: smokeEnv(smokeHome),
         encoding: 'utf8',
         timeout: 10_000,
       });

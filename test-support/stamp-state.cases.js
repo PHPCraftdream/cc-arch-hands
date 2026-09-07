@@ -155,7 +155,10 @@ export function registerStampStateCases() {
       { session_id: sessionId, transcript_path: tp }, env,
     );
     await waitForPath(`${interlock}.ready`);
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    // 4x the lease TTL — under heavy concurrent test-suite load, a 1.5x
+    // margin observably lets scheduling jitter around the successor's own
+    // process spawn make the predecessor's lease look not-yet-stale.
+    await new Promise((resolve) => setTimeout(resolve, 400));
     writeFileSync(tp, JSON.stringify({
       type: 'assistant', requestId: 'successor-request',
       message: { role: 'assistant', model: 'claude-opus-4-7', usage: { input_tokens: 47_000 } },
@@ -373,6 +376,7 @@ export function registerStampStateCases() {
       CAH_STAMP_THROTTLE_PATH: throttle,
       CAH_STAMP_MIN_INTERVAL_MS: '1',
       CAH_TEST_ONLY: '1',
+      CAH_TEST_ONLY_SCAN_STATS_PATH: join(dir, 'scan-stats.json'),
     };
     const crashed = runStamp(payload, {
       ...baseEnv, CAH_TEST_ONLY_STAMP_SIDECAR_CRASH: 'after-fence',
@@ -383,12 +387,12 @@ export function registerStampStateCases() {
     let count = stampSidecars(throttle).length;
     let madeProgress = false;
     for (let attempt = 0; attempt < 4; attempt += 1) {
-      const started = Date.now();
       const result = runStamp(payload, baseEnv);
       assert.equal(result.status, 0);
+      const stats = JSON.parse(readFileSync(baseEnv.CAH_TEST_ONLY_SCAN_STATS_PATH, 'utf8'));
+      assert.ok(stats.scans <= 8, 'maintenance must not rescan the namespace once per removal');
       const next = stampSidecars(throttle).length;
       madeProgress ||= next < count;
-      assert.ok(Date.now() - started < 5_000, 'bounded maintenance must not rescan indefinitely');
       count = next;
       if (!readdirSync(stateDir).some((name) => name.endsWith('.fence'))) break;
     }

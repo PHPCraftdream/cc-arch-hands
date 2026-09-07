@@ -1,12 +1,14 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync,
+  existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync,
+  writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { captureRegularFileSnapshot, writeFileAtomic } from '../lib/fs-atomic.js';
+import { publishWithFence } from '../lib/fs-atomic-publication.js';
 import { runWorker } from '../test-support/process-batches.js';
 
 function waitForPath(path) {
@@ -235,5 +237,50 @@ describe('conditional atomic publication', () => {
     });
     assert.equal(readFileSync(dest, 'utf8'), 'successor\n');
     assert.equal(existsSync(`${dest}.cah-owned-publish`), false);
+  });
+
+  it('keeps the original publication error when the unwind re-inspection throws', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-conditional-unwind-'));
+    const dest = join(dir, 'leaf');
+    const tempPath = join(dir, 'temp-src');
+    writeFileSync(tempPath, 'new\n');
+    const tempSnapshot = captureRegularFileSnapshot(tempPath);
+    const fence = `${dest}.cah-owned-publish`;
+    // Sabotage the durable proof rewrite so the unwind's abandon step throws
+    // (writeDurableProof cannot create its staging entry). The re-inspect
+    // interlock removes the sabotage before throwing, so the fixed unwind can
+    // still abort cleanly.
+    const proofTemp = join(fence, 'publication.json.tmp');
+
+    assert.throws(() => publishWithFence(
+      dest, tempPath, tempSnapshot.expectedDestination.identity,
+      { exists: false, identity: null },
+      {
+        testInterlock: (phase) => {
+          if (phase === 'write-before-final-rename') {
+            mkdirSync(proofTemp);
+            throw new Error('test-only forward publication failure');
+          }
+          if (phase === 'write-unwind-reinspect') {
+            rmSync(proofTemp, { recursive: true });
+            throw new Error('test-only unwind inspection failure');
+          }
+        },
+      },
+    ), /test-only forward publication failure/);
+
+    assert.equal(existsSync(fence), false, 'abort must run despite the unwind throw');
+    assert.equal(existsSync(tempPath), false, 'temp must be removed by the abort');
+    // A retry with no interlock must succeed immediately, proving the fence
+    // with a live ownerPid was released.
+    writeFileSync(tempPath, 'retry\n');
+    const retrySnapshot = captureRegularFileSnapshot(tempPath);
+    const publication = publishWithFence(
+      dest, tempPath, retrySnapshot.expectedDestination.identity,
+      { exists: false, identity: null },
+    );
+    assert.equal(publication.published, true);
+    assert.equal(readFileSync(dest, 'utf8'), 'retry\n');
+    assert.equal(existsSync(fence), false);
   });
 });

@@ -119,6 +119,9 @@ never exposed before its complete mirrored dependency chain is present.
 | `lib/codex-agents.js` | `writeCodexAgents` / `removeCodexAgents` for optional Codex TOML custom agents |
 | `lib/skills.js` | `writeSkills` / `removeSkills` — overwrite owned files in place (atomic), never wipe the whole dir; user-added files inside a managed skill are preserved and reported |
 | `lib/binstall.js` | `writeBins` / `removeBins` + `BinFiles` registry — copies companion bins into `~/.claude/cah-bin/` with `// cah-bin:v1` sentinel |
+| `lib/binstall/runtime.js` | `BinFileDefinitions` — frozen data description of the companion runtime files, plus the derived local import graph and publication order used by install/repair |
+| `lib/binstall-repair.js` | `sameRollbackState` / `republishConnectedGeneration` — rollback repair that re-publishes the connected runtime generation after an interrupted bin install |
+| `lib/lease-lock.js` | portable directory leases — acquire/renew/release with reclaim fences, owned-file fence recovery/quarantine, and the shared bounded directory-scan primitives used by the hook bins |
 | `lib/probe.js` | `enableProbe` / `disableProbe` / `readProbeLog` / `probeStatus` — atomic settings.json swap to wire `cah-status-probe` as the statusLine bin, with a sidecar backup file |
 | `test/*.test.js` | Full test suite (`node:test` + `node:assert/strict`) — installer, cli, binstall, checkpoint-hint, clock, stamp, transcript-stats, probe, gen-docs |
 | `scripts/gen-docs.js` | Regenerates README.md's model-commands table, Codex-agents table, and item counts from `lib/manifest.js` — run `npm run gen:docs` after editing the manifest; `npm run gen:docs:check` (also wired into `npm test` via `test/gen-docs.test.js`) fails if README.md has drifted |
