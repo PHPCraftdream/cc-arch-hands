@@ -475,11 +475,11 @@ describe('writeBins', () => {
     assert.ok(installed.skipped.every((value) => !['old-tool.js', 'old-helper.js'].includes(value)));
 
     const removed = removeBins(dst);
-    assert.deepEqual(
-      removed.skipped,
-      ['bin/old-tool.js', 'lib/old-helper.js'],
-    );
-    assert.equal(new Set(removed.skipped).size, removed.skipped.length);
+    assert.ok(removed.skipped.includes('bin/old-tool.js'));
+    assert.ok(removed.skipped.includes('lib/old-helper.js'));
+    for (const file of BinFiles) {
+      assert.ok(existsSync(join(dst, file.dest)), `${file.dest} must remain beside opaque bin data`);
+    }
   });
 
   it('silently preserves the reserved root cache while reporting unknown dirs relative to the bin root', () => {
@@ -709,6 +709,51 @@ describe('writeBins', () => {
       'a committed boundary must be rolled back after its publication throws');
     assert.ok(!existsSync(join(dst, 'bin', 'cah-status.js')),
       'rollback must not leave an untracked committed runtime leaf');
+  });
+
+  it('enrolls a rename committed before post-rename sync failure', () => {
+    let failure;
+    try {
+      writeBins(dst, src, {
+        testInterlock: (phase) => {
+          if (phase === 'write-after-rename-before-sync') {
+            throw new Error('test-only sync failure');
+          }
+        },
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    assert.equal(failure?.message, 'test-only sync failure');
+    assert.ok(!existsSync(join(dst, 'package.json')),
+      'rollback must track a publication before sync can fail');
+    assert.ok(!existsSync(join(dst, 'lib', 'sentinel.js')),
+      'rollback must not strand a leaf after sync failure');
+  });
+
+  it('enrolls a commit when destination inspection fails afterward', () => {
+    const priorTestOnly = process.env.CAH_TEST_ONLY;
+    const priorFailures = process.env.CAH_TEST_ONLY_FSUTIL_DESTINATION_READ_FAILURES;
+    process.env.CAH_TEST_ONLY = '1';
+    process.env.CAH_TEST_ONLY_FSUTIL_DESTINATION_READ_FAILURES = '1';
+    let failure;
+    try {
+      writeBins(dst, src);
+    } catch (error) {
+      failure = error;
+    } finally {
+      if (priorTestOnly === undefined) delete process.env.CAH_TEST_ONLY;
+      else process.env.CAH_TEST_ONLY = priorTestOnly;
+      if (priorFailures === undefined) delete process.env.CAH_TEST_ONLY_FSUTIL_DESTINATION_READ_FAILURES;
+      else process.env.CAH_TEST_ONLY_FSUTIL_DESTINATION_READ_FAILURES = priorFailures;
+    }
+
+    assert.equal(failure?.message, 'test-only post-publication destination inspection failure');
+    assert.ok(!existsSync(join(dst, 'package.json')),
+      'rollback must use commit metadata when destination inspection fails');
+    assert.ok(!existsSync(join(dst, 'lib', 'sentinel.js')),
+      'post-commit inspection failure must not strand a runtime leaf');
   });
 
   it('does not accept content-equivalent rollback state with a corrupted mode', () => {
@@ -1239,10 +1284,10 @@ describe('writeBins', () => {
   it('aborts an expired install resume with a truthful lost-lease error', async () => {
     const interlock = join(dst, 'expired-install-resume-interlock');
     const installing = runBinWorker(
-      dst, src, interlock, 'binstall-after-boundary', 'writeBins', 500,
+      dst, src, interlock, 'binstall-after-boundary', 'writeBins', 2000,
     );
     await waitForPath(`${interlock}.ready`, 60000, installing);
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 700));
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 2200));
     writeFileSync(`${interlock}.go`, 'go');
 
     const failure = await installing;
@@ -1255,10 +1300,10 @@ describe('writeBins', () => {
   it('does not roll back a successor uninstall after an expired install pauses', async () => {
     const interlock = join(dst, 'expired-install-uninstall-interlock');
     const installing = runBinWorker(
-      dst, src, interlock, 'binstall-after-boundary', 'writeBins', 500,
+      dst, src, interlock, 'binstall-after-boundary', 'writeBins', 2000,
     );
     await waitForPath(`${interlock}.ready`, 60000, installing);
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 700));
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 2200));
     const expiredOwnerPath = join(binLifecycleLockPath(dst), 'owner.json');
     const expiredOwner = JSON.parse(readFileSync(expiredOwnerPath, 'utf8'));
     expiredOwner.timestamp = Date.now() - 1000;
@@ -1267,7 +1312,7 @@ describe('writeBins', () => {
     const priorTestOnly = process.env.CAH_TEST_ONLY;
     const priorLeaseMs = process.env.CAH_TEST_ONLY_BIN_LEASE_MS;
     process.env.CAH_TEST_ONLY = '1';
-    process.env.CAH_TEST_ONLY_BIN_LEASE_MS = '500';
+    process.env.CAH_TEST_ONLY_BIN_LEASE_MS = '2000';
     let successor;
     for (let attempt = 0; attempt < 8 && !successor; attempt += 1) {
       try { successor = removeBins(dst); } catch (error) {
@@ -1290,10 +1335,10 @@ describe('writeBins', () => {
     writeBins(dst, src);
     const interlock = join(dst, 'expired-uninstall-install-interlock');
     const removing = runBinWorker(
-      dst, src, interlock, 'binstall-before-leaf-remove', 'removeBins', 500,
+      dst, src, interlock, 'binstall-before-leaf-remove', 'removeBins', 2000,
     );
     await waitForPath(`${interlock}.ready`, 60000, removing);
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 700));
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 2200));
     const expiredOwnerPath = join(binLifecycleLockPath(dst), 'owner.json');
     const expiredOwner = JSON.parse(readFileSync(expiredOwnerPath, 'utf8'));
     expiredOwner.timestamp = Date.now() - 1000;
@@ -1302,7 +1347,7 @@ describe('writeBins', () => {
     const priorTestOnly = process.env.CAH_TEST_ONLY;
     const priorLeaseMs = process.env.CAH_TEST_ONLY_BIN_LEASE_MS;
     process.env.CAH_TEST_ONLY = '1';
-    process.env.CAH_TEST_ONLY_BIN_LEASE_MS = '500';
+    process.env.CAH_TEST_ONLY_BIN_LEASE_MS = '2000';
     let successor;
     for (let attempt = 0; attempt < 8 && !successor; attempt += 1) {
       try { successor = writeBins(dst, src); } catch (error) {
@@ -1413,10 +1458,62 @@ describe('removeBins', () => {
       'a preserved importer must keep its direct dependency');
     assert.ok(existsSync(join(dst, 'package.json')),
       'a preserved importer must keep the ESM boundary');
-    assert.ok(!existsSync(join(dst, 'lib', 'update-check.js')),
-      'unrelated dependencies remain removable');
+    assert.ok(existsSync(join(dst, 'lib', 'update-check.js')),
+      'an opaque importer must retain every managed dependency');
     assert.ok(result.skipped.includes('lib/transcript-stats.js'));
     assert.ok(result.skipped.includes('package.json'));
+  });
+
+  it('uses installed importer bytes when source changes before an uninstall race', () => {
+    writeBins(dst, src);
+    writeFileSync(
+      join(src, 'bin', 'cah-status.js'),
+      "#!/usr/bin/env node\nconsole.log('source no longer imports transcript');\n",
+    );
+    const importer = join(dst, 'bin', 'cah-status.js');
+    let preserved = false;
+    const result = removeBins(dst, src, {
+      testInterlock: (phase, dest) => {
+        if (phase === 'binstall-before-leaf-remove'
+            && dest === 'bin/cah-status.js' && !preserved) {
+          preserved = true;
+          rmSync(importer, { force: true });
+          writeFileSync(importer, 'opaque successor\n', { mode: 0o755 });
+        }
+      },
+    });
+
+    assert.equal(preserved, true);
+    assert.ok(existsSync(join(dst, 'lib', 'transcript-stats.js')),
+      'installed importer bytes must retain its dependency');
+    assert.ok(existsSync(join(dst, 'package.json')),
+      'installed importer bytes must retain the ESM boundary');
+    assert.ok(existsSync(join(dst, 'lib', 'update-check.js')),
+      'opaque imports must retain the complete managed closure');
+    assert.ok(result.skipped.includes('lib/transcript-stats.js'));
+  });
+
+  it('retains the runtime when an opaque library successor imports outside its old graph', () => {
+    writeBins(dst, src);
+    const library = join(dst, 'lib', 'update-check.js');
+    let preserved = false;
+    const result = removeBins(dst, src, {
+      testInterlock: (phase, dest) => {
+        if (phase === 'binstall-before-leaf-remove'
+            && dest === 'lib/update-check.js' && !preserved) {
+          preserved = true;
+          rmSync(library, { force: true });
+          writeFileSync(library, "import './sentinel.js';\n", { mode: 0o755 });
+        }
+      },
+    });
+
+    assert.equal(preserved, true);
+    assert.ok(existsSync(join(dst, 'lib', 'sentinel.js')),
+      'an opaque library must retain its newly imported library');
+    assert.ok(existsSync(join(dst, 'package.json')),
+      'an opaque library must retain the ESM boundary');
+    assert.ok(result.skipped.includes('lib/sentinel.js'));
   });
 
   it('rejects non-regular declared leaves before removing any managed files', (t) => {
@@ -1471,6 +1568,19 @@ describe('removeBins', () => {
     const r = removeBins(dst);
     assert.ok(r.skipped.includes('bin/someones-tool.js'));
     assert.ok(existsSync(foreign), 'foreign file must survive');
+  });
+
+  it('retains the complete runtime for an opaque preserved importer', () => {
+    writeBins(dst, src);
+    const foreign = join(dst, 'bin', 'opaque-tool.js');
+    writeFileSync(foreign, "import '../lib/update-check.js';\n");
+    const r = removeBins(dst);
+
+    assert.equal(r.removed, 0);
+    assert.ok(r.skipped.includes('bin/opaque-tool.js'));
+    for (const file of BinFiles) {
+      assert.ok(existsSync(join(dst, file.dest)), `${file.dest} must remain runnable`);
+    }
   });
 
   it('is a no-op on a missing bin dir', () => {

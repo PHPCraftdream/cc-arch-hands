@@ -292,6 +292,111 @@ export function registerStampStateCases() {
     assert.equal(readFileSync(stale, 'utf8'), 'fresh-successor');
   });
 
+  it('sidecar prune leaves a successor when its candidate lease expires while paused', async () => {
+    const dir = isolatedDir();
+    const tp = writeTranscript(dir, 'claude-opus-4-7', 46_000);
+    const throttle = join(dir, 'last-stamp.json');
+    const stale = join(dirname(stampSidecarPath(throttle, 'sidecar-lease-loss')),
+      `last-stamp.json.session-${'g'.repeat(64)}.json`);
+    writeFileSync(stale, 'stale-sidecar');
+    const old = Date.now() / 1000 - 30 * 24 * 60 * 60;
+    utimesSync(stale, old, old);
+    const interlock = join(dir, 'sidecar-lease-loss-interlock');
+    const running = runStampAsync(
+      { session_id: 'sidecar-lease-loss', transcript_path: tp },
+      {
+        CAH_STAMP_THROTTLE_PATH: throttle,
+        CAH_STAMP_MIN_INTERVAL_MS: '1',
+        CAH_STAMP_OWNER_MAX_LEASE_MS: '100',
+        CAH_TEST_ONLY: '1',
+        CAH_TEST_ONLY_OWNER_INTERLOCK: interlock,
+        CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'sidecar-prune',
+      },
+    );
+    await waitForPath(`${interlock}.ready`);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    unlinkSync(stale);
+    writeFileSync(stale, 'fresh-successor');
+    writeFileSync(`${interlock}.go`, 'go');
+    const result = await running;
+    assert.equal(result.status, 0);
+    assert.equal(readFileSync(stale, 'utf8'), 'fresh-successor');
+    assert.equal(readdirSync(dirname(stale)).some((name) => name.includes('.cah-stamp-sidecar-')),
+      false, 'lease loss before fencing must not leave a cleanup fence');
+  });
+
+  it('recovers and retries a sidecar cleanup fence left by a crashed process', () => {
+    const dir = isolatedDir();
+    const tp = writeTranscript(dir, 'claude-opus-4-7', 46_000);
+    const throttle = join(dir, 'last-stamp.json');
+    const stale = join(dirname(stampSidecarPath(throttle, 'sidecar-crash-recovery')),
+      `last-stamp.json.session-${'h'.repeat(64)}.json`);
+    writeFileSync(stale, 'stale-sidecar');
+    const old = Date.now() / 1000 - 30 * 24 * 60 * 60;
+    utimesSync(stale, old, old);
+    const baseEnv = {
+      CAH_STAMP_THROTTLE_PATH: throttle,
+      CAH_STAMP_MIN_INTERVAL_MS: '1',
+      CAH_TEST_ONLY: '1',
+    };
+    const crashed = runStamp(
+      { session_id: 'sidecar-crash-recovery', transcript_path: tp },
+      { ...baseEnv, CAH_TEST_ONLY_STAMP_SIDECAR_CRASH: 'after-fence' },
+    );
+    assert.notEqual(crashed.status, 0, 'the crash must leave recovery state');
+    assert.equal(existsSync(stale), true);
+    assert.ok(readdirSync(dirname(stale)).some((name) => name.includes('.cah-stamp-sidecar-') && name.endsWith('.fence')));
+
+    const recovered = runStamp(
+      { session_id: 'sidecar-crash-recovery', transcript_path: tp }, baseEnv,
+    );
+    assert.equal(recovered.status, 0);
+    assert.equal(existsSync(stale), false);
+    assert.equal(readdirSync(dirname(stale)).some((name) => name.includes('.cah-stamp-sidecar-')),
+      false, 'recovery must converge without fence or quarantine growth');
+  });
+
+  it('makes bounded progress through stale records and crash fences beyond the scan cap', () => {
+    const dir = isolatedDir();
+    const tp = writeTranscript(dir, 'claude-opus-4-7', 46_000);
+    const throttle = join(dir, 'last-stamp.json');
+    const stateDir = dirname(stampSidecarPath(throttle, 'bounded-sidecar-progress'));
+    const old = Date.now() / 1000 - 30 * 24 * 60 * 60;
+    for (let i = 0; i < 300; i += 1) {
+      const hash = i.toString(16).padStart(64, '0');
+      const sidecar = join(stateDir, `last-stamp.json.session-${hash}.json`);
+      writeFileSync(sidecar, JSON.stringify({ lastStampedAt: Date.now() - i }));
+      utimesSync(sidecar, old, old);
+    }
+    const payload = { session_id: 'bounded-sidecar-progress', transcript_path: tp };
+    const baseEnv = {
+      CAH_STAMP_THROTTLE_PATH: throttle,
+      CAH_STAMP_MIN_INTERVAL_MS: '1',
+      CAH_TEST_ONLY: '1',
+    };
+    const crashed = runStamp(payload, {
+      ...baseEnv, CAH_TEST_ONLY_STAMP_SIDECAR_CRASH: 'after-fence',
+    });
+    assert.notEqual(crashed.status, 0);
+    assert.ok(readdirSync(stateDir).some((name) => name.endsWith('.fence')));
+
+    let count = stampSidecars(throttle).length;
+    let madeProgress = false;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const started = Date.now();
+      const result = runStamp(payload, baseEnv);
+      assert.equal(result.status, 0);
+      const next = stampSidecars(throttle).length;
+      madeProgress ||= next < count;
+      assert.ok(Date.now() - started < 5_000, 'bounded maintenance must not rescan indefinitely');
+      count = next;
+      if (!readdirSync(stateDir).some((name) => name.endsWith('.fence'))) break;
+    }
+    assert.equal(madeProgress, true, 'known stale records must be retired despite a truncated scan');
+    assert.equal(readdirSync(stateDir).some((name) => name.includes('.cah-stamp-sidecar-')),
+      false, 'crash fences must converge on later bounded passes');
+  });
+
   it('64-capacity sidecar prune preserves a successor installed after scan', async () => {
     const dir = isolatedDir();
     const tp = writeTranscript(dir, 'claude-opus-4-7', 46_000);
