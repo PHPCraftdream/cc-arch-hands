@@ -1,16 +1,10 @@
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, lstatSync, rmdirSync, mkdtempSync, existsSync, symlinkSync, unlinkSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, lstatSync, existsSync, symlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { Worker } from 'node:worker_threads';
 import { tmpDir } from './installer-test-helpers.js';
 import { FABLE_ORACLE } from './installer-test-helpers.js';
-import {
-  SentinelModelCommand, SentinelModelAgent, SentinelCodexAgent, SentinelSkill,
-  LegacyModelCommand, LegacyModelAgent, SetForModelCommand, SetForModelAgent,
-  Ownership, classifyContent,
-} from '../lib/sentinel.js';
+import { SentinelModelCommand, SentinelModelAgent, LegacyModelCommand, LegacyModelAgent, SetForModelCommand, Ownership, classifyContent } from '../lib/sentinel.js';
 import { AllModelCommands, AllCodexAgents } from '../lib/manifest.js';
 import { Scope } from '../lib/scope.js';
 import { writeModelCommands, removeModelCommands } from '../lib/commands.js';

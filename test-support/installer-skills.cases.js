@@ -1,9 +1,7 @@
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, lstatSync, rmdirSync, mkdtempSync, existsSync, symlinkSync, unlinkSync, chmodSync, utimesSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, rmdirSync, existsSync, symlinkSync, unlinkSync, chmodSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { Worker } from 'node:worker_threads';
 import { tmpDir, waitForPath, runSkillWorker } from './installer-test-helpers.js';
 import { SentinelSkill } from '../lib/sentinel.js';
 import { AllSkills } from '../lib/manifest.js';

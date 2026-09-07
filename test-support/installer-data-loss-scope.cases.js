@@ -1,10 +1,7 @@
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, closeSync, mkdirSync, openSync, writeSync, utimesSync,
-  writeFileSync, readFileSync, readdirSync, statSync, lstatSync, rmdirSync,
-  mkdtempSync, existsSync, symlinkSync, unlinkSync } from 'node:fs';
+import { chmodSync, closeSync, mkdirSync, openSync, writeSync, utimesSync, writeFileSync, readFileSync, readdirSync, statSync, lstatSync, rmdirSync, existsSync, symlinkSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { tmpDir, waitForPath, runSkillWorker } from './installer-test-helpers.js';
 import { runWorker } from './process-batches.js';

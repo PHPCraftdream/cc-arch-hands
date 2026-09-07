@@ -16,7 +16,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AllModelCommands, AllCodexAgents } from '../lib/manifest.js';
+import { AllModelCommands, AllCodexAgents, AllSkills } from '../lib/manifest.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const README_PATH = join(__dirname, '..', 'README.md');
@@ -93,13 +93,43 @@ const COUNTS = {
   'codex-agents': AllCodexAgents.length,
 };
 
+// Hand-written prose counts for skills are gated via literal annotations only
+// (no `<!--gen:count:-->` marker exists for them), so they get their own value.
+const SKILL_COUNT = AllSkills.length;
+
 // Keep literal registry annotations in the README inside the same generated
 // count contract as prose counts. These locations are deliberately plain
 // text because one of them lives inside the fenced layout diagram.
 const LITERAL_COUNT_ANNOTATIONS = {
+  'model-commands': {
+    pattern: /AllModelCommands \(\d+ definitions\)/g,
+    render: () => `AllModelCommands (${COUNTS['model-commands']} definitions)`,
+  },
   'codex-agents': {
     pattern: /AllCodexAgents \(\d+\)/g,
     render: () => `AllCodexAgents (${COUNTS['codex-agents']})`,
+  },
+  'all-skills': {
+    pattern: /AllSkills \(\d+\)/g,
+    render: () => `AllSkills (${SKILL_COUNT})`,
+  },
+  // Hand-written skill counts elsewhere in the README, gated with the same
+  // mechanism (each pattern matches exactly one occurrence).
+  'skills-bullet': {
+    pattern: /\*\*skills\*\* \(\d+\)/g,
+    render: () => `**skills** (${SKILL_COUNT})`,
+  },
+  'skills-heading': {
+    pattern: /### 4\. Skills \(\d+\)/g,
+    render: () => `### 4. Skills (${SKILL_COUNT})`,
+  },
+  'skills-table-row': {
+    pattern: /\| Skills \| \d+ \|/g,
+    render: () => `| Skills | ${SKILL_COUNT} |`,
+  },
+  'skills-comment': {
+    pattern: /# all \d+ skills/g,
+    render: () => `# all ${SKILL_COUNT} skills`,
   },
 };
 

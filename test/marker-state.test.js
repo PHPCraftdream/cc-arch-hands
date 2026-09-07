@@ -57,6 +57,30 @@ async function renameBlockedWhileChildHoldsCwd() {
   return blocked;
 }
 
+// Bounded rename-probe loop: rename `dir` aside and immediately back, until
+// the rename FAILS — which on Windows (EPERM/EBUSY/ENOTEMPTY) proves the
+// child process provably holds the directory (via an open handle / CWD).
+// Returns true only
+// when the block was actually observed before the ~5s deadline.
+function probeUntilRenameBlocked(dir) {
+  const probePath = `${dir}.probe`;
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    try {
+      renameSync(dir, probePath);
+      renameSync(probePath, dir); // rename succeeded: child hasn't taken its CWD yet
+      spinUntil(5);
+    } catch (err) {
+      assert.ok(
+        ['EPERM', 'EBUSY', 'ENOTEMPTY'].includes(err.code),
+        `probe rename failed with unexpected code ${err.code} (dir must not have vanished)`,
+      );
+      return true;
+    }
+  }
+  return false;
+}
+
 function spawnMarker(...args) {
   const child = spawn(...args);
   markerChildren.add(child);
@@ -1079,10 +1103,12 @@ describe('legacy claim migration lease release', () => {
     assertSourceWins(sourceLock, targetLock);
 
     // The target claim's release runs under the 'legacy-claim-reclaim-release'
-    // interlock phase. Hold the target lock directory as a live child's CWD
-    // from that moment: the release fence rename fails with EBUSY until the
-    // child exits, so the release only succeeds when it is retried.
+    // interlock phase. Hold the target lock directory by having a live child
+    // hold an open handle on a file inside it (spawned with the dir as CWD):
+    // the release fence rename fails with EPERM/EBUSY until the handle
+    // closes, so the release only succeeds when it is retried.
     let child = null;
+    let blockedOnce = false;
     const result = migrateLegacyStateFiles({
       prefix: 'last-stamp.json.session-', namespace: 'stamp-state', namespaceDir: stateDir,
       home, sessionId, stateName, lockName, roots: [home],
@@ -1090,15 +1116,16 @@ describe('legacy claim migration lease release', () => {
       ownerTestEnv: 'CAH_STAMP_OWNER_MAX_LEASE_MS',
       testInterlock: (phase) => {
         if (phase === 'legacy-claim-reclaim-release' && child === null) {
-          child = spawnMarker(process.execPath, ['-e', 'setTimeout(() => {}, 400)'], {
-            cwd: targetLock, stdio: 'ignore',
+          child = spawnMarker(process.execPath, ['-e', "const p=require('path'),f=require('fs');const q=p.join(process.cwd(),'held');const h=f.openSync(q,'w');setTimeout(() => { try { f.unlinkSync(q); } finally { f.closeSync(h); } }, 200)"], {
+            cwd: targetLock,
           });
-          spinUntil(50);
+          blockedOnce = probeUntilRenameBlocked(targetLock);
         }
       },
     });
 
     assert.notEqual(child, null, 'target claim release must have been reached');
+    assert.equal(blockedOnce, true, 'probe must prove the first release attempt was blocked by the child\'s open handle (retry is exercised only then)');
     assert.equal(result?.blocked, false, 'migration must recover once the transient contention clears');
     const token = randomUUID();
     const nowMs = Date.now();
@@ -1183,7 +1210,7 @@ describe('claimMarker capacity lease lifecycle', () => {
     utimesSync(target, stale, stale);
     // Fresh (non-stale) markers fill the capacity slot; eviction retries target
     // the oldest of them until the exclusion set empties the candidate pool.
-    const others = ['retry-bound-a', 'retry-bound-b'].map((id, index) => {
+    ['retry-bound-a', 'retry-bound-b'].map((id, index) => {
       const path = join(markerDir, `marker-${sessionHash(id)}`);
       writeFileSync(path, `${id}\n`);
       utimesSync(path, fresh - 7200 + index * 1800, fresh - 7200 + index * 1800);

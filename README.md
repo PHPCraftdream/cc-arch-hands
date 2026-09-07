@@ -394,6 +394,8 @@ npx cah install --codex-agents           # optional: install only Codex agents i
 
 # --only takes install classes, individual skill names, or any mix.
 npx cah install --only skills                       # all 11 skills
+npx cah install --only commands                     # all per-model slash-commands (opt-in)
+npx cah install --only codex-agents                 # all Codex agents into ~/.codex/agents (opt-in)
 npx cah install --only bins                         # companion bins (cah-status, cah-stamp,
                                                     #   cah-checkpoint-hint, cah-status-probe,
                                                     #   + shared lib leaves: transcript-stats.js,

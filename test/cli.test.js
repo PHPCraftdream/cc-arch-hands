@@ -9,7 +9,6 @@ import { run, resolveScope, parseOnly, resolveDeps, classifyPath } from '../lib/
 import { BinFiles, binLifecycleLockPath } from '../lib/binstall.js';
 import { LEASE_MAX_MS } from '../lib/lease-lock.js';
 import { AllCodexAgents } from '../lib/manifest.js';
-import { Scope } from '../lib/scope.js';
 import { SentinelBin, SentinelCodexAgent, SetForModelCommand } from '../lib/sentinel.js';
 // os.homedir() reads $HOME / %USERPROFILE% on each call, so we can sandbox the
 // always-global bin directory to a temp dir for the duration of a test.

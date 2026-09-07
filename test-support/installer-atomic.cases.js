@@ -1,18 +1,12 @@
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, lstatSync, rmdirSync, mkdtempSync, existsSync, symlinkSync, unlinkSync } from 'node:fs';
+import { chmodSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, existsSync, symlinkSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
-import {
-  tmpDir, waitForWorker, waitForPath, runOwnedRemovalWorker, runAtomicRetryWorker,
-} from './installer-test-helpers.js';
+import { tmpDir, waitForWorker, waitForPath, runOwnedRemovalWorker, runAtomicRetryWorker } from './installer-test-helpers.js';
 import { runWorker } from './process-batches.js';
 import { SentinelModelCommand } from '../lib/sentinel.js';
-import {
-  enumerateRecoveryArtifacts, removeOwnedRegularFile, regularFileIdentity, sameFileIdentity,
-  sweepRecoveryArtifacts, writeFileAtomic,
-} from '../lib/fsutil.js';
+import { enumerateRecoveryArtifacts, removeOwnedRegularFile, regularFileIdentity, sameFileIdentity, sweepRecoveryArtifacts, writeFileAtomic } from '../lib/fsutil.js';
 
 // ---------------------------------------------------------------------------
 // Atomic file writes

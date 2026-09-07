@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { captureRegularFileSnapshot, writeFileAtomic } from '../lib/fs-atomic.js';
-import { publishWithFence } from '../lib/fs-atomic-publication.js';
+import { publishWithFence, recoverPublicationFence } from '../lib/fs-atomic-publication.js';
 import { runWorker } from '../test-support/process-batches.js';
 
 function waitForPath(path) {
@@ -318,5 +318,62 @@ describe('conditional atomic publication', () => {
     // error may take its place either.
     assert.equal(existsSync(tempPath), true, 'a throwing abort must not have removed the temp');
     assert.equal(existsSync(fence), true, 'a throwing abort must not have cleaned the fence');
+  });
+
+  it('keeps the original publication error when a partially-completed unwind abort throws', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-conditional-abort-late-'));
+    const dest = join(dir, 'leaf');
+    const tempPath = join(dir, '.cah-tmp-src');
+    writeFileSync(tempPath, 'new\n');
+    const tempSnapshot = captureRegularFileSnapshot(tempPath);
+    const fence = `${dest}.cah-owned-publish`;
+
+    process.env.CAH_TEST_ONLY = '1';
+    try {
+      assert.throws(() => publishWithFence(
+        dest, tempPath, tempSnapshot.expectedDestination.identity,
+        { exists: false, identity: null },
+        {
+          testInterlock: (phase) => {
+            if (phase === 'write-before-final-rename') {
+              throw new Error('test-only forward publication failure');
+            }
+            if (phase === 'write-unwind-reinspect') {
+              process.env.CAH_TEST_ONLY_ABORT_PUBLICATION_FAILURE_LATE = '1';
+            }
+          },
+        },
+      ), (error) => error.message === 'test-only forward publication failure');
+    } finally {
+      delete process.env.CAH_TEST_ONLY_ABORT_PUBLICATION_FAILURE_LATE;
+      delete process.env.CAH_TEST_ONLY;
+    }
+
+    // The late injection fires after exactTemp()'s snapshot inspection but
+    // before the temp unlink, so the abort is partially completed. Even so the
+    // caller's original error must win, no recovery-required error may take
+    // its place, and the transaction must stay recoverable: the temp and the
+    // proof fence remain, so a retry can still complete the publication.
+    assert.equal(existsSync(tempPath), true, 'partially-completed abort must leave the temp');
+    assert.equal(existsSync(fence), true, 'partially-completed abort must leave the fence');
+
+    // Retry is possible: recovery (as maintenance would run it) clears the
+    // unpublished transaction, after which publishing succeeds cleanly.
+    assert.equal(recoverPublicationFence(dest), true);
+    writeFileSync(tempPath, 'new\n');
+    const retrySnapshot = captureRegularFileSnapshot(tempPath);
+    process.env.CAH_TEST_ONLY = '1';
+    try {
+      const publication = publishWithFence(
+        dest, tempPath, retrySnapshot.expectedDestination.identity,
+        { exists: false, identity: null },
+      );
+      assert.equal(publication.published, true);
+    } finally {
+      delete process.env.CAH_TEST_ONLY;
+    }
+    assert.equal(readFileSync(dest, 'utf8'), 'new\n');
+    assert.equal(existsSync(tempPath), false);
+    assert.equal(existsSync(fence), false);
   });
 });
