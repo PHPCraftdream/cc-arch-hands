@@ -687,4 +687,30 @@ describe('probeStatus', () => {
     assert.equal(s.backupExists, true);
     assert.equal(s.logRecords, 0);
   });
+
+  it('accepts the Latin-1 mojibake BOM the mutating paths accept', () => {
+    const h = harness();
+    writeFileSync(h.settingsPath, 'ï»¿' + JSON.stringify({
+      statusLine: {
+        type: 'command',
+        command: 'node probe.js',
+        'cah-sentinel': 'cah-probe-statusline:v1',
+        'cah-name': 'probe',
+      },
+    }));
+    const s = probeStatus(h);
+    assert.equal(s.active, true);
+    assert.equal(s.backupExists, false);
+    assert.equal(s.logRecords, 0);
+  });
+
+  it('throws MalformedSettingsError on malformed settings JSON like the mutating paths', () => {
+    const h = harness();
+    writeFileSync(h.settingsPath, '{ malformed settings');
+    assert.throws(() => probeStatus(h), (error) => {
+      assert.ok(error instanceof MalformedSettingsError);
+      assert.match(error.message, new RegExp(h.settingsPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      return true;
+    });
+  });
 });

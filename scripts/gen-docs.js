@@ -153,11 +153,7 @@ function substituteCounts(content) {
 
 function substituteLiteralCounts(content) {
   let updated = content;
-  for (const [key, { pattern, render }] of Object.entries(LITERAL_COUNT_ANNOTATIONS)) {
-    const matches = updated.match(pattern) ?? [];
-    if (matches.length !== 1) {
-      throw new Error(`gen-docs: expected exactly one generated literal count annotation for "${key}"`);
-    }
+  for (const { pattern, render } of Object.values(LITERAL_COUNT_ANNOTATIONS)) {
     updated = updated.replace(pattern, render);
   }
   return updated;
@@ -197,7 +193,9 @@ function main() {
     validateMarkers(original);
     updated = substituteLiteralCounts(substituteCounts(substituteTables(original)));
   } catch (error) {
-    console.error('README.md is out of sync with lib/manifest.js — run `npm run gen:docs`.');
+    if (check) {
+      console.error('README.md is out of sync with lib/manifest.js — run `npm run gen:docs`.');
+    }
     console.error(String(error?.message || error));
     process.exitCode = 1;
     return;

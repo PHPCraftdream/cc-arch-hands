@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
 import { spawn } from 'node:child_process';
 import { basename, join } from 'node:path';
-import { existsSync, mkdtempSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { acquireLease, releaseLease } from '../lib/lease-lock.js';
 
@@ -165,6 +165,122 @@ describe('lease release recovery budget', () => {
 
     const successor = acquireLease(leasePath);
     assert.notEqual(successor, null, 'a quarantined fence must not block a later same-process acquire');
+    if (successor) releaseLease(successor);
+  });
+
+  it('disposes of its own owner-file-only fence when the owner unlink fails and quarantines the body', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-lease-owner-unlink-'));
+    fixtures.add(home);
+    const leasePath = join(home, 'claim');
+    let claimRemovalCalls = 0;
+    const testInterlock = (phase, stage) => {
+      if (phase !== 'lease-release') return;
+      if (stage === 'claim-removal') {
+        claimRemovalCalls += 1;
+        if (claimRemovalCalls !== 1) return;
+        // The fence rename already happened (takeFence's vacancy snapshot
+        // check requires owner.json to still be a readable file, so the
+        // sabotage must land at the first removal attempt instead). Replace
+        // owner.json with a same-named
+        // DIRECTORY: every removal attempt then fails unlinkSync with a
+        // non-transient code (EISDIR on POSIX; on Windows EPERM, which is
+        // transient here and exhausts the whole removal budget). The fence is
+        // left holding only owner.json — a shape the stray-entry guard in
+        // removeClaimPath never sees, so no retry or quarantine precondition
+        // keyed on "unexpected contents" can resolve it.
+        const taken = readdirSync(home).find((name) => name.startsWith(`${basename(leasePath)}.taken-`));
+        assert.ok(taken, 'fence directory must exist at the first removal interlock');
+        const fenceDir = join(home, taken);
+        unlinkSync(join(fenceDir, 'owner.json'));
+        mkdirSync(join(fenceDir, 'owner.json'));
+      }
+    };
+    const lease = acquireLease(leasePath, { testInterlock });
+    assert.notEqual(lease, null);
+    if (!lease) return;
+
+    const released = releaseLease(lease);
+    assert.equal(released, true, 'a self-owned fence holding only owner.json must be disposed of, not stranded beside the claim path');
+    assert.ok(claimRemovalCalls >= 1, 'the owner unlink failure must be reached for this repro to be meaningful');
+    assert.equal(existsSync(leasePath), false, 'lease directory must be gone after release');
+    const quarantineRoot = join(home, '.cah-lease-quarantine');
+    const quarantined = readdirSync(quarantineRoot)
+      .find((name) => name.startsWith(`${basename(leasePath)}.taken-`));
+    assert.ok(quarantined, 'the undisposed fence body must be quarantined beside the lease path');
+    assert.equal(existsSync(join(quarantineRoot, quarantined, 'owner.json')), true,
+      'quarantine must preserve the fence contents');
+    const leftover = readdirSync(home).filter((name) => name.startsWith(`${basename(leasePath)}.taken-`));
+    assert.equal(leftover.length, 0, 'no stranded `.taken-` fence entry may remain beside the lease path');
+
+    const successor = acquireLease(leasePath);
+    assert.notEqual(successor, null, 'a quarantined fence must not block a later same-process acquire');
+    if (successor) releaseLease(successor);
+  });
+
+  it('recovers a transient obstruction that outlasts the first removal attempt, else quarantines the remainder', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-lease-transient-budget-'));
+    fixtures.add(home);
+    const leasePath = join(home, 'claim');
+    let fenceDir = null;
+    let claimRemovalCalls = 0;
+    const testInterlock = (phase, stage) => {
+      if (phase !== 'lease-release') return;
+      if (stage === 'vacancy') {
+        const taken = readdirSync(home).find((name) => name.startsWith(`${basename(leasePath)}.taken-`));
+        assert.ok(taken, 'fence directory must exist after the vacancy interlock');
+        fenceDir = join(home, taken);
+      } else if (stage === 'claim-removal') {
+        claimRemovalCalls += 1;
+        if (claimRemovalCalls === 1) {
+          if (process.platform === 'win32') {
+            // Windows: make owner.json un-unlinkable with a TRANSIENT code
+            // (EPERM) for the whole first attempt, so the removal budget
+            // expires before the terminal disposal.
+            unlinkSync(join(fenceDir, 'owner.json'));
+            mkdirSync(join(fenceDir, 'owner.json'));
+          } else {
+            // POSIX: a read-only fence directory makes unlinkSync fail with
+            // EACCES (transient) until the mode is restored below, which
+            // happens only at the second attempt — i.e. after the first
+            // attempt has burned its whole share of the budget.
+            chmodSync(fenceDir, 0o555);
+          }
+        } else if (claimRemovalCalls === 2 && process.platform !== 'win32') {
+          chmodSync(fenceDir, 0o755);
+        }
+      }
+    };
+    const lease = acquireLease(leasePath, { testInterlock });
+    assert.notEqual(lease, null);
+    if (!lease) return;
+
+    const startedAt = Date.now();
+    const released = releaseLease(lease);
+    const elapsed = Date.now() - startedAt;
+    assert.equal(released, true, 'release must converge once the obstruction clears or the fence body is quarantined');
+    assert.ok(claimRemovalCalls >= 2, 'the removal loop must actually retry at the fence for this repro to be meaningful');
+    assert.ok(elapsed >= 700, `the removal budget must span the restored ~750ms window, got ${elapsed}ms`);
+    const leftover = readdirSync(home).filter((name) => name.startsWith(`${basename(leasePath)}.taken-`));
+    assert.equal(leftover.length, 0, 'no stranded `.taken-` fence entry may remain beside the lease path');
+    if (process.platform !== 'win32') {
+      // The obstruction cleared inside the budget: removal completes outright
+      // and no quarantine is needed at all.
+      assert.equal(existsSync(leasePath), false, 'lease directory must be gone after release');
+      assert.equal(existsSync(join(home, '.cah-lease-quarantine')), false,
+        'no quarantine may be created when removal ultimately succeeds');
+    } else {
+      // The obstruction (EPERM on a same-named directory) survives the budget:
+      // the fence body must be quarantined, not stranded.
+      const quarantineRoot = join(home, '.cah-lease-quarantine');
+      const quarantined = readdirSync(quarantineRoot)
+        .find((name) => name.startsWith(`${basename(leasePath)}.taken-`));
+      assert.ok(quarantined, 'the undisposed fence body must be quarantined beside the lease path');
+      assert.equal(existsSync(join(quarantineRoot, quarantined, 'owner.json')), true,
+        'quarantine must preserve the fence contents');
+    }
+
+    const successor = acquireLease(leasePath);
+    assert.notEqual(successor, null, 'the disposed fence must not block a later same-process acquire');
     if (successor) releaseLease(successor);
   });
 });

@@ -345,7 +345,7 @@ describe('marker capacity staging', () => {
         inspectPath,
         capacitySlotPath: (dir) => join(dir, '..', '.markers-capacity-transaction', 'victim'),
         parseTransactionState: (content) => JSON.parse(content.toString('utf8')),
-        identityKey, present: 'present', indeterminate: 'indeterminate',
+        identityKey, present: 'present', absent: 'absent', indeterminate: 'indeterminate',
       },
     );
     assert.deepEqual(rejected, { recognized: true, state: null });

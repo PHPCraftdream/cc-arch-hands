@@ -22,8 +22,8 @@ export function makeInterlock(env = process.env) {
   const interlock = (...args) => {
     if (env.CAH_TEST_ONLY !== '1') return;
     const phase = args[0];
-    const stage = args[1] === 'before' || args[1] === 'vacancy' ? args[1] : 'before';
-    const aliases = stage === 'before' ? args.slice(1) : args.slice(2);
+    const stage = typeof args[1] === 'string' && args[1] !== '' ? args[1] : 'before';
+    const aliases = args.slice(2);
     const candidates = [phase, ...aliases];
     const fsPhases = String(env.CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE || '')
       .split(',').filter(Boolean);
