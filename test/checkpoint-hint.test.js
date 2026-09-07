@@ -12,7 +12,6 @@ import {
 } from '../test-support/process-batches.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const BIN = join(__dirname, '..', 'bin', 'cah-checkpoint-hint.js');
 const RUNNER = join(__dirname, '..', 'test-support', 'run-companion.js');
 const hintChildren = new Set();
 const hintFixtures = new Set();
@@ -150,12 +149,6 @@ function markerExists(home, sessionId) {
 function writeClaim(path, owner) {
   mkdirSync(path);
   writeFileSync(join(path, 'owner.json'), JSON.stringify(owner));
-}
-
-function replaceClaim(path, owner) {
-  unlinkSync(join(path, 'owner.json'));
-  rmdirSync(path);
-  writeClaim(path, owner);
 }
 
 function readClaim(path) {

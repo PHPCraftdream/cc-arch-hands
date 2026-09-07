@@ -192,8 +192,16 @@ function validateMarkers(content) {
 function main() {
   const check = process.argv.includes('--check');
   const original = readFileSync(README_PATH, 'utf8');
-  validateMarkers(original);
-  const updated = substituteLiteralCounts(substituteCounts(substituteTables(original)));
+  let updated;
+  try {
+    validateMarkers(original);
+    updated = substituteLiteralCounts(substituteCounts(substituteTables(original)));
+  } catch (error) {
+    console.error('README.md is out of sync with lib/manifest.js — run `npm run gen:docs`.');
+    console.error(String(error?.message || error));
+    process.exitCode = 1;
+    return;
+  }
 
   if (updated === original) {
     console.log('README.md is already in sync with lib/manifest.js.');

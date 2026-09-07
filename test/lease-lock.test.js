@@ -130,4 +130,41 @@ describe('lease release recovery budget', () => {
     assert.notEqual(successor, null, 'a stranded fence must not block a later acquire');
     if (successor) releaseLease(successor);
   });
+
+  it('quarantines its own fence when removal fails non-transiently instead of stranding it', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-lease-fence-quarantine-'));
+    fixtures.add(home);
+    const leasePath = join(home, 'claim');
+    const testInterlock = (phase, stage) => {
+      if (phase !== 'lease-release') return;
+      if (stage === 'vacancy') {
+        // The fence rename just happened, so lease.path is vacant and exactly
+        // one `.taken-` entry sits beside it. Contaminate the fence with a
+        // stray entry that is never removed: every removal attempt then fails
+        // the stray-entry guard, a rejection no retry budget can fix.
+        const taken = readdirSync(home).find((name) => name.startsWith(`${basename(leasePath)}.taken-`));
+        assert.ok(taken, 'fence directory must exist after the vacancy interlock');
+        writeFileSync(join(home, taken, 'stray'), 'stray');
+      }
+    };
+    const lease = acquireLease(leasePath, { testInterlock });
+    assert.notEqual(lease, null);
+    if (!lease) return;
+
+    const released = releaseLease(lease);
+    assert.equal(released, true, 'a non-transiently obstructed fence must be disposed of, not retried identically until the attempts run out');
+    assert.equal(existsSync(leasePath), false, 'lease directory must be gone after release');
+    const quarantineRoot = join(home, '.cah-lease-quarantine');
+    const quarantined = readdirSync(quarantineRoot)
+      .find((name) => name.startsWith(`${basename(leasePath)}.taken-`));
+    assert.ok(quarantined, 'the obstructed fence must be quarantined beside the lease path');
+    assert.equal(readdirSync(join(quarantineRoot, quarantined)).includes('stray'), true,
+      'quarantine must preserve the fence contents that blocked the removal');
+    const leftover = readdirSync(home).filter((name) => name.startsWith(`${basename(leasePath)}.taken-`));
+    assert.equal(leftover.length, 0, 'no stranded `.taken-` fence entry may remain beside the lease path');
+
+    const successor = acquireLease(leasePath);
+    assert.notEqual(successor, null, 'a quarantined fence must not block a later same-process acquire');
+    if (successor) releaseLease(successor);
+  });
 });

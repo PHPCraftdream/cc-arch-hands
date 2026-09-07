@@ -21,20 +21,29 @@ function filesystemTests() {
 //   **/test.{cjs,mjs,js}
 //   **/test-*.{cjs,mjs,js}
 //   **/*-test.{cjs,mjs,js}
+//   **/*_test.{cjs,mjs,js}
+// PLUS a second rule: every .js/.cjs/.mjs file anywhere inside a directory
+// named `test` (recursively, any repo depth) runs regardless of its filename
 // (see "Test runner execution model" in the Node docs), skipping node_modules
-// and dot-directories. discoveryCandidates mirrors those patterns with an
+// and dot-directories. discoveryCandidates mirrors those rules with an
 // independent recursive scan so the assertions below cannot be tautologies.
+// Rules verified against bare `node --test` on Node v24.
 function discoveryCandidates() {
   const skip = new Set(['node_modules', '.git']);
-  const matches = /(\/|^)([^/]*\.test\.(?:c|m)?js|test\.(?:c|m)?js|test-[^/]*\.(?:c|m)?js|[^/]*-test\.(?:c|m)?js)$/;
+  const matches = /(\/|^)([^/]*\.test\.(?:c|m)?js|test\.(?:c|m)?js|test-[^/]*\.(?:c|m)?js|[^/]*-test\.(?:c|m)?js|[^/]*_test\.(?:c|m)?js)$/;
+  const ext = /\.(?:c|m)?js$/;
   const found = [];
-  const walk = (dir) => {
+  const walk = (dir, inTestDir = false) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       if (entry.name.startsWith('.') || (entry.isDirectory() && skip.has(entry.name))) continue;
       const full = join(dir, entry.name);
       if (entry.isDirectory()) {
-        walk(full);
-      } else if (entry.isFile() && matches.test(full.replaceAll('\\', '/'))) {
+        walk(full, inTestDir || entry.name === 'test');
+      } else if (
+        entry.isFile() &&
+        (inTestDir || matches.test(full.replaceAll('\\', '/'))) &&
+        (!inTestDir || ext.test(entry.name))
+      ) {
         found.push(relative(ROOT, full).replaceAll('\\', '/'));
       }
     }
@@ -54,7 +63,6 @@ function commandTokens(command) {
 
 describe('test discovery contract', () => {
   it('runs every repo test file exactly once via bare node --test discovery', () => {
-    const expected = filesystemTests();
     const tokens = commandTokens(PACKAGE.scripts?.test);
     assert.equal(tokens.shift(), 'node', 'npm test must invoke Node directly');
     assert.equal(PACKAGE.engines?.node, '>=18.19.0', 'test-concurrency requires the fixed Node minimum');
