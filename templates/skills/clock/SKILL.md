@@ -199,8 +199,9 @@ through long turns instead of jumping in one step. The matcher `""` means "all t
      if other entries already exist there (e.g. from `/checkpoint-watch` in
      `hooks.Stop`), append ours — never replace.
 6. Save atomically with the safe write protocol from the "Atomic write only"
-   rule below (fresh unique temp file, re-read-and-verify immediately before
-   the rename, refuse to publish on a mismatch). Report all three pieces'
+   rule below (settings lock held for the whole cycle, fresh unique temp file,
+   re-read-and-verify immediately before the rename, refuse to publish on a
+   mismatch). Report all three pieces'
    final states (statusLine, chat-stamp.Stop, chat-stamp.PostToolUse).
 
 ### `--off` (disable)
@@ -216,7 +217,8 @@ through long turns instead of jumping in one step. The matcher `""` means "all t
      `cah-sentinel === "cah-hook:v1"` AND `cah-name === "clock"`. After
      removal, drop any matcher entry whose `hooks` array is empty. Drop
      `hooks[event]` if it becomes empty. Drop `hooks` if it becomes empty.
-   - Save atomically (same safe write protocol as above). Never delete
+   - Save atomically (same safe write protocol as above — settings lock held
+     for the whole cycle). Never delete
      `settings.json` itself — even if it becomes `{}`.
 3. Report what was removed, or "not enabled" if nothing matched in either scope.
 
@@ -260,7 +262,39 @@ Never write in this mode.
 - **Never touch hook entries WITHOUT our sentinel.** Other hooks in
   `hooks.Stop` (e.g. from `/checkpoint-watch`) or in `hooks.PostToolUse`
   (any third-party tool) must be preserved exactly.
-- **Atomic write only — with a concurrent-edit check.** Serialize with
+- **Lock `settings.json` for the whole read-modify-write cycle.** Cooperating
+  cah skills (`/clock` and `/checkpoint-watch`) can run at the same time, and
+  verification alone cannot stop two in-flight writers from passing the same
+  check just before both rename — the second rename would silently erase the
+  first writer's own change. Before your FIRST read of `settings.json` in any
+  mode that will save, take the shared settings lock and hold it until the
+  save attempt is fully finished:
+  1. Try to create a lock directory named `settings.json.lock` beside
+     `settings.json`. Directory creation is atomic across processes: it either
+     does not exist and you win, or it exists and someone else holds it.
+  2. On winning, immediately write an `owner.json` file inside it containing
+     your process id and the current epoch ms, e.g.
+     `{"pid":12345,"timestamp":1789000000000}`.
+  3. If the lock already exists, read its `owner.json`. If the owner file is
+     missing or unreadable, the holder has abandoned the lock. Otherwise the
+     holder has abandoned the lock when its `pid` is no longer a live process,
+     or when the recorded `timestamp` is more than 5 minutes old (the same
+     lease window `lib/lease-lock.js` uses for the companion bins). An
+     abandoned lock: rename it aside to a unique
+     `settings.json.lock.stale.<random-suffix>` name, delete that renamed
+     copy, and start again at step 1. A live holder: wait about 200 ms and
+     retry, up to a bounded total wait of about 30 seconds.
+  4. If the lock still cannot be acquired, write nothing, delete nothing you
+     do not own, and tell the user the settings are busy and to re-run
+     `/clock` once the other operation finishes.
+  5. Release the lock by deleting `settings.json.lock` in EVERY outcome:
+     after a successful rename, and on every early exit — unreadable JSON,
+     the concurrent-edit refusal below, or the user cancelling.
+  This lock serializes only writers that follow this protocol. A writer that
+  ignores it is still caught by the byte-for-byte re-read in the next rule.
+- **Atomic write only — with a concurrent-edit check.** Do this whole
+  sequence while holding the settings lock from the previous rule. Serialize
+  with
   `JSON.stringify(value, null, 2) + "\n"` and write the bytes to a **fresh,
   unique** temp file beside `settings.json`, e.g.
   `settings.json.tmp.<random-suffix>`, with a new random suffix for this

@@ -3,9 +3,10 @@ import { afterEach, describe, it } from 'node:test';
 import { spawn } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
 import { basename, join } from 'node:path';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { acquireLease, leaseOwned, releaseLease, RELEASE_TOTAL_WAIT_MS } from '../lib/lease-lock.js';
+import { acquireLease, LEASE_MAX_MS, leaseOwned, releaseLease, RELEASE_TOTAL_WAIT_MS, renewLease } from '../lib/lease-lock.js';
+import { leaseExpired } from '../lib/lease-clock.js';
 
 const fixtures = new Set();
 
@@ -410,5 +411,68 @@ describe('recoverFence displacement disposal under real contention', () => {
     const leftovers = readdirSync(home).filter((name) => name.includes('.abandoned-'));
     assert.deepEqual(leftovers, [],
       `recoverFence() leaked its displacement quarantine: ${JSON.stringify(leftovers)}`);
+  });
+});
+
+describe('lease expiry and reclaim agree at every clock boundary', () => {
+  const T = 1_700_000_000_000;
+
+  it('expiry, renewal and takeover agree for live and dead owners at every boundary', () => {
+    const boundaries = [
+      { now: T - 1, expired: true },
+      { now: T, expired: false },
+      { now: T + LEASE_MAX_MS, expired: false },
+      { now: T + LEASE_MAX_MS + 1, expired: true },
+    ];
+    for (const liveness of ['live', 'dead']) {
+      const pidIsAlive = () => liveness === 'live';
+      for (const { now, expired } of boundaries) {
+        const dir = mkdtempSync(join(tmpdir(), 'cah-lease-boundary-'));
+        fixtures.add(dir);
+        const lease = acquireLease(join(dir, 'claim'), { nowMs: T });
+        assert.notEqual(lease, null, `acquire at T must succeed (${liveness}, now=${now})`);
+        const diskOwner = JSON.parse(readFileSync(join(dir, 'claim', 'owner.json'), 'utf8'));
+        assert.equal(leaseExpired(diskOwner, now), expired,
+          `leaseExpired mismatch at boundary now=${now} (${liveness} owner)`);
+        assert.equal(renewLease(lease, now), !expired,
+          `renewLease mismatch at boundary now=${now} (${liveness} owner)`);
+        if (liveness === 'live') {
+          const takeover = acquireLease(join(dir, 'claim'), { nowMs: now, pidIsAlive });
+          assert.equal(takeover !== null, expired,
+            `takeover mismatch at boundary now=${now} (live owner)`);
+          if (takeover !== null) {
+            assert.equal(leaseOwned(takeover), true,
+              `takeover lease must be owned at now=${now} (live owner)`);
+            releaseLease(takeover);
+          }
+        } else {
+          const takeover = acquireLease(join(dir, 'claim'), { nowMs: now, pidIsAlive });
+          assert.notEqual(takeover, null,
+            `dead-owner takeover must succeed at every boundary (now=${now})`);
+          assert.equal(leaseOwned(takeover), true,
+            `dead-owner takeover lease must be owned (now=${now})`);
+          releaseLease(takeover);
+        }
+      }
+    }
+  });
+
+  it('a future-dated lease is renewable neither by its owner nor takeable before the fix', () => {
+    const T0 = 1_700_000_000_000;
+    const dir = mkdtempSync(join(tmpdir(), 'cah-lease-future-'));
+    fixtures.add(dir);
+    const leasePath = join(dir, 'claim');
+    const lease = acquireLease(leasePath, { nowMs: T0 + 3_600_000 });
+    assert.notEqual(lease, null);
+    const diskOwner = JSON.parse(readFileSync(join(leasePath, 'owner.json'), 'utf8'));
+    assert.equal(leaseExpired(diskOwner, T0), true,
+      'a future-dated heartbeat must read as expired at the rolled-back clock');
+    assert.equal(renewLease(lease, T0), false,
+      'the owner must NOT be able to renew a future-dated lease after rollback');
+    const takeover = acquireLease(leasePath, { nowMs: T0, pidIsAlive: () => true });
+    assert.notEqual(takeover, null,
+      'an expired-by-heartbeat live-owner lease must be takeable (the P2-1 contradiction)');
+    assert.equal(leaseOwned(takeover), true);
+    releaseLease(takeover);
   });
 });

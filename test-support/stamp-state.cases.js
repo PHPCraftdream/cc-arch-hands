@@ -143,7 +143,7 @@ export function registerStampStateCases() {
     const env = {
       CAH_STAMP_THROTTLE_PATH: throttle,
       CAH_STAMP_MIN_INTERVAL_MS: '1',
-      CAH_STAMP_OWNER_MAX_LEASE_MS: '100',
+      CAH_STAMP_OWNER_MAX_LEASE_MS: '150',
       CAH_TEST_ONLY: '1',
       CAH_TEST_ONLY_FSUTIL_INTERLOCK: interlock,
       CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE: 'write-before-final-publication',
@@ -152,10 +152,12 @@ export function registerStampStateCases() {
       { session_id: sessionId, transcript_path: tp }, env,
     );
     await waitForPath(`${interlock}.ready`);
-    // 4x the lease TTL — under heavy concurrent test-suite load, a 1.5x
-    // margin observably lets scheduling jitter around the successor's own
-    // process spawn make the predecessor's lease look not-yet-stale.
-    await new Promise((resolve) => setTimeout(resolve, 400));
+    // 8x the lease TTL — under heavy concurrent test-suite load (many
+    // parallel test files each spawning real child processes), even the
+    // previous 4x margin observably let scheduling jitter around the
+    // successor's own process spawn make the predecessor's lease look
+    // not-yet-stale.
+    await new Promise((resolve) => setTimeout(resolve, 1200));
     writeFileSync(tp, JSON.stringify({
       type: 'assistant', requestId: 'successor-request',
       message: { role: 'assistant', model: 'claude-opus-4-7', usage: { input_tokens: 47_000 } },
@@ -165,7 +167,7 @@ export function registerStampStateCases() {
       {
         CAH_STAMP_THROTTLE_PATH: throttle,
         CAH_STAMP_MIN_INTERVAL_MS: '1',
-        CAH_STAMP_OWNER_MAX_LEASE_MS: '100',
+        CAH_STAMP_OWNER_MAX_LEASE_MS: '150',
         CAH_TEST_ONLY: '1',
       },
     );
@@ -307,7 +309,7 @@ export function registerStampStateCases() {
       {
         CAH_STAMP_THROTTLE_PATH: throttle,
         CAH_STAMP_MIN_INTERVAL_MS: '1',
-        CAH_STAMP_OWNER_MAX_LEASE_MS: '100',
+        CAH_STAMP_OWNER_MAX_LEASE_MS: '150',
         CAH_TEST_ONLY: '1',
         CAH_TEST_ONLY_OWNER_INTERLOCK: interlock,
         CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'sidecar-prune',
@@ -618,7 +620,7 @@ export function registerStampStateCases() {
       {
         CAH_STAMP_THROTTLE_PATH: throttle,
         CAH_TEST_ONLY: '1',
-        CAH_STAMP_OWNER_MAX_LEASE_MS: '100',
+        CAH_STAMP_OWNER_MAX_LEASE_MS: '150',
       },
     );
     assert.ok(result.stdout.trim());
