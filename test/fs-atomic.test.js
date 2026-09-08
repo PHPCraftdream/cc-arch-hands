@@ -447,3 +447,124 @@ describe('concurrent publishers racing one leaf', () => {
     }
   });
 });
+
+describe('lease displacement and capacity quarantine recovery artifacts', () => {
+  it('reports .abandoned- and .cah-capacity-quarantine namespaces instead of ignoring them', () => {
+    const base = mkdtempSync(join(tmpdir(), 'cah-abandoned-report-'));
+    try {
+      const abandoned = join(base, 'claim.lock.abandoned-4321-6bed1c9e');
+      mkdirSync(abandoned);
+      writeFileSync(join(abandoned, 'owner.json'), '{"pid":4321,"token":"t","generation":"g"}\n');
+      const capacity = join(base, '.cah-capacity-quarantine');
+      mkdirSync(capacity);
+      writeFileSync(join(capacity, 'victim'), '{"pid":4321}\n');
+
+      // The predicates and describeRecoveryArtifact() must agree about what
+      // these strings mean, or orphan sweeps treat recovery state as user data.
+      assert.equal(isQuarantineName('claim.lock.abandoned-4321-6bed1c9e'), true);
+      assert.equal(isQuarantinePath(join('x', '.cah-capacity-quarantine', 'victim')), true);
+
+      const report = maintainRecoveryArtifacts(base);
+      assert.ok(report.recovery.includes(abandoned),
+        `a displacement quarantine holding a claim must be reported: ${JSON.stringify(report.recovery)}`);
+      assert.ok(report.recovery.includes(capacity),
+        `an occupied capacity victim slot must be reported: ${JSON.stringify(report.recovery)}`);
+      assert.deepEqual(report.swept, [], 'neither namespace may ever be auto-swept');
+      assert.ok(existsSync(join(abandoned, 'owner.json')), 'reporting must not consume the displaced claim');
+      assert.ok(existsSync(join(capacity, 'victim')), 'reporting must not consume the victim slot');
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('a future-dated committed fence proof', () => {
+  it('does not pin a recycled-pid fence fresh: the acquirer recovers instead of wedging the leaf', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-future-proof-'));
+    const children = [];
+    try {
+      const dest = join(dir, 'leaf.json');
+      writeFileSync(dest, 'ORIGINAL\n');
+
+      const victimBase = join(dir, 'victim-interlock');
+      const victim = spawnPublisher(dest, 'victim-payload', victimBase, 'write-after-final-rename');
+      children.push(victim.child);
+      await waitForPath(`${victimBase}.ready`, 60000);
+      victim.child.kill('SIGKILL');
+      await victim.exited;
+      const fence = `${dest}.cah-owned-publish`;
+      assert.equal(readFileSync(dest, 'utf8'), 'victim-payload\n',
+        'the killed publisher must have committed its payload');
+      assert.ok(existsSync(fence), 'the crashed publisher must leave its committed fence');
+      const proofPath = join(fence, 'publication.json');
+      const proof = JSON.parse(readFileSync(proofPath, 'utf8'));
+
+      // Simulate pid recycling AND a backward clock step: the proof points at
+      // a live unrelated process and is dated an hour in the future. A
+      // wall-clock-only staleness check would answer "fresh" for the whole
+      // skew and wedge the leaf behind a ~30 s busy-wait and a hard EEXIST.
+      const sleeper = spawn(process.execPath, ['-e', 'setInterval(() => {}, 60000);'],
+        { stdio: 'ignore' });
+      children.push(sleeper);
+      proof.ownerPid = sleeper.pid;
+      proof.createdAtMs = Date.now() + 3_600_000;
+      writeFileSync(proofPath, `${JSON.stringify(proof)}\n`);
+
+      const acquirerBase = join(dir, 'acquirer-interlock');
+      const acquirer = spawnPublisher(dest, 'successor-payload', acquirerBase, 'no-such-phase');
+      children.push(acquirer.child);
+      const acquirerResult = await acquirer.exited;
+      assert.equal(acquirerResult.code, 0,
+        `the acquirer must recover the future-dated recycled-pid fence, not burn the 30 s wait: ${acquirerResult.stdout}`);
+      assert.equal(acquirerResult.stdout, 'PUBLISHED\n');
+      assert.equal(readFileSync(dest, 'utf8'), 'successor-payload\n');
+      assert.equal(existsSync(fence), false,
+        'the acquirer must have recovered the future-dated fence, not deferred to it');
+    } finally {
+      for (const child of children) child.kill('SIGKILL');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('a recycled-pid committed fence under maintenance', () => {
+  it('is swept by a stale-proof maintenance pass instead of being deferred forever', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-recycled-maintenance-'));
+    const children = [];
+    try {
+      const dest = join(dir, 'leaf.json');
+      writeFileSync(dest, 'ORIGINAL\n');
+
+      const victimBase = join(dir, 'victim-interlock');
+      const victim = spawnPublisher(dest, 'victim-payload', victimBase, 'write-after-final-rename');
+      children.push(victim.child);
+      await waitForPath(`${victimBase}.ready`, 60000);
+      victim.child.kill('SIGKILL');
+      await victim.exited;
+      const fence = `${dest}.cah-owned-publish`;
+      assert.ok(existsSync(fence), 'the crashed publisher must leave its committed fence');
+      const proofPath = join(fence, 'publication.json');
+      const proof = JSON.parse(readFileSync(proofPath, 'utf8'));
+
+      // Recycle the pid onto a live unrelated process and age the proof well
+      // past the fence freshness window. Maintenance must treat this as
+      // crashed state, exactly like a foreign acquirer already does.
+      const sleeper = spawn(process.execPath, ['-e', 'setInterval(() => {}, 60000);'],
+        { stdio: 'ignore' });
+      children.push(sleeper);
+      proof.ownerPid = sleeper.pid;
+      proof.createdAtMs = Date.now() - 3_600_000;
+      writeFileSync(proofPath, `${JSON.stringify(proof)}\n`);
+
+      const report = maintainRecoveryArtifacts(dir);
+      assert.ok(report.swept.includes(fence),
+        `maintenance must recover a stale recycled-pid committed fence: swept=${JSON.stringify(report.swept)} preserved=${JSON.stringify(report.preserved)}`);
+      assert.equal(existsSync(fence), false);
+      assert.equal(readFileSync(dest, 'utf8'), 'victim-payload\n',
+        'sweeping the fence must never touch the committed payload');
+    } finally {
+      for (const child of children) child.kill('SIGKILL');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

@@ -330,3 +330,85 @@ describe('lease release recovery budget', () => {
     assert.equal(existsSync(leasePath), false, 'lease directory must be gone after release');
   });
 });
+
+// A crashed reclaim leaves a `.taken-<deadpid>-<uuid>` fence and an expired
+// claim — exactly what a SIGKILLed hook leaves between takeFence()'s rename
+// and its disposal. When several real acquirers race to recover it, the
+// loser that displaces the current claim into `.abandoned-<pid>-<uuid>` and
+// then loses the fence restore used to return without disposing that
+// displacement, silently and permanently. Round 68: every exit path must
+// dispose.
+describe('recoverFence displacement disposal under real contention', () => {
+  it('leaves no .abandoned- displacement behind when real acquirers race a crashed fence', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-lease-abandoned-'));
+    fixtures.add(home);
+    const leasePath = join(home, 'claim');
+
+    // A genuinely dead pid for the planted crashed state.
+    const corpse = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' });
+    await new Promise((resolve) => corpse.once('exit', resolve));
+    const deadPid = corpse.pid;
+
+    const owner = `${JSON.stringify({
+      pid: deadPid,
+      token: 'planted-token',
+      generation: 'planted-generation',
+      timestamp: Date.now() - 60_000,
+    })}\n`;
+    mkdirSync(leasePath);
+    writeFileSync(join(leasePath, 'owner.json'), owner);
+    const plantedFence = `${leasePath}.taken-${deadPid}-plantedfence`;
+    mkdirSync(plantedFence);
+    writeFileSync(join(plantedFence, 'owner.json'), owner);
+
+    // A 1 ms lease makes every claim instantly expired, so each acquirer
+    // iteration goes through takeFence/recoverFence against live peers —
+    // the production shape of expired-lease contention.
+    const acquirerScript = `
+      import { acquireLease, releaseLease } from ${JSON.stringify(new URL('../lib/lease-lock.js', import.meta.url).href)};
+      const rounds = Number(process.env.CAH_TEST_LEASE_ROUNDS);
+      let acquired = 0;
+      for (let i = 0; i < rounds; i += 1) {
+        const lease = acquireLease(process.env.CAH_TEST_LEASE_PATH, { testLeaseEnv: 'CAH_TEST_LEASE_MS' });
+        if (lease) {
+          acquired += 1;
+          releaseLease(lease);
+        }
+      }
+      process.stdout.write('DONE ' + String(acquired) + '\\n');
+    `;
+    const children = [];
+    for (let i = 0; i < 4; i += 1) {
+      const child = spawn(process.execPath, ['--input-type=module', '-e', acquirerScript], {
+        env: {
+          ...process.env,
+          HOME: home,
+          USERPROFILE: home,
+          CAH_TEST_ONLY: '1',
+          CAH_TEST_LEASE_MS: '1',
+          CAH_TEST_LEASE_PATH: leasePath,
+          CAH_TEST_LEASE_ROUNDS: '100',
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+      child.stdout.on('data', (chunk) => { stdout += chunk; });
+      child.stderr.on('data', (chunk) => { stderr += chunk; });
+      children.push(new Promise((resolve) => child.once('close', (code) => resolve({ code, stdout, stderr }))));
+    }
+    const results = await Promise.all(children);
+    for (const [index, result] of results.entries()) {
+      assert.equal(result.code, 0,
+        `acquirer ${index} failed: ${result.stdout} ${result.stderr}`);
+    }
+
+    // The displacement namespace must be empty after the race settles:
+    // every exit path disposes, so nothing is left silently behind.
+    const leftovers = readdirSync(home).filter((name) => name.includes('.abandoned-'));
+    assert.deepEqual(leftovers, [],
+      `recoverFence() leaked its displacement quarantine: ${JSON.stringify(leftovers)}`);
+  });
+});
