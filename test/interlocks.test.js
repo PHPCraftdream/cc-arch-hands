@@ -82,19 +82,36 @@ describe('interlock argument parser', () => {
     // An undeclared stage silently becomes a phase-agnostic rendezvous
     // candidate that fires at every unrelated call site using the same stage,
     // so the declared set must track the literals production actually passes.
-    // Every current call site is single-line, so a bounded same-line argument
-    // scan is exact today; if a call site ever spans lines this test fails on
-    // the resulting set mismatch and the scan must be extended with it.
+    // The argument scan matches call sites that span lines (several do), and
+    // it must never under-count silently: the raw call-start total is checked
+    // against both the fully parsed total and EXPECTED_CALL_SITES, so a call
+    // site the scan cannot see fails loudly instead of passing silently.
     const root = dirname(dirname(fileURLToPath(import.meta.url)));
-    const callSiteRe = /testInterlock(?:\s*\?.\s*)?\(([^)\n]*)\)/g;
+    const callStartRe = /testInterlock(?:\s*\?.\s*)?\(/g;
+    const callArgsRe = /testInterlock(?:\s*\?.\s*)?\(([^)]*)\)/g;
     const literalRe = /^'([^']+)'$|^"([^"]+)"$/;
+    // The parser (test-support/interlocks.js) consumes args[1] as a stage only
+    // when it names a declared stage; otherwise it is the first alias of the
+    // no-stage shape. probe.js uses that shape with quoted alias literals, so
+    // its args[1] values are the only non-stage entries the scan may find.
+    const knownAliasFirstArgs = new Set([
+      'disable-after-backup-check', 'disable-after-settings-rename',
+      'disable-before-settings-rename', 'enable-after-backup-check',
+      'enable-after-settings-rename', 'enable-before-settings-rename',
+    ]);
+    const EXPECTED_CALL_SITES = 61;
     const found = new Set();
+    let callStarts = 0;
+    let parsedCalls = 0;
     const visit = (directory) => {
       for (const entry of readdirSync(directory, { withFileTypes: true })) {
         const path = join(directory, entry.name);
         if (entry.isDirectory()) visit(path);
         else if (entry.isFile() && entry.name.endsWith('.js')) {
-          for (const match of readFileSync(path, 'utf8').matchAll(callSiteRe)) {
+          const source = readFileSync(path, 'utf8');
+          callStarts += [...source.matchAll(callStartRe)].length;
+          for (const match of source.matchAll(callArgsRe)) {
+            parsedCalls += 1;
             const args = match[1].split(',');
             const literal = args.length > 1 ? literalRe.exec(args[1].trim()) : null;
             if (literal) found.add(literal[1] ?? literal[2]);
@@ -104,10 +121,17 @@ describe('interlock argument parser', () => {
     };
     visit(join(root, 'lib'));
     visit(join(root, 'bin'));
+    assert.equal(callStarts, parsedCalls,
+      'every testInterlock call site must be fully parseable by the scan; '
+      + 'a call whose arguments contain a ")" breaks the argument regex');
+    assert.equal(parsedCalls, EXPECTED_CALL_SITES,
+      'the production testInterlock call-site count changed; re-run the scan, '
+      + 'update EXPECTED_CALL_SITES, and update STAGE_NAMES if a stage was added or removed');
     assert.deepEqual(
       [...found].sort(),
-      [...STAGE_NAMES].sort(),
-      'STAGE_NAMES must exactly match the testInterlock() stage literals in lib/ and bin/',
+      [...STAGE_NAMES, ...knownAliasFirstArgs].sort(),
+      'the quoted args[1] literals in lib/ and bin/ must be exactly the declared '
+      + 'stages plus the known alias-only first arguments',
     );
   });
 });

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, existsSync, readFileSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, existsSync, readFileSync, rmSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -412,9 +412,12 @@ describe('run install/uninstall --only bins', () => {
         const binDir = join(home, '.claude', 'cah-bin');
         const cache = join(binDir, 'cache');
         mkdirSync(cache, { recursive: true });
-        // An empty removal reservation is provably ours: maintenance sweeps
-        // it, and the destructive action must be visible in the report.
-        mkdirSync(join(cache, 'crashed.cah-owned-remove'));
+        // An empty removal reservation is provably ours once it is stale (a
+        // fresh one may belong to a live remover): maintenance sweeps it, and
+        // the destructive action must be visible in the report.
+        const crashedReservation = join(cache, 'crashed.cah-owned-remove');
+        mkdirSync(crashedReservation);
+        utimesSync(crashedReservation, new Date(Date.now() - 5000), new Date(Date.now() - 5000));
 
         const installed = captureStdout(() => {
           assert.equal(run(['install', '--only', 'bins']), 0);

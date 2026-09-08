@@ -1,13 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync,
+  existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   captureRegularFileSnapshot, enumerateRecoveryArtifacts, isQuarantineName, isQuarantinePath,
-  maintainRecoveryArtifacts, removeOwnedRegularFile,
+  maintainRecoveryArtifacts, removeOwnedRegularFile, writeFileAtomic,
 } from '../lib/fs-atomic.js';
 
 describe('empty atomic-removal reservations', () => {
@@ -31,6 +31,9 @@ describe('empty atomic-removal reservations', () => {
     const emptyReservation = `${emptyLeaf}.cah-owned-remove`;
     writeFileSync(successor, 'successor\n');
     mkdirSync(emptyReservation);
+    // The reservation models crashed state: maintenance defers a fresh one
+    // because it may belong to a live removeOwnedRegularFile().
+    utimesSync(emptyReservation, new Date(Date.now() - 5000), new Date(Date.now() - 5000));
 
     const swept = maintainRecoveryArtifacts(dir);
     assert.ok(swept.swept.includes(emptyReservation));
@@ -42,6 +45,22 @@ describe('empty atomic-removal reservations', () => {
     const second = maintainRecoveryArtifacts(dir);
     assert.equal(second.swept.includes(occupied), false);
     assert.equal(readFileSync(join(occupied, 'foreign'), 'utf8'), 'keep\n');
+  });
+
+  it('maintenance defers a fresh empty reservation and reclaims it once stale', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-empty-quarantine-'));
+    const reservation = join(dir, 'leaf.cah-owned-remove');
+    mkdirSync(reservation);
+
+    const fresh = maintainRecoveryArtifacts(dir);
+    assert.equal(fresh.swept.includes(reservation), false,
+      'a fresh empty reservation may belong to a live removeOwnedRegularFile()');
+    assert.ok(existsSync(reservation));
+
+    const past = new Date(Date.now() - 5000);
+    utimesSync(reservation, past, past);
+    const stale = maintainRecoveryArtifacts(dir);
+    assert.ok(stale.swept.includes(reservation), 'a stale reservation is genuinely crashed state');
   });
 });
 
@@ -110,5 +129,31 @@ describe('lease-quarantine recovery artifacts', () => {
     assert.equal(isQuarantineName('.cah-lease-quarantine'), true);
     assert.equal(isQuarantinePath(join('x', '.cah-lease-quarantine', 'claim.taken-1-a')), true);
     assert.equal(isQuarantineName('plain-name'), false);
+  });
+});
+
+describe('committed predecessor publication fences', () => {
+  it('a same-process re-publication finishes its own committed predecessor fence', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-committed-predecessor-'));
+    const dest = join(dir, 'leaf.json');
+    writeFileSync(dest, 'v1\n');
+    assert.throws(
+      () => writeFileAtomic(dest, 'v2\n', {
+        testInterlock: (phase) => {
+          if (phase === 'write-after-final-rename') {
+            throw new Error('test-only post-commit failure');
+          }
+        },
+      }),
+      /test-only post-commit failure/,
+    );
+    assert.equal(readFileSync(dest, 'utf8'), 'v2\n',
+      'the interrupted publication must have committed its payload');
+    assert.ok(existsSync(`${dest}.cah-owned-publish`),
+      'the committed predecessor fence must remain for a successor');
+    writeFileAtomic(dest, 'v3\n');
+    assert.equal(readFileSync(dest, 'utf8'), 'v3\n');
+    assert.equal(existsSync(`${dest}.cah-owned-publish`), false,
+      'beginFence() must finish a committed predecessor fence unconditionally, never defer to it');
   });
 });
