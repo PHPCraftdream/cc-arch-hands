@@ -6,7 +6,7 @@ import { basename, join } from 'node:path';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { acquireLease, LEASE_MAX_MS, leaseOwned, releaseLease, RELEASE_TOTAL_WAIT_MS, renewLease } from '../lib/lease-lock.js';
-import { leaseExpired } from '../lib/lease-clock.js';
+import { leaseExpired, FUTURE_SKEW_TOLERANCE_MS } from '../lib/lease-clock.js';
 
 const fixtures = new Set();
 
@@ -419,7 +419,8 @@ describe('lease expiry and reclaim agree at every clock boundary', () => {
 
   it('expiry, renewal and takeover agree for live and dead owners at every boundary', () => {
     const boundaries = [
-      { now: T - 1, expired: true },
+      { now: T - FUTURE_SKEW_TOLERANCE_MS - 1, expired: true },
+      { now: T - FUTURE_SKEW_TOLERANCE_MS, expired: false },
       { now: T, expired: false },
       { now: T + LEASE_MAX_MS, expired: false },
       { now: T + LEASE_MAX_MS + 1, expired: true },
