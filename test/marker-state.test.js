@@ -1116,7 +1116,15 @@ describe('legacy claim migration lease release', () => {
       ownerTestEnv: 'CAH_STAMP_OWNER_MAX_LEASE_MS',
       testInterlock: (phase) => {
         if (phase === 'legacy-claim-reclaim-release' && child === null) {
-          child = spawnMarker(process.execPath, ['-e', "const p=require('path'),f=require('fs');const q=p.join(process.cwd(),'held');const h=f.openSync(q,'w');setTimeout(() => { try { f.unlinkSync(q); } finally { f.closeSync(h); } }, 200)"], {
+          // Holds for 500ms: comfortably more than the process-spawn +
+          // scheduling delay that can elapse under heavy CI load before the
+          // probe loop even starts (a too-short 200ms window let the child
+          // open-then-close its handle before the probe's first rename
+          // attempt ever ran -- observed real CI failure: probe reported
+          // never-blocked), while staying well under releaseLease()'s own
+          // RELEASE_FENCE_WAIT_MS (750ms) retry budget so the release this
+          // test exercises still has room to actually recover afterward.
+          child = spawnMarker(process.execPath, ['-e', "const p=require('path'),f=require('fs');const q=p.join(process.cwd(),'held');const h=f.openSync(q,'w');setTimeout(() => { try { f.unlinkSync(q); } finally { f.closeSync(h); } }, 500)"], {
             cwd: targetLock,
           });
           blockedOnce = probeUntilRenameBlocked(targetLock);
