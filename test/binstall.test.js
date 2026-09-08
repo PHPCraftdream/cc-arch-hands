@@ -1632,7 +1632,12 @@ describe('writeBins', () => {
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 2200));
     const expiredOwnerPath = join(binLifecycleLockPath(dst), 'owner.json');
     const expiredOwner = JSON.parse(readFileSync(expiredOwnerPath, 'utf8'));
-    expiredOwner.timestamp = Date.now() - 1000;
+    // Comfortably past CAH_TEST_ONLY_BIN_LEASE_MS (2000) so the very first
+    // reclaim attempt sees an expired lease — relying on the retry loop
+    // below to accumulate the remaining margin left this marginal (1000ms
+    // backdate + up to 800ms of retry sleep tops out at 1800ms, under the
+    // threshold) and timer-jitter-sensitive under load.
+    expiredOwner.timestamp = Date.now() - 2500;
     writeFileSync(expiredOwnerPath, JSON.stringify(expiredOwner) + '\n');
 
     const priorTestOnly = process.env.CAH_TEST_ONLY;
@@ -1667,7 +1672,12 @@ describe('writeBins', () => {
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 2200));
     const expiredOwnerPath = join(binLifecycleLockPath(dst), 'owner.json');
     const expiredOwner = JSON.parse(readFileSync(expiredOwnerPath, 'utf8'));
-    expiredOwner.timestamp = Date.now() - 1000;
+    // Comfortably past CAH_TEST_ONLY_BIN_LEASE_MS (2000) so the very first
+    // reclaim attempt sees an expired lease — relying on the retry loop
+    // below to accumulate the remaining margin left this marginal (1000ms
+    // backdate + up to 800ms of retry sleep tops out at 1800ms, under the
+    // threshold) and timer-jitter-sensitive under load.
+    expiredOwner.timestamp = Date.now() - 2500;
     writeFileSync(expiredOwnerPath, JSON.stringify(expiredOwner) + '\n');
 
     const priorTestOnly = process.env.CAH_TEST_ONLY;

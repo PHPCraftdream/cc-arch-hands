@@ -260,7 +260,34 @@ describe('skill data-loss protection', { concurrency: false }, () => {
     assert.ok(!writeResult.preserved.includes(relativePayload));
   });
 
-  it('preserves a same-inode orphan mutation with restored metadata', async () => {
+  // Probes, rather than assumes by platform, whether this filesystem lets a
+  // sub-second mtime survive the exact round trip the test below performs
+  // (read mtimeNs as a BigInt, convert through Number/1e9, write it back via
+  // utimesSync). NTFS's coarser mtime resolution makes this round trip land
+  // on the same value; a genuine nanosecond-resolution filesystem (ext4) can
+  // lose a few hundred nanoseconds in the BigInt-to-Number conversion alone,
+  // which the codebase's exact BigInt identity comparison then reports as a
+  // changed file. Neither side is a bug — utimesSync's public API cannot
+  // carry more than double precision, so this specific repro technique is
+  // inherently unreliable wherever the filesystem actually stores what it
+  // is given.
+  function mtimeRoundTripIsExact() {
+    const dir = tmpDir();
+    const probe = join(dir, 'mtime-probe.txt');
+    writeFileSync(probe, 'x');
+    const fixedTime = 1700000000.123;
+    utimesSync(probe, fixedTime, fixedTime);
+    const before = statSync(probe, { bigint: true });
+    utimesSync(probe, Number(before.atimeNs) / 1e9, Number(before.mtimeNs) / 1e9);
+    const after = statSync(probe, { bigint: true });
+    return before.mtimeNs === after.mtimeNs;
+  }
+
+  it('preserves a same-inode orphan mutation with restored metadata', async (t) => {
+    if (!mtimeRoundTripIsExact()) {
+      t.skip('nanosecond mtime restoration is not deterministic on this filesystem');
+      return;
+    }
     const dir = tmpDir();
     const orphan = join(dir, 'orphan-skill.md');
     const original = `${SentinelSkill}\nowned body\n`;

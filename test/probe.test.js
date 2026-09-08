@@ -108,10 +108,17 @@ function mutateSettingsInPlace(path) {
   const before = lstatSync(path, { bigint: true });
   const original = readFileSync(path);
   const mutated = Buffer.from(original);
-  const marker = Buffer.from('cah-status-probe.js');
+  // Callers pause at different post-rename points, so the file's content at
+  // mutation time varies (a freshly committed probe entry vs. a just-restored
+  // original) — but both always carry a `"command"` property. Flip a byte
+  // strictly inside that quoted property name so the result stays valid,
+  // parseable JSON (some callers re-parse it afterward) with a same-size,
+  // same-inode, different-content leaf.
+  const marker = Buffer.from('"command"');
   const offset = mutated.indexOf(marker);
-  assert.ok(offset >= 0, 'published probe command must be present');
-  mutated[offset] = mutated[offset] === 0x63 ? 0x64 : 0x63;
+  assert.ok(offset >= 0, 'a "command" property must be present in the settings content');
+  const byteIndex = offset + 2;
+  mutated[byteIndex] = mutated[byteIndex] === 0x6f ? 0x70 : 0x6f;
   const fd = openSync(path, 'r+');
   try {
     writeSync(fd, mutated, 0, mutated.length, 0);

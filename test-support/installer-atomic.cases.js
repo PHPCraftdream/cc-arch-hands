@@ -189,6 +189,7 @@ describe('writeFileAtomic', { concurrency: false }, () => {
       (async () => {
         const { makeInterlock } = await import(workerData.hooksUrl);
         const testInterlock = makeInterlock({ ...process.env,
+          CAH_TEST_ONLY: '1',
           CAH_TEST_ONLY_FSUTIL_INTERLOCK: workerData.interlock,
           CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE: 'write-before-final-publication',
         });
@@ -344,7 +345,7 @@ describe('writeFileAtomic', { concurrency: false }, () => {
     assert.equal(result.removed, false);
     assert.equal(
       result.preservedPath,
-      `${dest}.cah-owned-remove\\payload`,
+      join(`${dest}.cah-owned-remove`, 'payload'),
     );
     assert.equal(readFileSync(dest, 'utf8'), 'successor C\n');
     const quarantines = readdirSync(dir).filter((name) => name.includes('.cah-owned-remove'));
@@ -372,7 +373,7 @@ describe('writeFileAtomic', { concurrency: false }, () => {
     writeFileSync(`${interlock}.remove-after-rename.go`, 'go');
 
     const first = await running;
-    assert.equal(first.preservedPath, `${dest}.cah-owned-remove\\payload`);
+    assert.equal(first.preservedPath, join(`${dest}.cah-owned-remove`, 'payload'));
     assert.equal(readFileSync(first.preservedPath, 'utf8'), 'foreign B\n');
 
     // Repeated reclaim attempts must refuse to move a new canonical inode
