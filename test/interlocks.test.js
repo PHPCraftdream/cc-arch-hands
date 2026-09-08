@@ -173,10 +173,11 @@ describe('interlock argument parser', () => {
       'disable-before-settings-rename', 'enable-after-backup-check',
       'enable-after-settings-rename', 'enable-before-settings-rename',
     ]);
-    // A drift detector, not a production rendezvous count: 58 real
-    // production rendezvous points + 2 forwarding shims that pass only
-    // identifiers (lib/lease-lock.js's options.testInterlock(phase, stage)
-    // and lib/fs-atomic-publication.js's options?.testInterlock?.(...phases)),
+    // A drift detector, not a production rendezvous count: 57 real
+    // production rendezvous points + 3 forwarding shims that pass only
+    // identifiers (lib/lease-lock.js's options.testInterlock(phase, stage),
+    // lib/fs-atomic-publication.js's options?.testInterlock?.(...phases),
+    // and lib/fs-atomic.js's options?.testInterlock?.(...phases)),
     // excluding the single `function testInterlock(` definition itself.
     const EXPECTED_CALL_SITES = 60;
     const found = new Set();
@@ -219,7 +220,7 @@ describe('interlock argument parser', () => {
 
   it('parses a call site whose arguments contain a nested ")"', () => {
     const source = 'const next = () => testInterlock(phaseFor(config), \'brand-new-stage\');\n';
-    const match = callStartRe.exec(source);
+    const match = new RegExp(callStartRe.source, callStartRe.flags).exec(source);
     assert.notEqual(match, null);
     const parsed = scanCallArguments(source, match.index + match[0].length - 1);
     assert.notEqual(parsed, null, 'the balanced scan must close a call with nested parens');

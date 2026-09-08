@@ -476,6 +476,10 @@ describe('run install/uninstall --only bins', () => {
           assert.equal(run(['install', '--only', 'bins']), 0);
         });
         assert.match(installed, /recovery: cache[\\/]rate-context[\\/]\.cah-tmp-crashed-rate/);
+        // The temp is already named under `recovery:`; the maintenance
+        // preserved mirror must not repeat it verbatim.
+        assert.doesNotMatch(installed,
+          /maintenance preserved: cache[\\/]rate-context[\\/]\.cah-tmp-crashed-rate/);
         assert.ok(existsSync(join(rateContext, '.cah-tmp-crashed-rate')),
           'unproved cache temp must be preserved');
       });

@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync,
+  existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -291,6 +291,156 @@ describe('a foreign acquirer racing a live committed fence', () => {
         'both publications must have committed, in fence order');
       assert.equal(existsSync(`${dest}.cah-owned-publish`), false,
         'both publishers must have cleaned their fences');
+    } finally {
+      for (const child of children) child.kill('SIGKILL');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('a recycled-pid committed fence', () => {
+  it('is recovered by a foreign acquirer once stale instead of wedging the leaf forever', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-recycled-pid-'));
+    const children = [];
+    try {
+      const dest = join(dir, 'leaf.json');
+      writeFileSync(dest, 'ORIGINAL\n');
+
+      // Victim: parks AFTER its payload was renamed to the canonical
+      // destination but BEFORE fence cleanup, then is SIGKILLed — its
+      // committed fence is genuinely crashed state.
+      const victimBase = join(dir, 'victim-interlock');
+      const victim = spawnPublisher(dest, 'victim-payload', victimBase, 'write-after-final-rename');
+      children.push(victim.child);
+      await waitForPath(`${victimBase}.ready`, 60000);
+      victim.child.kill('SIGKILL');
+      await victim.exited;
+      const fence = `${dest}.cah-owned-publish`;
+      assert.equal(readFileSync(dest, 'utf8'), 'victim-payload\n',
+        'the killed publisher must have committed its payload');
+      assert.ok(existsSync(fence), 'the crashed publisher must leave its committed fence');
+      const proofPath = join(fence, 'publication.json');
+      const proof = JSON.parse(readFileSync(proofPath, 'utf8'));
+      assert.equal(proof.ownerState, 'active');
+
+      // Simulate pid recycling: point the proof at an unrelated live process
+      // so proofOwnerIsAlive() keeps answering true for a dead publisher.
+      const sleeper = spawn(process.execPath, ['-e', 'setInterval(() => {}, 60000);'],
+        { stdio: 'ignore' });
+      children.push(sleeper);
+      proof.ownerPid = sleeper.pid;
+      proof.createdAtMs = Date.now() - 3_600_000;
+      writeFileSync(proofPath, `${JSON.stringify(proof)}\n`);
+      assert.equal(JSON.parse(readFileSync(proofPath, 'utf8')).ownerPid, sleeper.pid,
+        'the patched recycled pid must have taken effect');
+
+      // Acquirer: a foreign publisher with no interlock pause. It must
+      // recover the stale recycled-pid fence, not defer to it forever.
+      const acquirerBase = join(dir, 'acquirer-interlock');
+      const acquirer = spawnPublisher(dest, 'successor-payload', acquirerBase, 'no-such-phase');
+      children.push(acquirer.child);
+      const acquirerResult = await acquirer.exited;
+      assert.equal(acquirerResult.code, 0,
+        `the acquirer must recover the stale recycled-pid fence: ${acquirerResult.stdout}`);
+      assert.equal(acquirerResult.stdout, 'PUBLISHED\n');
+      assert.equal(readFileSync(dest, 'utf8'), 'successor-payload\n');
+      assert.equal(existsSync(fence), false,
+        'the acquirer must have recovered the stale recycled-pid fence, not deferred to it');
+    } finally {
+      for (const child of children) child.kill('SIGKILL');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// A racing publisher loop: many real publications against one shared leaf,
+// each iteration with a fresh expectedDestination snapshot. Only the module's
+// three documented failure shapes are acceptable; anything else (especially a
+// raw ENOENT naming an internal .cah-owned-publish fence path) is reported
+// as RAW and exits 7 so the parent can fail the test.
+function racingPublisherChildScript() {
+  const fsutilUrl = new URL('../lib/fs-atomic.js', import.meta.url).href;
+  return `
+    import { writeFileAtomic, captureRegularFileSnapshot } from ${JSON.stringify(fsutilUrl)};
+    const dest = process.env.CAH_TEST_PUBLISHER_DEST;
+    const iterations = Number(process.env.CAH_TEST_PUBLISHER_ITERATIONS);
+    let published = 0, refused = 0;
+    try {
+      for (let i = 0; i < iterations; i += 1) {
+        try {
+          writeFileAtomic(dest, process.pid + ':' + i + '\\n', {
+            expectedDestination: captureRegularFileSnapshot(dest).expectedDestination,
+          });
+          published += 1;
+        } catch (error) {
+          const acceptable = (error.message || '').includes('managed destination leaf changed concurrently')
+            || error.code === 'ERR_ATOMIC_OWNERSHIP_LOST'
+            || error.code === 'ERR_ATOMIC_RECOVERY_REQUIRED';
+          if (!acceptable) {
+            process.stdout.write('RAW:' + (error.code || '') + ':' + error.message + '\\n');
+            process.exit(7);
+          }
+          refused += 1;
+        }
+      }
+      process.stdout.write('DONE published=' + published + ' refused=' + refused + '\\n');
+      process.exit(0);
+    } catch (error) {
+      process.stdout.write('RAW:' + (error.code || '') + ':' + error.message + '\\n');
+      process.exit(7);
+    }
+  `;
+}
+
+function spawnRacingPublisher(dest, iterations) {
+  const child = spawn(process.execPath, ['--input-type=module', '-e', racingPublisherChildScript()], {
+    env: {
+      ...process.env,
+      HOME: dirname(dest), USERPROFILE: dirname(dest),
+      CAH_TEST_ONLY: '1',
+      CAH_TEST_PUBLISHER_DEST: dest,
+      CAH_TEST_PUBLISHER_ITERATIONS: String(iterations),
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  const exited = new Promise((resolve) => child.once('close', (code) => resolve({ code, stdout })));
+  return { child, exited };
+}
+
+describe('concurrent publishers racing one leaf', () => {
+  it('never surfaces a raw ENOENT from the publication-fence proof race', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-racing-publishers-'));
+    const children = [];
+    const publishers = 6;
+    const iterations = 120;
+    try {
+      const dest = join(dir, 'leaf.json');
+      writeFileSync(dest, 'seed\n');
+      const runners = [];
+      for (let i = 0; i < publishers; i += 1) {
+        const runner = spawnRacingPublisher(dest, iterations);
+        children.push(runner.child);
+        runners.push(runner.exited);
+      }
+      const results = await Promise.all(runners);
+      for (const [index, result] of results.entries()) {
+        assert.equal(result.code, 0,
+          `publisher ${index} hit a raw failure (exit ${result.code}):\n${result.stdout}`);
+      }
+      let totalPublished = 0;
+      for (const result of results) {
+        const done = result.stdout.split('\n').find((line) => line.startsWith('DONE '));
+        assert.ok(done, `publisher produced no DONE summary:\n${result.stdout}`);
+        totalPublished += Number(/published=(\d+)/.exec(done)[1]);
+      }
+      assert.ok(totalPublished > publishers * iterations * 0.25,
+        `expected real concurrent publishing, got ${totalPublished} of ${publishers * iterations}`);
+      assert.ok(existsSync(dest), 'the destination leaf must still exist');
+      const leftovers = readdirSync(dir).filter((name) => name.startsWith('.cah-tmp-'));
+      assert.deepEqual(leftovers, [], 'no temp leftovers may remain');
     } finally {
       for (const child of children) child.kill('SIGKILL');
       rmSync(dir, { recursive: true, force: true });
