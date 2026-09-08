@@ -431,6 +431,39 @@ describe('run install/uninstall --only bins', () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+  it('surfaces maintenance-preserved artifacts the sweep refused to reclaim', () => {
+    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
+    try {
+      withHome(home, () => {
+        const cache = join(home, '.claude', 'cah-bin', 'cache');
+        // An empty, proof-less publication fence has no sweep branch until it
+        // goes stale: while fresh it is refused, and the refusal must be
+        // visible in the report rather than silent.
+        const stampState = join(cache, 'stamp-state');
+        mkdirSync(stampState, { recursive: true });
+        const freshFence = join(stampState, 'live.json.cah-owned-publish');
+        mkdirSync(freshFence);
+
+        const installed = captureStdout(() => {
+          assert.equal(run(['install', '--only', 'bins']), 0);
+        });
+        assert.match(installed,
+          /maintenance preserved: cache[\\/]stamp-state[\\/]live\.json\.cah-owned-publish/);
+        assert.ok(existsSync(freshFence), 'a fresh empty fence must not be swept');
+
+        const past = new Date(Date.now() - 5000);
+        utimesSync(freshFence, past, past);
+        const reinstalled = captureStdout(() => {
+          assert.equal(run(['install', '--only', 'bins']), 0);
+        });
+        assert.match(reinstalled,
+          /maintenance swept: cache[\\/]stamp-state[\\/]live\.json\.cah-owned-publish/);
+        assert.ok(!existsSync(freshFence), 'a stale empty fence must be swept');
+      });
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
   it('reports unproved crash temps inside cache/rate-context through install maintenance', () => {
     const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
     try {

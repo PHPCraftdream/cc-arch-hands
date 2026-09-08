@@ -8,6 +8,83 @@ import { makeInterlock, STAGE_NAMES } from '../test-support/interlocks.js';
 
 const fixtures = new Set();
 
+const callStartRe = /testInterlock(?:\s*\?.\s*)?\(/g;
+const literalRe = /^'([^']+)'$|^"([^"]+)"$/;
+
+function skipQuoted(source, start) {
+  const quote = source[start];
+  for (let i = start + 1; i < source.length; i += 1) {
+    if (source[i] === '\\') { i += 1; continue; }
+    if (source[i] === quote) return i;
+    if (quote !== '`' && source[i] === '\n') return -1;
+  }
+  return -1;
+}
+
+// Balanced-paren argument extraction for the STAGE_NAMES scan. The previous
+// `[^)]*` argument regex truncated any call whose arguments contain a ")" —
+// e.g. testInterlock(phaseFor(config), 'brand-new-stage') — to a single wrong
+// match whose start/parsed counters still agreed, so a stage literal
+// introduced by such a call was silently missed. This walker tracks nested
+// parentheses while skipping string literals and comments; a site it cannot
+// close is reported as unparseable and fails the scan's self-check instead
+// of silently agreeing with it.
+function scanCallArguments(source, openParenIndex) {
+  let depth = 0;
+  for (let i = openParenIndex; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch === '\'' || ch === '"' || ch === '`') {
+      const end = skipQuoted(source, i);
+      if (end === -1) return null;
+      i = end;
+      continue;
+    }
+    if (ch === '/' && source[i + 1] === '/') {
+      const end = source.indexOf('\n', i + 2);
+      if (end === -1) return null;
+      i = end;
+      continue;
+    }
+    if (ch === '/' && source[i + 1] === '*') {
+      const end = source.indexOf('*/', i + 2);
+      if (end === -1) return null;
+      i = end + 1;
+      continue;
+    }
+    if (ch === '(') depth += 1;
+    else if (ch === ')') {
+      depth -= 1;
+      if (depth === 0) return { args: source.slice(openParenIndex + 1, i), end: i };
+    }
+  }
+  return null;
+}
+
+// Split a parsed argument list on top-level commas only, so a call like
+// testInterlock(phaseFor(a, b), 'stage') still yields the stage as args[1].
+function splitArguments(args) {
+  const parts = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < args.length; i += 1) {
+    const ch = args[i];
+    if (ch === '\'' || ch === '"' || ch === '`') {
+      const end = skipQuoted(args, i);
+      if (end === -1) return null;
+      i = end;
+      continue;
+    }
+    if (ch === '(') depth += 1;
+    else if (ch === ')') depth -= 1;
+    else if (ch === ',' && depth === 0) {
+      parts.push(args.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(args.slice(start));
+  return parts;
+}
+
 afterEach(() => {
   for (const fixture of fixtures) rmSync(fixture, { recursive: true, force: true });
   fixtures.clear();
@@ -85,11 +162,8 @@ describe('interlock argument parser', () => {
     // The argument scan matches call sites that span lines (several do), and
     // it must never under-count silently: the raw call-start total is checked
     // against both the fully parsed total and EXPECTED_CALL_SITES, so a call
-    // site the scan cannot see fails loudly instead of passing silently.
+    // the balanced scan cannot close fails loudly instead of passing silently.
     const root = dirname(dirname(fileURLToPath(import.meta.url)));
-    const callStartRe = /testInterlock(?:\s*\?.\s*)?\(/g;
-    const callArgsRe = /testInterlock(?:\s*\?.\s*)?\(([^)]*)\)/g;
-    const literalRe = /^'([^']+)'$|^"([^"]+)"$/;
     // The parser (test-support/interlocks.js) consumes args[1] as a stage only
     // when it names a declared stage; otherwise it is the first alias of the
     // no-stage shape. probe.js uses that shape with quoted alias literals, so
@@ -99,7 +173,12 @@ describe('interlock argument parser', () => {
       'disable-before-settings-rename', 'enable-after-backup-check',
       'enable-after-settings-rename', 'enable-before-settings-rename',
     ]);
-    const EXPECTED_CALL_SITES = 61;
+    // A drift detector, not a production rendezvous count: 58 real
+    // production rendezvous points + 2 forwarding shims that pass only
+    // identifiers (lib/lease-lock.js's options.testInterlock(phase, stage)
+    // and lib/fs-atomic-publication.js's options?.testInterlock?.(...phases)),
+    // excluding the single `function testInterlock(` definition itself.
+    const EXPECTED_CALL_SITES = 60;
     const found = new Set();
     let callStarts = 0;
     let parsedCalls = 0;
@@ -109,11 +188,14 @@ describe('interlock argument parser', () => {
         if (entry.isDirectory()) visit(path);
         else if (entry.isFile() && entry.name.endsWith('.js')) {
           const source = readFileSync(path, 'utf8');
-          callStarts += [...source.matchAll(callStartRe)].length;
-          for (const match of source.matchAll(callArgsRe)) {
+          for (const match of source.matchAll(callStartRe)) {
+            if (/function\s+$/.test(source.slice(Math.max(0, match.index - 12), match.index))) continue;
+            callStarts += 1;
+            const parsed = scanCallArguments(source, match.index + match[0].length - 1);
+            if (!parsed) continue;
             parsedCalls += 1;
-            const args = match[1].split(',');
-            const literal = args.length > 1 ? literalRe.exec(args[1].trim()) : null;
+            const parts = splitArguments(parsed.args);
+            const literal = parts && parts.length > 1 ? literalRe.exec(parts[1].trim()) : null;
             if (literal) found.add(literal[1] ?? literal[2]);
           }
         }
@@ -122,8 +204,8 @@ describe('interlock argument parser', () => {
     visit(join(root, 'lib'));
     visit(join(root, 'bin'));
     assert.equal(callStarts, parsedCalls,
-      'every testInterlock call site must be fully parseable by the scan; '
-      + 'a call whose arguments contain a ")" breaks the argument regex');
+      'every testInterlock call site must be parseable by the balanced-paren scan; '
+      + 'a site whose parens/strings/comments never balance is unparseable');
     assert.equal(parsedCalls, EXPECTED_CALL_SITES,
       'the production testInterlock call-site count changed; re-run the scan, '
       + 'update EXPECTED_CALL_SITES, and update STAGE_NAMES if a stage was added or removed');
@@ -133,5 +215,19 @@ describe('interlock argument parser', () => {
       'the quoted args[1] literals in lib/ and bin/ must be exactly the declared '
       + 'stages plus the known alias-only first arguments',
     );
+  });
+
+  it('parses a call site whose arguments contain a nested ")"', () => {
+    const source = 'const next = () => testInterlock(phaseFor(config), \'brand-new-stage\');\n';
+    const match = callStartRe.exec(source);
+    assert.notEqual(match, null);
+    const parsed = scanCallArguments(source, match.index + match[0].length - 1);
+    assert.notEqual(parsed, null, 'the balanced scan must close a call with nested parens');
+    const parts = splitArguments(parsed.args);
+    assert.deepEqual(parts, ['phaseFor(config)', " 'brand-new-stage'"],
+      'the argument text must survive a ")" inside the arguments');
+    const literal = literalRe.exec(parts[1].trim());
+    assert.notEqual(literal, null, 'the stage literal after a nested-paren argument must be found');
+    assert.equal(literal[1] ?? literal[2], 'brand-new-stage');
   });
 });

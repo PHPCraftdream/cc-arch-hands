@@ -1,9 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync,
+  existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import {
   captureRegularFileSnapshot, enumerateRecoveryArtifacts, isQuarantineName, isQuarantinePath,
@@ -61,6 +62,44 @@ describe('empty atomic-removal reservations', () => {
     utimesSync(reservation, past, past);
     const stale = maintainRecoveryArtifacts(dir);
     assert.ok(stale.swept.includes(reservation), 'a stale reservation is genuinely crashed state');
+  });
+});
+
+describe('empty proof-less publication fences', () => {
+  it('maintenance defers a fresh empty publication fence and reclaims it once stale', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-empty-publish-fence-'));
+    const dest = join(dir, 'leaf.json');
+    const fence = `${dest}.cah-owned-publish`;
+    writeFileSync(dest, 'owned\n');
+    mkdirSync(fence);
+
+    const fresh = maintainRecoveryArtifacts(dir);
+    assert.equal(fresh.swept.includes(fence), false,
+      'a fresh empty fence may belong to a live publisher pre-proof or a beginFence() unwind');
+    assert.ok(fresh.preserved.includes(fence), 'the refused artifact must be reported');
+    assert.ok(existsSync(fence));
+
+    const past = new Date(Date.now() - 5000);
+    utimesSync(fence, past, past);
+    const stale = maintainRecoveryArtifacts(dir);
+    assert.ok(stale.swept.includes(fence), 'a stale empty fence is genuinely crashed state');
+    assert.equal(existsSync(fence), false);
+    assert.equal(readFileSync(dest, 'utf8'), 'owned\n', 'sweeping the fence must not touch the leaf');
+  });
+
+  it('an unproved publication fence with content is preserved, not swept', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-occupied-publish-fence-'));
+    const dest = join(dir, 'leaf.json');
+    const fence = `${dest}.cah-owned-publish`;
+    writeFileSync(dest, 'owned\n');
+    mkdirSync(fence);
+    writeFileSync(join(fence, 'foreign'), 'keep\n');
+    utimesSync(fence, new Date(Date.now() - 5000), new Date(Date.now() - 5000));
+
+    const report = maintainRecoveryArtifacts(dir);
+    assert.equal(report.swept.includes(fence), false,
+      'a non-empty unproved fence has no reclaim authority');
+    assert.equal(readFileSync(join(fence, 'foreign'), 'utf8'), 'keep\n');
   });
 });
 
@@ -155,5 +194,106 @@ describe('committed predecessor publication fences', () => {
     assert.equal(readFileSync(dest, 'utf8'), 'v3\n');
     assert.equal(existsSync(`${dest}.cah-owned-publish`), false,
       'beginFence() must finish a committed predecessor fence unconditionally, never defer to it');
+  });
+});
+
+// A real second publisher: a child process running the product's own
+// writeFileAtomic(), so a racing acquirer goes through beginFence() exactly
+// as production does — never through the maintenance path.
+function publisherChildScript() {
+  const fsutilUrl = new URL('../lib/fsutil.js', import.meta.url).href;
+  const interlocksUrl = new URL('../test-support/interlocks.js', import.meta.url).href;
+  return `
+    import { writeFileAtomic, captureRegularFileSnapshot } from ${JSON.stringify(fsutilUrl)};
+    import { makeInterlock } from ${JSON.stringify(interlocksUrl)};
+    const dest = process.env.CAH_TEST_PUBLISHER_DEST;
+    try {
+      writeFileAtomic(dest, process.env.CAH_TEST_PUBLISHER_PAYLOAD + '\\n', {
+        expectedDestination: captureRegularFileSnapshot(dest).expectedDestination,
+        testInterlock: makeInterlock(),
+      });
+      process.stdout.write('PUBLISHED\\n');
+    } catch (error) {
+      process.stdout.write('FAILED:' + (error.code || '') + ':' + error.message + '\\n');
+      process.exit(3);
+    }
+  `;
+}
+
+function spawnPublisher(dest, payload, interlockBase, phase) {
+  const child = spawn(process.execPath, ['--input-type=module', '-e', publisherChildScript()], {
+    env: {
+      ...process.env,
+      HOME: dirname(dest), USERPROFILE: dirname(dest),
+      CAH_TEST_ONLY: '1',
+      CAH_TEST_PUBLISHER_DEST: dest,
+      CAH_TEST_PUBLISHER_PAYLOAD: payload,
+      CAH_TEST_ONLY_FSUTIL_INTERLOCK: interlockBase,
+      CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE: phase,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  const exited = new Promise((resolve) => child.once('close', (code) => resolve({ code, stdout })));
+  return { child, exited };
+}
+
+async function waitForPath(path, timeoutMs, message) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(path)) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(message || `timed out waiting for ${path}`);
+}
+
+describe('a foreign acquirer racing a live committed fence', () => {
+  it('defers to a foreign live publisher and both publishers succeed', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-windowb-acquirer-'));
+    const children = [];
+    try {
+      const dest = join(dir, 'leaf.json');
+      writeFileSync(dest, 'ORIGINAL\n');
+
+      // Victim: a real publisher paused inside window B — its payload is
+      // already renamed to the canonical destination and its fence not yet
+      // cleaned up.
+      const victimBase = join(dir, 'victim-interlock');
+      const victim = spawnPublisher(dest, 'victim-payload', victimBase, 'write-after-rename-before-sync');
+      children.push(victim.child);
+      await waitForPath(`${victimBase}.ready`, 60000);
+
+      // Acquirer: a genuinely separate process publishing to the same leaf.
+      // It must defer the victim's committed fence (foreign, live owner),
+      // not reap it — reaping used to turn the victim's own cleanup into a
+      // spurious ERR_ATOMIC_RECOVERY_REQUIRED.
+      const acquirerBase = join(dir, 'acquirer-interlock');
+      const acquirer = spawnPublisher(dest, 'acquirer-payload', acquirerBase, 'publication-fence-wait');
+      children.push(acquirer.child);
+      await waitForPath(`${acquirerBase}.ready`, 60000,
+        'the acquirer never observed the occupied fence; a reaping acquirer '
+        + 'publishes without ever waiting, so the deferral regression fired');
+
+      writeFileSync(`${victimBase}.go`, 'go');
+      const victimResult = await victim.exited;
+      assert.equal(victimResult.code, 0,
+        `the paused publisher must finish its own cleanup: ${victimResult.stdout}`);
+      assert.equal(victimResult.stdout, 'PUBLISHED\n');
+
+      writeFileSync(`${acquirerBase}.go`, 'go');
+      const acquirerResult = await acquirer.exited;
+      assert.equal(acquirerResult.code, 0,
+        `the second publisher must complete: ${acquirerResult.stdout}`);
+      assert.equal(acquirerResult.stdout, 'PUBLISHED\n');
+      assert.equal(readFileSync(dest, 'utf8'), 'acquirer-payload\n',
+        'both publications must have committed, in fence order');
+      assert.equal(existsSync(`${dest}.cah-owned-publish`), false,
+        'both publishers must have cleaned their fences');
+    } finally {
+      for (const child of children) child.kill('SIGKILL');
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
