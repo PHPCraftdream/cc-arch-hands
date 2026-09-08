@@ -42,8 +42,8 @@ The installed companion tree also contains a managed `package.json` with
 working on the package's supported Node >=18.19.0 runtime. A pre-existing foreign
 `~/.claude/cah-bin/package.json` is preserved and reported as foreign.
 Updates publish that package boundary first, then `sentinel.js`,
-`fs-atomic-identity.js`, `fs-atomic-publication.js`, `fs-atomic.js`,
-`fsutil.js`, `lease-lock.js`, `marker-capacity-ops.js`,
+`fs-atomic-identity.js`, `lease-clock.js`, `fs-atomic-publication.js`,
+`fs-atomic.js`, `fsutil.js`, `lease-lock.js`, `marker-capacity-ops.js`,
 `marker-capacity-stage.js`, `marker-capacity-recovery.js`, `marker-state.js`,
 `transcript-stats.js` and `update-check.js`, and
 only then replace executable leaves. This dependency-first closure keeps a new
@@ -403,7 +403,7 @@ npx cah install --only bins                         # companion bins (cah-status
                                                     #     fs-atomic-publication.js, marker-capacity-stage.js,
                                                     #     marker-capacity-recovery.js,
                                                     #     marker-state.js, fsutil.js,
-                                                    #     fs-atomic-identity.js, fs-atomic.js,
+                                                    #     fs-atomic-identity.js, lease-clock.js, fs-atomic.js,
                                                     #     sentinel.js)
 
 # One example per skill (every installable artefact has its own line).

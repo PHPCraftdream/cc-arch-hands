@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { readRateLimitsCache, rateLimitsContextPath } from '../lib/transcript-stats.js';
 
@@ -11,16 +11,36 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const BIN = join(__dirname, '..', 'bin', 'cah-status.js');
 
 function run(stdinData, env) {
-  // Redirect the rate_limits cache to a temp file (or guaranteed-missing path)
-  // so the host's real ~/.claude/cah-bin/cache/ stays untouched by tests.
+  // Redirect both caches the status bin derives from homedir() to temp files
+  // (or guaranteed-missing paths) so the host's real ~/.claude/cah-bin/cache/
+  // stays untouched by tests and the exact-match assertions cannot be
+  // influenced by whatever happens to sit in the user's update-check cache.
   const cacheOverride = (env && env.CAH_RATE_LIMITS_CACHE)
     || join(tmpdir(), `cah-status-test-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+  const updateCacheOverride = (env && env.CAH_UPDATE_CHECK_CACHE)
+    || join(tmpdir(), `cah-status-test-update-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+  // A fresh cache recording an ancient version: no registry fetch is attempted
+  // (checkedAt is inside the TTL) and no update suffix can appear regardless
+  // of the real CURRENT_VERSION. Never clobber a cache the caller provided.
+  if (!(env && env.CAH_UPDATE_CHECK_CACHE)) {
+    writeFileSync(updateCacheOverride, JSON.stringify({ latestVersion: '0.0.1', checkedAt: Date.now() }));
+  }
   const res = spawnSync(process.execPath, [BIN], {
     input: typeof stdinData === 'string' ? stdinData : JSON.stringify(stdinData),
     encoding: 'utf8',
-    env: { ...process.env, ...(env || {}), CAH_RATE_LIMITS_CACHE: cacheOverride },
+    env: {
+      ...process.env,
+      ...(env || {}),
+      CAH_RATE_LIMITS_CACHE: cacheOverride,
+      CAH_UPDATE_CHECK_CACHE: updateCacheOverride,
+    },
   });
-  return { stdout: res.stdout.trimEnd(), status: res.status, cachePath: cacheOverride };
+  return {
+    stdout: res.stdout.trimEnd(),
+    status: res.status,
+    cachePath: cacheOverride,
+    updateCachePath: updateCacheOverride,
+  };
 }
 
 function makePayload(overrides = {}) {
@@ -165,5 +185,25 @@ describe('cah-status bin', () => {
     assert.equal(b.contextWindowSize, 200_000);
     assert.equal(a.fiveHour.used, 23);
     assert.equal(b.sevenDay.used, 67);
+  });
+
+  it('appends the update suffix from an isolated fixture cache with a newer latestVersion', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-status-update-'));
+    const updateCache = join(dir, 'update-check.json');
+    writeFileSync(updateCache, JSON.stringify({ latestVersion: '99.0.0', checkedAt: Date.now() }));
+    const { stdout, status } = run(makePayload(), { CAH_UPDATE_CHECK_CACHE: updateCache });
+    assert.equal(status, 0);
+    assert.ok(stdout.endsWith('· 🔵 v99.0.0'), `update suffix missing: ${stdout}`);
+    const withoutSuffix = stdout.slice(0, -' · 🔵 v99.0.0'.length);
+    assert.match(withoutSuffix, /^Opus 4\.8 · \[[█▏▎▍▌▋▊▉░]{10}\] 67% \(670k\/1M\)$/);
+  });
+
+  it('never derives a path from the real home directory', () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), 'cah-status-fake-home-'));
+    const { stdout, status } = run(makePayload(), { HOME: fakeHome, USERPROFILE: fakeHome });
+    assert.equal(status, 0);
+    assert.equal(existsSync(join(fakeHome, '.claude')), false,
+      'the bin must not create anything under homedir() when both cache overrides are set');
+    assert.match(stdout, /^Opus 4\.8 · \[[█▏▎▍▌▋▊▉░]{10}\] 67% \(670k\/1M\)$/);
   });
 });

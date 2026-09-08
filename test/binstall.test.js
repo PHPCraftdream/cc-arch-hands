@@ -69,6 +69,7 @@ function fakeSource(root) {
   writeFileSync(join(root, 'lib', 'marker-state.js'), 'export const marker = 1;\n');
   writeFileSync(join(root, 'lib', 'fsutil.js'), 'export const z = 1;\n');
   writeFileSync(join(root, 'lib', 'fs-atomic-identity.js'), 'export const identity = 1;\n');
+  writeFileSync(join(root, 'lib', 'lease-clock.js'), 'export const clock = 1;\n');
   writeFileSync(join(root, 'lib', 'fs-atomic-publication.js'), 'export const publication = 1;\n');
   writeFileSync(join(root, 'lib', 'marker-capacity-stage.js'), 'export const stage = 1;\n');
   writeFileSync(join(root, 'lib', 'marker-capacity-recovery.js'), 'export const recovery = 1;\n');

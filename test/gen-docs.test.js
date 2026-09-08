@@ -26,6 +26,7 @@ const EXPECTED_SHARED_LIB_LEAVES = [
   'lib/fs-atomic-publication.js',
   'lib/fs-atomic.js',
   'lib/fsutil.js',
+  'lib/lease-clock.js',
   'lib/lease-lock.js',
   'lib/marker-capacity-ops.js',
   'lib/marker-capacity-recovery.js',

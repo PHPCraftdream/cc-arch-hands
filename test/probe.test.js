@@ -14,6 +14,7 @@ import {
   writeSync,
   closeSync,
   utimesSync,
+  renameSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -36,6 +37,7 @@ import {
   PROBE_NAME,
 } from '../lib/probe.js';
 import { regularFileIdentity, sameFileIdentity } from '../lib/fsutil.js';
+import { recoverPublicationFence } from '../lib/fs-atomic-publication.js';
 import { runWorker } from '../test-support/process-batches.js';
 
 function harness() {
@@ -509,7 +511,11 @@ describe('probe concurrency', () => {
     assert.deepEqual(readFileSync(h.settingsPath), successor,
       'settings successor must never be overwritten during rollback');
     assert.equal(sameFileIdentity(regularFileIdentity(h.settingsPath), successorIdentity), true);
-    assert.ok(!existsSync(h.backupPath), 'failed enable must roll back only its backup leaf');
+    assert.ok(existsSync(h.backupPath),
+      'the successor kept the probe entry, so the backup is still its only recovery');
+    const restored = disableProbe(h);
+    assert.deepEqual(restored.restored, original, 'disable must restore the original entry');
+    assert.equal(existsSync(h.backupPath), false, 'a successful disable consumes the backup');
   });
 
   it('keeps C during a probe rollback CAS race', async () => {
@@ -595,7 +601,12 @@ describe('probe concurrency', () => {
     assert.equal(result.ok, false);
     assert.deepEqual(readFileSync(h.settingsPath), mutated,
       'enable rollback must preserve an in-place content successor');
-    assert.ok(!existsSync(h.backupPath), 'enable rollback must still remove its backup');
+    assert.ok(existsSync(h.backupPath),
+      'the mutated leaf kept the probe entry, so the backup is still its only recovery');
+    const restored = disableProbe(h);
+    assert.deepEqual(restored.restored, { type: 'command', command: 'original', padding: 0 },
+      'disable must restore the original entry through the mutated leaf');
+    assert.equal(existsSync(h.backupPath), false, 'a successful disable consumes the backup');
   });
 
   it('preserves a same-inode, same-size mutated settings file during stop rollback', async (t) => {
@@ -778,8 +789,60 @@ describe('probe committed-publication rollback (review P1-2)', () => {
     const settings = JSON.parse(readFileSync(h.settingsPath, 'utf8'));
     assert.equal(settings.statusLine['cah-sentinel'], PROBE_SENTINEL,
       'the successor leaf keeps the committed probe content');
-    assert.equal(existsSync(h.backupPath), false,
-      'a disowned transition must still roll back its own backup');
+    assert.equal(existsSync(h.backupPath), true,
+      'an armed probe keeps its backup even when a successor replaced the leaf');
+    // The successor swap left the failed enable's publication fence behind on
+    // purpose: recovery state a successor verifies and completes. Do that
+    // before disabling, exactly like any later writer would.
+    assert.equal(recoverPublicationFence(h.settingsPath), true,
+      'the successor must be able to complete the abandoned cleanup');
+    const restored = disableProbe(h);
+    assert.deepEqual(restored.restored, original,
+      'disable must restore the original entry through the successor content');
+    assert.equal(existsSync(h.backupPath), false, 'a successful disable consumes the backup');
+  });
+});
+
+describe('probe backup vs ordinary settings edits (review round 2 P1-1)', () => {
+  it('keeps the backup when an external editor re-saves settings with an unrelated key', () => {
+    const h = harness();
+    const original = { type: 'command', command: 'original-user-command', padding: 0 };
+    writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
+
+    const editorWrite = (phase) => {
+      if (phase !== 'enable-post-settings-rename') return;
+      // An ordinary settings editor: read the just-published settings (which
+      // already carry the probe entry), add an unrelated key, re-save
+      // atomically. The identity of the leaf changes; the armed probe does
+      // not.
+      const current = JSON.parse(readFileSync(h.settingsPath, 'utf8'));
+      assert.equal(current.statusLine['cah-name'], PROBE_NAME);
+      current.editorSetting = 'preserve me';
+      const temp = `${h.settingsPath}.editor-${process.pid}`;
+      writeFileSync(temp, JSON.stringify(current, null, 2) + '\n');
+      renameSync(temp, h.settingsPath);
+      throw new Error('editor finished; enable still fails its post-rename check');
+    };
+
+    let error = null;
+    try {
+      enableProbe(h, { testInterlock: editorWrite });
+    } catch (caught) { error = caught; }
+    assert.ok(error, 'the injected post-rename failure must propagate');
+
+    const settings = JSON.parse(readFileSync(h.settingsPath, 'utf8'));
+    assert.equal(settings.statusLine['cah-sentinel'], PROBE_SENTINEL,
+      'the probe entry must still be armed in the current settings content');
+    assert.equal(settings.editorSetting, 'preserve me',
+      'the unrelated editor change must not be rolled back');
+    assert.equal(existsSync(h.backupPath), true,
+      'the armed probe must keep its only recovery backup');
+    const restored = disableProbe(h);
+    assert.deepEqual(restored.restored, original,
+      'disable must restore the original statusLine through the editor content');
+    assert.equal(JSON.parse(readFileSync(h.settingsPath, 'utf8')).editorSetting, 'preserve me',
+      'disable must preserve the unrelated editor key');
+    assert.equal(existsSync(h.backupPath), false, 'a successful disable consumes the backup');
   });
 });
 

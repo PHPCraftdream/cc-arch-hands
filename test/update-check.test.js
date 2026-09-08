@@ -174,6 +174,27 @@ describe('isNewerVersion', () => {
     assert.equal(isNewerVersion('0.8.0-1', '0.8.0-alpha'), true);
     assert.equal(isNewerVersion('0.8.0-alpha', '0.8.0-1'), false);
   });
+
+  it('rejects leading-zero numeric identifiers as malformed input', () => {
+    // SemVer #spec-item-2 (core) and #spec-item-9 (prerelease): leading
+    // zeroes are forbidden, and malformed input must never report an update.
+    assert.equal(isNewerVersion('0.8.0', '00.9.0'), false);
+    assert.equal(isNewerVersion('0.8.0', '0.8.01'), false);
+    assert.equal(isNewerVersion('0.8.0-rc.1', '0.8.0-rc.02'), false);
+    assert.equal(isNewerVersion('0.8.0-rc.02', '0.9.0'), false);
+    assert.equal(isNewerVersion('00.8.0', '0.9.0'), false);
+  });
+
+  it('still accepts valid zero and non-leading-zero identifiers', () => {
+    assert.equal(isNewerVersion('0.8.0', '0.9.0'), true);
+    assert.equal(isNewerVersion('0.8.0', '0.8.10'), true);
+    assert.equal(isNewerVersion('0.9.0', '10.0.0'), true);
+    assert.equal(isNewerVersion('0.8.0', '0.8.0'), false);
+    assert.equal(isNewerVersion('0.8.0-rc.1', '0.8.0-rc.2'), true);
+    assert.equal(isNewerVersion('0.8.0-rc.2', '0.8.0-rc.10'), true);
+    assert.equal(isNewerVersion('0.8.0-rc.1', '0.8.0-rc.0'), false);
+    assert.equal(isNewerVersion('0.8.0-rc.0', '0.8.0'), true);
+  });
 });
 
 describe('getLatestVersion caching', () => {

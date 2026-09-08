@@ -61,7 +61,8 @@ wrong turn.
 
 **The `bins` install class (since 0.4.0).** `cah install` copies the four
 companion runtime bins and their shared library leaves
-(`lib/sentinel.js`, `lib/fs-atomic-identity.js`, `lib/fs-atomic-publication.js`,
+(`lib/sentinel.js`, `lib/fs-atomic-identity.js`, `lib/lease-clock.js`,
+`lib/fs-atomic-publication.js`,
 `lib/fs-atomic.js`, `lib/fsutil.js`, `lib/lease-lock.js`,
 `lib/marker-capacity-ops.js`, `lib/marker-capacity-stage.js`,
 `lib/marker-capacity-recovery.js`, `lib/marker-state.js`, `lib/transcript-stats.js`,
@@ -83,7 +84,8 @@ SKILL.md migrate a pre-0.4.0 bare-name `command` to the absolute path on
 re-run.**
 
 Publication is dependency-first: the managed package boundary, `sentinel.js`,
-`fs-atomic-identity.js`, `fs-atomic-publication.js`, `fs-atomic.js`, `fsutil.js`,
+`fs-atomic-identity.js`, `lease-clock.js`, `fs-atomic-publication.js`,
+`fs-atomic.js`, `fsutil.js`,
 `lease-lock.js`, `marker-capacity-ops.js`, `marker-capacity-stage.js`,
 `marker-capacity-recovery.js`, `marker-state.js`,
 `transcript-stats.js`, and `update-check.js` are replaced before any executable
@@ -107,6 +109,7 @@ never exposed before its complete mirrored dependency chain is present.
 | `lib/fsutil.js` | Read/list/prune helpers plus compatibility re-exports for filesystem primitives |
 | `lib/fs-atomic-identity.js` | Exact BigInt identities and stable file snapshots |
 | `lib/fs-atomic-publication.js` | Generation-fenced no-overwrite publication transaction |
+| `lib/lease-clock.js` | Shared lease heartbeat/expiry rule (`LEASE_MAX_MS`, `ownerTimestamp`, `leaseExpired`) used by both lease-lock and fs-atomic-publication |
 | `lib/fs-atomic.js` | Atomic publication, quarantine, and conditional removal |
 | `lib/transcript-stats.js` | Shared transcript walker + status-line formatter for all hook bins |
 | `lib/marker-capacity-ops.js` | Durable marker-capacity transitions, exact victim CAS, and surfaced mismatch recovery |

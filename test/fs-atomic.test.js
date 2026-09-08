@@ -10,6 +10,8 @@ import {
   captureRegularFileSnapshot, enumerateRecoveryArtifacts, isQuarantineName, isQuarantinePath,
   maintainRecoveryArtifacts, removeOwnedRegularFile, writeFileAtomic,
 } from '../lib/fs-atomic.js';
+import { recoverPublicationFence } from '../lib/fs-atomic-publication.js';
+import { renewLease } from '../lib/lease-lock.js';
 
 describe('empty atomic-removal reservations', () => {
   it('reclaims an identity-stable empty reservation before removing its leaf', () => {
@@ -247,6 +249,60 @@ async function waitForPath(path, timeoutMs, message) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error(message || `timed out waiting for ${path}`);
+}
+
+// A real publisher holding a lifecycle lease across its publication, the way
+// bin/cah-stamp.js does: the proof records the lease identity, so committed-
+// fence recovery consults the lease instead of only the pid/proof age.
+function leasedPublisherChildScript() {
+  const fsutilUrl = new URL('../lib/fsutil.js', import.meta.url).href;
+  const leaseUrl = new URL('../lib/lease-lock.js', import.meta.url).href;
+  const interlocksUrl = new URL('../test-support/interlocks.js', import.meta.url).href;
+  const nl = String.fromCharCode(10);
+  return [
+    'import { writeFileAtomic, captureRegularFileSnapshot } from ' + JSON.stringify(fsutilUrl) + ';',
+    'import { acquireLease, renewLease, releaseLease } from ' + JSON.stringify(leaseUrl) + ';',
+    'import { makeInterlock } from ' + JSON.stringify(interlocksUrl) + ';',
+    'const dest = process.env.CAH_TEST_PUBLISHER_DEST;',
+    'const leasePath = process.env.CAH_TEST_PUBLISHER_LEASE;',
+    'const nl = String.fromCharCode(10);',
+    'try {',
+    '  const lease = acquireLease(leasePath, { kind: ', JSON.stringify('test-leased-publisher'), ' });',
+    '  if (!lease) { process.stdout.write(', JSON.stringify('FAILED:lease' + nl), '); process.exit(4); }',
+    '  renewLease(lease);',
+    '  writeFileAtomic(dest, process.env.CAH_TEST_PUBLISHER_PAYLOAD + nl, {',
+    '    expectedDestination: captureRegularFileSnapshot(dest).expectedDestination,',
+    '    testInterlock: makeInterlock(),',
+    '    lifecycleLease: { path: lease.path, token: lease.token, generation: lease.generation },',
+    '  });',
+    '  releaseLease(lease);',
+    '  process.stdout.write(', JSON.stringify('PUBLISHED' + nl), ');',
+    '} catch (error) {',
+    '  process.stdout.write(', JSON.stringify('FAILED:' + nl), ' + (error.code || ', JSON.stringify(''), ') + ', JSON.stringify(':'), ' + error.message);',
+    '  process.exit(3);',
+    '}',
+  ].join(nl);
+}
+
+function spawnLeasedPublisher(dest, leasePath, payload, interlockBase, phase) {
+  const child = spawn(process.execPath, ['--input-type=module', '-e', leasedPublisherChildScript()], {
+    env: {
+      ...process.env,
+      HOME: dirname(dest), USERPROFILE: dirname(dest),
+      CAH_TEST_ONLY: '1',
+      CAH_TEST_PUBLISHER_DEST: dest,
+      CAH_TEST_PUBLISHER_PAYLOAD: payload,
+      CAH_TEST_PUBLISHER_LEASE: leasePath,
+      CAH_TEST_ONLY_FSUTIL_INTERLOCK: interlockBase,
+      CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE: phase,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  const exited = new Promise((resolve) => child.once('close', (code) => resolve({ code, stdout })));
+  return { child, exited };
 }
 
 describe('a foreign acquirer racing a live committed fence', () => {
@@ -562,6 +618,170 @@ describe('a recycled-pid committed fence under maintenance', () => {
       assert.equal(existsSync(fence), false);
       assert.equal(readFileSync(dest, 'utf8'), 'victim-payload\n',
         'sweeping the fence must never touch the committed payload');
+    } finally {
+      for (const child of children) child.kill('SIGKILL');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('a leased committed publisher', () => {
+  it('keeps deferring to a live publisher whose lease heartbeat is fresh', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-leased-live-'));
+    const children = [];
+    try {
+      const dest = join(dir, 'leaf.json');
+      const leasePath = join(dir, 'lifecycle.lock');
+      writeFileSync(dest, 'ORIGINAL\n');
+
+      const victimBase = join(dir, 'victim-interlock');
+      const victim = spawnLeasedPublisher(
+        dest, leasePath, 'leased-payload', victimBase, 'write-after-final-rename');
+      children.push(victim.child);
+      await waitForPath(`${victimBase}.ready`, 60000);
+
+      assert.equal(recoverPublicationFence(dest, { deferCommitted: true }), false,
+        'a live publisher with a fresh lease heartbeat must still be deferred to');
+      assert.ok(existsSync(`${dest}.cah-owned-publish`),
+        'the live publisher committed fence must not be reclaimed');
+
+      writeFileSync(`${victimBase}.go`, 'go');
+      const { code, stdout } = await victim.exited;
+      assert.equal(code, 0, `the parked publisher must finish its own cleanup: ${stdout}`);
+      assert.equal(stdout, 'PUBLISHED\n');
+      assert.equal(readFileSync(dest, 'utf8'), 'leased-payload\n');
+      assert.equal(existsSync(`${dest}.cah-owned-publish`), false);
+    } finally {
+      for (const child of children) child.kill('SIGKILL');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('stops deferring once the lease heartbeat expires even when token and generation still match', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-leased-expired-'));
+    const children = [];
+    try {
+      const dest = join(dir, 'leaf.json');
+      const leasePath = join(dir, 'lifecycle.lock');
+      writeFileSync(dest, 'ORIGINAL\n');
+
+      const victimBase = join(dir, 'victim-interlock');
+      const victim = spawnLeasedPublisher(
+        dest, leasePath, 'victim-payload', victimBase, 'write-after-final-rename');
+      children.push(victim.child);
+      await waitForPath(`${victimBase}.ready`, 60000);
+      victim.child.kill('SIGKILL');
+      await victim.exited;
+      const fence = `${dest}.cah-owned-publish`;
+      assert.equal(readFileSync(dest, 'utf8'), 'victim-payload\n',
+        'the killed publisher must have committed its payload');
+      assert.ok(existsSync(fence), 'the crashed publisher must leave its committed fence');
+
+      // Simulate pid recycling AND abandonment: the proof and the lease owner
+      // point at a live unrelated process, but nobody renews the lease
+      // anymore, so its heartbeat ages past the lease period while token and
+      // generation stay exactly what the proof recorded.
+      const sleeper = spawn(process.execPath, ['-e', 'setInterval(() => {}, 60000);'],
+        { stdio: 'ignore' });
+      children.push(sleeper);
+      const owner = JSON.parse(readFileSync(join(leasePath, 'owner.json'), 'utf8'));
+      const agedOwner = { ...owner, pid: sleeper.pid, timestamp: Date.now() - 86_400_000 };
+      writeFileSync(join(leasePath, 'owner.json'), JSON.stringify(agedOwner) + '\n');
+      const proofPath = join(fence, 'publication.json');
+      const proof = JSON.parse(readFileSync(proofPath, 'utf8'));
+      proof.ownerPid = sleeper.pid;
+      proof.createdAtMs = Date.now() - 3_600_000;
+      writeFileSync(proofPath, JSON.stringify(proof) + '\n');
+
+      // The lease subsystem itself already answers expired: renewLease()
+      // refuses a lease whose heartbeat is older than the lease period even
+      // when token and generation match, so the publication deferral must not
+      // trust what renewal itself refuses.
+      assert.equal(renewLease({ path: leasePath, owner: agedOwner, options: {} }), false,
+        'renewLease must treat the abandoned lease as expired');
+
+      assert.equal(recoverPublicationFence(dest, { deferCommitted: true }), true,
+        'maintenance must converge: an abandoned lease must not pin the fence forever');
+      assert.equal(existsSync(fence), false, 'the expired lease must not keep the fence');
+      assert.equal(readFileSync(dest, 'utf8'), 'victim-payload\n',
+        'recovery must never touch the committed payload');
+    } finally {
+      for (const child of children) child.kill('SIGKILL');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('is swept by maintenance once its lease expires instead of being deferred forever', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-leased-maintenance-'));
+    const children = [];
+    try {
+      const dest = join(dir, 'leaf.json');
+      const leasePath = join(dir, 'lifecycle.lock');
+      writeFileSync(dest, 'ORIGINAL\n');
+
+      const victimBase = join(dir, 'victim-interlock');
+      const victim = spawnLeasedPublisher(
+        dest, leasePath, 'victim-payload', victimBase, 'write-after-final-rename');
+      children.push(victim.child);
+      await waitForPath(`${victimBase}.ready`, 60000);
+      victim.child.kill('SIGKILL');
+      await victim.exited;
+      const fence = `${dest}.cah-owned-publish`;
+      assert.ok(existsSync(fence), 'the crashed publisher must leave its committed fence');
+
+      // Recycle the pid onto a live process and age both the proof and the
+      // lease heartbeat. Maintenance must treat this as crashed state, not as
+      // a live transaction that happens to hold a lease.
+      const sleeper = spawn(process.execPath, ['-e', 'setInterval(() => {}, 60000);'],
+        { stdio: 'ignore' });
+      children.push(sleeper);
+      const owner = JSON.parse(readFileSync(join(leasePath, 'owner.json'), 'utf8'));
+      writeFileSync(join(leasePath, 'owner.json'), JSON.stringify({
+        ...owner, pid: sleeper.pid, timestamp: Date.now() - 86_400_000,
+      }) + '\n');
+      const proofPath = join(fence, 'publication.json');
+      const proof = JSON.parse(readFileSync(proofPath, 'utf8'));
+      proof.ownerPid = sleeper.pid;
+      proof.createdAtMs = Date.now() - 3_600_000;
+      writeFileSync(proofPath, JSON.stringify(proof) + '\n');
+
+      const report = maintainRecoveryArtifacts(dir);
+      assert.ok(report.swept.includes(fence),
+        `maintenance must recover an expired-lease committed fence: swept=${JSON.stringify(report.swept)} preserved=${JSON.stringify(report.preserved)}`);
+      assert.equal(existsSync(fence), false);
+      assert.equal(readFileSync(dest, 'utf8'), 'victim-payload\n',
+        'sweeping the fence must never touch the committed payload');
+    } finally {
+      for (const child of children) child.kill('SIGKILL');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a dead leased publisher is recovered without requiring any lease takeover', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-leased-dead-'));
+    const children = [];
+    try {
+      const dest = join(dir, 'leaf.json');
+      const leasePath = join(dir, 'lifecycle.lock');
+      writeFileSync(dest, 'ORIGINAL\n');
+
+      const victimBase = join(dir, 'victim-interlock');
+      const victim = spawnLeasedPublisher(
+        dest, leasePath, 'victim-payload', victimBase, 'write-after-final-rename');
+      children.push(victim.child);
+      await waitForPath(`${victimBase}.ready`, 60000);
+      victim.child.kill('SIGKILL');
+      await victim.exited;
+      const fence = `${dest}.cah-owned-publish`;
+      assert.ok(existsSync(fence), 'the crashed publisher must leave its committed fence');
+
+      // The owner.json record survives with the dead publisher pid and a
+      // fresh heartbeat. The dead proof pid makes the fence reclaimable: no
+      // successor ever has to reopen the abandoned lease first.
+      assert.equal(recoverPublicationFence(dest, { deferCommitted: true }), true,
+        'a dead leased publisher must be recoverable without a takeover');
+      assert.equal(existsSync(fence), false);
+      assert.equal(readFileSync(dest, 'utf8'), 'victim-payload\n');
     } finally {
       for (const child of children) child.kill('SIGKILL');
       rmSync(dir, { recursive: true, force: true });

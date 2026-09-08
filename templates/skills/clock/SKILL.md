@@ -78,6 +78,24 @@ Expand `<HOME>` to the real absolute path at write time (e.g.
 `$HOME`/`%USERPROFILE%` token in the file. Use forward slashes even on Windows;
 Node accepts them and they need no JSON escaping.
 
+**Refuse unsafe home paths before writing anything.** The generated command is
+run by a shell, and inside double quotes POSIX shells and Git Bash still expand
+`$var`, `$(command)`, and backticks, cmd.exe still expands `%VAR%`, and a
+literal double quote ends the argument outright. Before building either
+command, check the expanded home path for any of these characters:
+
+```
+"  `  $  &  <  >  |  ;  ^  !  %
+```
+
+plus control characters (code points U+0000 through U+001F). If the path
+contains any of them, do **not** write, rewrite, or migrate any settings
+entry: report the problem to the user instead ("your home directory path
+contains characters a shell would interpret inside the clock command — move
+the `cah-bin` tree to a plain filesystem path") and stop. Home paths built
+from plain filesystem characters (letters, digits, spaces, dashes,
+underscores, parentheses) are fine.
+
 **Prerequisite:** these files exist only after `cah install` (or
 `cah install --only bins`) has run. If `<HOME>/.claude/cah-bin/bin/` is missing,
 tell the user to run `cah install` first, then continue.
@@ -180,9 +198,10 @@ through long turns instead of jumping in one step. The matcher `""` means "all t
      `hooks` and `hooks[event]` as arrays if they don't exist yet). IMPORTANT:
      if other entries already exist there (e.g. from `/checkpoint-watch` in
      `hooks.Stop`), append ours — never replace.
-6. Save atomically: write to `settings.json.tmp`, then rename it over
-   `settings.json`. Report all three pieces' final states (statusLine,
-   chat-stamp.Stop, chat-stamp.PostToolUse).
+6. Save atomically with the safe write protocol from the "Atomic write only"
+   rule below (fresh unique temp file, re-read-and-verify immediately before
+   the rename, refuse to publish on a mismatch). Report all three pieces'
+   final states (statusLine, chat-stamp.Stop, chat-stamp.PostToolUse).
 
 ### `--off` (disable)
 
@@ -197,8 +216,8 @@ through long turns instead of jumping in one step. The matcher `""` means "all t
      `cah-sentinel === "cah-hook:v1"` AND `cah-name === "clock"`. After
      removal, drop any matcher entry whose `hooks` array is empty. Drop
      `hooks[event]` if it becomes empty. Drop `hooks` if it becomes empty.
-   - Save atomically. Never delete `settings.json` itself — even if it
-     becomes `{}`.
+   - Save atomically (same safe write protocol as above). Never delete
+     `settings.json` itself — even if it becomes `{}`.
 3. Report what was removed, or "not enabled" if nothing matched in either scope.
 
 ### `--status` (inspect)
@@ -241,8 +260,22 @@ Never write in this mode.
 - **Never touch hook entries WITHOUT our sentinel.** Other hooks in
   `hooks.Stop` (e.g. from `/checkpoint-watch`) or in `hooks.PostToolUse`
   (any third-party tool) must be preserved exactly.
-- **Atomic write only.** Stringify, write to `settings.json.tmp`, then rename it
-  over `settings.json`. Never do a partial or in-place truncating write.
+- **Atomic write only — with a concurrent-edit check.** Serialize with
+  `JSON.stringify(value, null, 2) + "\n"` and write the bytes to a **fresh,
+  unique** temp file beside `settings.json`, e.g.
+  `settings.json.tmp.<random-suffix>`, with a new random suffix for this
+  invocation. Never write into a pre-existing `settings.json.tmp*` file: it
+  may be another invocation's in-flight write or leftover recovery data — if
+  your chosen temp name already exists, pick a different suffix instead of
+  overwriting it. **Immediately before the final rename**, re-read
+  `settings.json` and compare it byte for byte with the raw text you read at
+  the start of this invocation. If it changed, something else edited settings
+  while you were working: refuse to publish — delete your unique temp file,
+  leave `settings.json` untouched, and tell the user "settings.json was
+  modified by something else while /clock was working; nothing was written —
+  re-run /clock to apply the change on top of the new content". Only when the
+  re-read matches, rename your unique temp file over `settings.json`. Never
+  do a partial or in-place truncating write.
 - **Serialize with `JSON.stringify(value, null, 2) + "\n"`** — 2-space indent and
   a trailing newline.
 - **Never delete `settings.json` itself.** The `--off` path only removes our

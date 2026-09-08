@@ -56,6 +56,24 @@ Expand `<HOME>` to the real absolute path at write time (e.g. `C:/Users/Alice`
 or `/home/alice`) — do **not** leave a literal `<HOME>` or a `$HOME` token in
 the file. Use forward slashes even on Windows.
 
+**Refuse unsafe home paths before writing anything.** The generated command is
+run by a shell, and inside double quotes POSIX shells and Git Bash still expand
+`$var`, `$(command)`, and backticks, cmd.exe still expands `%VAR%`, and a
+literal double quote ends the argument outright. Before building the command,
+check the expanded home path for any of these characters:
+
+```
+"  `  $  &  <  >  |  ;  ^  !  %
+```
+
+plus control characters (code points U+0000 through U+001F). If the path
+contains any of them, do **not** write, rewrite, or migrate any settings
+entry: report the problem to the user instead ("your home directory path
+contains characters a shell would interpret inside the checkpoint-watch hook
+command — move the `cah-bin` tree to a plain filesystem path") and stop. Home
+paths built from plain filesystem characters (letters, digits, spaces,
+dashes, underscores, parentheses) are fine.
+
 **Prerequisite:** this file exists only after `cah install` (or
 `cah install --only bins`) has run. If `<HOME>/.claude/cah-bin/bin/` is missing,
 tell the user to run `cah install` first, then continue.
@@ -91,11 +109,14 @@ fields are our ownership sentinel):
      "already enabled" and stop.
    - Otherwise it is an **older** entry (e.g. the bare `cah-checkpoint-hint`
      from a pre-0.4.0 install): rewrite its `command` to the computed absolute
-     path, keep the sentinel fields, save, and report "migrated".
+     path, keep the sentinel fields, save with the safe write protocol from
+     the "Atomic write only" rule below, and report "migrated".
 4. Otherwise add our entry: create the `hooks` key if missing, create the
    `hooks.Stop` array if missing, then push the matcher entry shown above onto
    `hooks.Stop`.
-5. Save atomically (see "Atomic write" below). Report "enabled".
+5. Save atomically with the safe write protocol from the "Atomic write only"
+   rule below (fresh unique temp file, re-read-and-verify immediately before
+   the rename, refuse to publish on a mismatch). Report "enabled".
 
 ### `--off` (disable)
 
@@ -107,8 +128,9 @@ fields are our ownership sentinel):
    `cah-name === "checkpoint-watch"`.
 4. Drop the outer matcher entry if its `hooks` array is now empty.
 5. Drop `hooks.Stop` if it is now empty. Drop `hooks` if it is now empty.
-6. Save atomically. Never delete `settings.json` itself — even if it ends up
-   `{}`. Report what was removed (or "not enabled" if nothing matched).
+6. Save atomically (same safe write protocol as above). Never delete
+   `settings.json` itself — even if it ends up `{}`. Report what was removed
+   (or "not enabled" if nothing matched).
 
 ### `--status` (inspect)
 
@@ -123,8 +145,22 @@ fields are our ownership sentinel):
 - **Never touch entries WITHOUT our sentinel.** Any hook lacking both
   `cah-sentinel === "cah-hook:v1"` and `cah-name === "checkpoint-watch"` belongs
   to the user or another tool — leave it exactly as is.
-- **Atomic write only.** Stringify, write to `settings.json.tmp`, then rename it
-  over `settings.json`. Never do a partial or in-place truncating write.
+- **Atomic write only — with a concurrent-edit check.** Serialize with
+  `JSON.stringify(value, null, 2) + "\n"` and write the bytes to a **fresh,
+  unique** temp file beside `settings.json`, e.g.
+  `settings.json.tmp.<random-suffix>`, with a new random suffix for this
+  invocation. Never write into a pre-existing `settings.json.tmp*` file: it
+  may be another invocation's in-flight write or leftover recovery data — if
+  your chosen temp name already exists, pick a different suffix instead of
+  overwriting it. **Immediately before the final rename**, re-read
+  `settings.json` and compare it byte for byte with the raw text you read at
+  the start of this invocation. If it changed, something else edited settings
+  while you were working: refuse to publish — delete your unique temp file,
+  leave `settings.json` untouched, and tell the user "settings.json was
+  modified by something else while /checkpoint-watch was working; nothing was
+  written — re-run /checkpoint-watch to apply the change on top of the new
+  content". Only when the re-read matches, rename your unique temp file over
+  `settings.json`. Never do a partial or in-place truncating write.
 - **Serialize with `JSON.stringify(value, null, 2) + "\n"`** — 2-space indent and
   a trailing newline.
 - **Never delete `settings.json` itself.** The `--off` path only edits content;
