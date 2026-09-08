@@ -16,3 +16,6 @@ REVIEW-*.md
 
 # local scratch work
 /tmp/
+
+# /wrush task worktrees — always created here, in-tree
+/worktrees/
