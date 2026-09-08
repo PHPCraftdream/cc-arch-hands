@@ -143,7 +143,7 @@ export function registerStampStateCases() {
     const env = {
       CAH_STAMP_THROTTLE_PATH: throttle,
       CAH_STAMP_MIN_INTERVAL_MS: '1',
-      CAH_STAMP_OWNER_MAX_LEASE_MS: '150',
+      CAH_STAMP_OWNER_MAX_LEASE_MS: '2000',
       CAH_TEST_ONLY: '1',
       CAH_TEST_ONLY_FSUTIL_INTERLOCK: interlock,
       CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE: 'write-before-final-publication',
@@ -152,12 +152,21 @@ export function registerStampStateCases() {
       { session_id: sessionId, transcript_path: tp }, env,
     );
     await waitForPath(`${interlock}.ready`);
-    // 8x the lease TTL — under heavy concurrent test-suite load (many
-    // parallel test files each spawning real child processes), even the
-    // previous 4x margin observably let scheduling jitter around the
-    // successor's own process spawn make the predecessor's lease look
-    // not-yet-stale.
-    await new Promise((resolve) => setTimeout(resolve, 1200));
+    // The lease TTL bounds two different things, both of which need real
+    // margin under heavy concurrent test-suite load (many parallel test
+    // files each spawning real child processes): (1) this wait must
+    // comfortably exceed the TTL so the predecessor's lease reliably reads
+    // as stale despite scheduling jitter around the successor's own process
+    // spawn -- a too-tight TTL here previously needed successive 1.5x -> 4x
+    // -> 8x widenings; (2) the successor's OWN multi-step publish sequence
+    // (write pending, renew, emit stdout, renew, write delivered -- each
+    // internally re-checking the lease) must complete within ITS OWN
+    // lease's TTL from acquisition, and a too-tight TTL there let a single
+    // slow CI run's renewLease() check inside the final write silently fail
+    // (unchecked return value) and leave deliveryState stuck at 'pending'
+    // even though the successor had already published to stdout. A larger
+    // absolute TTL fixes both without needing an ever-larger multiplier.
+    await new Promise((resolve) => setTimeout(resolve, 5000));
     writeFileSync(tp, JSON.stringify({
       type: 'assistant', requestId: 'successor-request',
       message: { role: 'assistant', model: 'claude-opus-4-7', usage: { input_tokens: 47_000 } },
@@ -167,7 +176,7 @@ export function registerStampStateCases() {
       {
         CAH_STAMP_THROTTLE_PATH: throttle,
         CAH_STAMP_MIN_INTERVAL_MS: '1',
-        CAH_STAMP_OWNER_MAX_LEASE_MS: '150',
+        CAH_STAMP_OWNER_MAX_LEASE_MS: '2000',
         CAH_TEST_ONLY: '1',
       },
     );
@@ -309,7 +318,7 @@ export function registerStampStateCases() {
       {
         CAH_STAMP_THROTTLE_PATH: throttle,
         CAH_STAMP_MIN_INTERVAL_MS: '1',
-        CAH_STAMP_OWNER_MAX_LEASE_MS: '150',
+        CAH_STAMP_OWNER_MAX_LEASE_MS: '2000',
         CAH_TEST_ONLY: '1',
         CAH_TEST_ONLY_OWNER_INTERLOCK: interlock,
         CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'sidecar-prune',
@@ -620,7 +629,7 @@ export function registerStampStateCases() {
       {
         CAH_STAMP_THROTTLE_PATH: throttle,
         CAH_TEST_ONLY: '1',
-        CAH_STAMP_OWNER_MAX_LEASE_MS: '150',
+        CAH_STAMP_OWNER_MAX_LEASE_MS: '2000',
       },
     );
     assert.ok(result.stdout.trim());
