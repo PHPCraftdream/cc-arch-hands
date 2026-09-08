@@ -5,14 +5,11 @@ on:
     types: [published]
 
 jobs:
+  # The reusable full matrix (3 OSes x Node 18.19.0/20/22/24) runs against the
+  # tag being published; a failure on any supported environment blocks the
+  # publish job below.
   test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-      - run: npm test
+    uses: ./.github/workflows/ci.yml
 
   publish:
     needs: test
@@ -42,6 +39,22 @@ jobs:
             exit 1
           fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+      # Smoke-install exactly what would be published: pack the tarball,
+      # install it globally, and run the CLI end-to-end against an isolated
+      # HOME before the real publish step.
+      - name: Smoke-install the packed tarball
+        env:
+          SMOKE_HOME: ${{ runner.temp }}/cah-smoke-home
+        run: |
+          mkdir -p "$SMOKE_HOME"
+          npm pack --pack-destination "$RUNNER_TEMP"
+          TARBALL="$RUNNER_TEMP/cc-arch-hands-$VERSION.tgz"
+          npm install -g "$TARBALL"
+          export HOME="$SMOKE_HOME" USERPROFILE="$SMOKE_HOME"
+          cah install
+          cah doctor
+          cah list
+          cah uninstall
       - name: Publish package
         run: |
           if [[ "$VERSION" == *-* ]]; then

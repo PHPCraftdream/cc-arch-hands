@@ -17,6 +17,7 @@ import {
 } from '../lib/binstall.js';
 import { sameRollbackState } from '../lib/binstall-repair.js';
 import { enumerateRecoveryArtifacts, maintainRecoveryArtifacts } from '../lib/fs-atomic.js';
+import { recoverPublicationFence } from '../lib/fs-atomic-publication.js';
 import { Scope } from '../lib/scope.js';
 import {
   DEFAULT_CHILD_DEADLINE_MS, DEFAULT_WORKER_DEADLINE_MS, TERMINATION_GRACE_MS, runWorker,
@@ -363,6 +364,94 @@ describe('writeBins', () => {
     } finally {
       rmSync(home, { recursive: true, force: true });
       child.kill('SIGKILL');
+    }
+  });
+
+  it('a publisher paused past the freshness window still succeeds; a dead recycled-pid publisher is still recovered', async () => {
+    const stateDir = join(dst, 'cache', 'stamp-state');
+    mkdirSync(stateDir, { recursive: true });
+    // (a) A live publisher parked AFTER its canonical rename, explicitly
+    // longer than the 1000 ms FENCE_STALE_MS freshness window.
+    const liveDest = join(stateDir, 'last-stamp.json.session-windowb-slow.json');
+    writeFileSync(liveDest, 'ORIGINAL\n');
+    const liveBase = join(dst, 'p2-windowb-slow-live-interlock');
+    const live = spawnPausedPublisher(liveDest, liveBase, 'write-after-rename-before-sync');
+    await waitForPath(`${liveBase}.ready`, 60000);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    // (b) A successor publisher parked BEFORE its rename.
+    const successorDest = join(stateDir, 'last-stamp.json.session-windowb-successor.json');
+    writeFileSync(successorDest, 'ORIGINAL\n');
+    const successorBase = join(dst, 'p2-windowb-successor-interlock');
+    const successor = spawnPausedPublisher(successorDest, successorBase, P2_INTERLOCK_PHASE);
+    await waitForPath(`${successorBase}.ready`, 60000);
+    // (c) A dead publisher parked after its rename, to be recycled onto the
+    // sleeper below.
+    const deadDest = join(stateDir, 'last-stamp.json.session-windowb-dead.json');
+    writeFileSync(deadDest, 'ORIGINAL\n');
+    const deadBase = join(dst, 'p2-windowb-dead-interlock');
+    const dead = spawnPausedPublisher(deadDest, deadBase, 'write-after-rename-before-sync');
+    await waitForPath(`${deadBase}.ready`, 60000);
+    dead.child.kill('SIGKILL');
+    await dead.exited;
+    const sleeper = spawn(process.execPath, ['-e', 'setInterval(() => {}, 60000);'], {
+      stdio: 'ignore',
+    });
+    try {
+      // Age every proof past even a wide freshness window.
+      const ageProof = (dest) => {
+        const proofPath = join(`${dest}.cah-owned-publish`, 'publication.json');
+        const proof = JSON.parse(readFileSync(proofPath, 'utf8'));
+        proof.createdAtMs = Date.now() - 3_600_000;
+        writeFileSync(proofPath, `${JSON.stringify(proof)}\n`);
+      };
+      ageProof(liveDest);
+      ageProof(deadDest);
+      // The successor's proof is deliberately NOT aged: its deferral in the
+      // uncommitted branch rests on pid liveness alone, and rewriting the
+      // proof file would invalidate the in-memory proof identity the paused
+      // publisher itself needs to clean up its own fence later.
+      // Simulate exact pid recycling: patch only the dead publisher's pid
+      // onto the live sleeper process.
+      const deadProofPath = join(`${deadDest}.cah-owned-publish`, 'publication.json');
+      const deadProof = JSON.parse(readFileSync(deadProofPath, 'utf8'));
+      deadProof.ownerPid = sleeper.pid;
+      writeFileSync(deadProofPath, `${JSON.stringify(deadProof)}\n`);
+      // Run the exact maintenance decision writeBins uses.
+      const reclaim = (dest) => recoverPublicationFence(dest, { deferFresh: true, deferCommitted: true });
+      assert.equal(reclaim(deadDest), true,
+        'a dead recycled-pid publisher\'s aged committed fence must be recovered');
+      assert.equal(existsSync(`${deadDest}.cah-owned-publish`), false,
+        'the recovered fence directory must be gone');
+      assert.equal(readFileSync(deadDest, 'utf8'), 'child-payload\n',
+        'recovery must not touch a committed payload');
+      assert.equal(reclaim(successorDest), false,
+        'a live successor parked before its rename must be preserved');
+      assert.equal(existsSync(`${successorDest}.cah-owned-publish`), true,
+        'the live successor\'s uncommitted fence must still exist');
+      assert.equal(reclaim(liveDest), true,
+        'an aged lease-less committed fence is identity-unverifiable and reclaimable');
+      assert.equal(existsSync(`${liveDest}.cah-owned-publish`), false,
+        'the reclaimed live fence directory must be gone');
+      // The crux: a live publisher whose committed fence was reclaimed must
+      // still complete successfully.
+      writeFileSync(`${liveBase}.go`, 'go');
+      const liveResult = await live.exited;
+      assert.equal(liveResult.code, 0,
+        `a live publisher whose committed fence was reclaimed must still succeed: ${liveResult.stdout}`);
+      assert.equal(liveResult.stdout, 'PUBLISHED\n');
+      assert.equal(readFileSync(liveDest, 'utf8'), 'child-payload\n');
+      writeFileSync(`${successorBase}.go`, 'go');
+      const successorResult = await successor.exited;
+      assert.equal(successorResult.code, 0,
+        `the successor publisher must complete: ${successorResult.stdout}`);
+      assert.equal(successorResult.stdout, 'PUBLISHED\n');
+      assert.equal(readFileSync(successorDest, 'utf8'), 'child-payload\n');
+      assert.equal(existsSync(`${successorDest}.cah-owned-publish`), false,
+        'the successor must clean up its own fence');
+    } finally {
+      sleeper.kill('SIGKILL');
+      live.child.kill('SIGKILL');
+      successor.child.kill('SIGKILL');
     }
   });
 

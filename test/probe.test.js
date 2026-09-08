@@ -15,8 +15,9 @@ import {
   closeSync,
   utimesSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
 
 import {
@@ -28,6 +29,7 @@ import {
   ProbeBusyError,
   ProbeNotActiveError,
   MissingBackupError,
+  ProbePathUnsafeError,
   MalformedSettingsError,
   MalformedBackupError,
   PROBE_SENTINEL,
@@ -633,12 +635,56 @@ describe('probe concurrency', () => {
 });
 
 describe('probe command portability (review M10/L12)', () => {
-  it('normalizes path separators and escapes quotes in the command', () => {
+  it('normalizes path separators and keeps shell-safe paths working', () => {
     const h = harness();
     enableProbe(h);
     const s = JSON.parse(readFileSync(h.settingsPath, 'utf8'));
     assert.ok(!s.statusLine.command.includes('\\'), 'no backslash separators');
     assert.match(s.statusLine.command, /^node "/);
+  });
+
+  const unsafeSegments = ['$(echo CAH_EXPANDED)', 'a`b', 'a"b', 'a&b', 'a%b',
+    'a;b', 'a|b', 'a<b', 'a>b', 'a^b', 'a!b', 'a$b'];
+  for (const segment of unsafeSegments) {
+    it(`refuses a probe path containing ${JSON.stringify(segment)} at generation time`, () => {
+      const h = harness();
+      const original = { type: 'command', command: 'original-user-command', padding: 0 };
+      writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
+      const unsafePath = join(dirname(h.probeBinAbsPath), segment, 'cah-status-probe.js');
+      let error = null;
+      try {
+        enableProbe({ ...h, probeBinAbsPath: unsafePath });
+      } catch (caught) { error = caught; }
+      assert.ok(error, 'generation must refuse the path');
+      assert.ok(error instanceof ProbePathUnsafeError, `unexpected error: ${error}`);
+      assert.match(error.message, /shell/);
+      assert.deepEqual(JSON.parse(readFileSync(h.settingsPath, 'utf8')), { statusLine: original },
+        'settings must be untouched by a refused enable');
+      assert.equal(existsSync(h.backupPath), false, 'no backup may be created');
+      assert.equal(existsSync(h.logPath), false, 'no log may be created');
+    });
+  }
+
+  it('runs the generated command identically through the platform shell for shell-safe paths', () => {
+    const h = harness();
+    const fixtureDir = join(dirname(h.settingsPath), 'probe shell dir (ok)');
+    mkdirSync(fixtureDir, { recursive: true });
+    const fixture = join(fixtureDir, 'cah-status-probe.js');
+    writeFileSync(fixture, "process.stdout.write('PROBE_SHELL_OK');");
+    enableProbe({ ...h, probeBinAbsPath: fixture });
+    const { command } = JSON.parse(readFileSync(h.settingsPath, 'utf8')).statusLine;
+    assert.equal(command, `node "${fixture.split('\\').join('/')}"`);
+    const shell = process.platform === 'win32'
+      ? spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', command],
+        { encoding: 'utf8', windowsVerbatimArguments: true })
+      : spawnSync('/bin/sh', ['-c', command], { encoding: 'utf8' });
+    assert.equal(shell.status, 0, `shell run failed: ${shell.stderr}`);
+    assert.equal(shell.stdout.trim(), 'PROBE_SHELL_OK',
+      'the generated command must reach the same script through the shell');
+    const direct = spawnSync(process.execPath, [fixture], { encoding: 'utf8' });
+    assert.equal(direct.status, 0, `direct run failed: ${direct.stderr}`);
+    assert.equal(direct.stdout.trim(), 'PROBE_SHELL_OK',
+      'direct argv-array invocation must behave identically');
   });
 
   it('preserves 4-space indentation of an existing settings.json (review L15)', () => {
@@ -647,6 +693,93 @@ describe('probe command portability (review M10/L12)', () => {
     enableProbe(h);
     const text = readFileSync(h.settingsPath, 'utf8');
     assert.match(text, /\n {4}"other"/, 'indentation must stay 4-space');
+  });
+});
+
+describe('probe committed-publication rollback (review P1-2)', () => {
+  function interlockThrowingAt(targetPhase, occurrence) {
+    let seen = 0;
+    return (phase) => {
+      if (phase !== targetPhase) return;
+      seen += 1;
+      if (seen === occurrence) throw new Error(`injected failure at ${targetPhase}`);
+    };
+  }
+
+  // enableProbe publishes three files (log, backup, settings) and each
+  // writeFileAtomic fires these phases once, so the settings write is the
+  // third occurrence; stop publishes only settings (the first).
+  const postCommitPhases = [
+    ['after rename, before sync', 'write-after-rename-before-sync', 3, 1],
+    ['after parent sync and fence finish', 'write-after-rename', 3, 1],
+    ['at destination inspection', 'write-before-destination-inspection', 3, 1],
+  ];
+  for (const [label, phase, enableAt, disableAt] of postCommitPhases) {
+    it(`enable converges when its settings publication fails ${label}`, () => {
+      const h = harness();
+      const original = { type: 'command', command: 'original-user-command', padding: 0 };
+      writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
+      let error = null;
+      try {
+        enableProbe(h, { testInterlock: interlockThrowingAt(phase, enableAt) });
+      } catch (caught) { error = caught; }
+      assert.ok(error, 'the injected post-commit failure must propagate');
+      assert.ok(error.committedPublication, 'the error must carry the committed publication');
+      assert.equal(error.committedPublication.path, h.settingsPath);
+      assert.deepEqual(JSON.parse(readFileSync(h.settingsPath, 'utf8')).statusLine, original,
+        'the original settings must survive a failed enable');
+      assert.equal(existsSync(h.backupPath), false,
+        'the backup must not outlive a reverted enable');
+      assert.equal(existsSync(`${h.settingsPath}.cah-owned-publish`), false,
+        'the failed transition must not leave a publication fence');
+    });
+
+    it(`stop converges when its settings publication fails ${label}`, () => {
+      const h = harness();
+      const original = { type: 'command', command: 'original-user-command', padding: 0 };
+      writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
+      enableProbe(h);
+      let error = null;
+      try {
+        disableProbe(h, { testInterlock: interlockThrowingAt(phase, disableAt) });
+      } catch (caught) { error = caught; }
+      assert.ok(error, 'the injected post-commit failure must propagate');
+      assert.ok(error.committedPublication, 'the error must carry the committed publication');
+      assert.equal(error.committedPublication.path, h.settingsPath);
+      assert.ok(JSON.parse(readFileSync(h.settingsPath, 'utf8')).statusLine['cah-sentinel'],
+        'a failed stop must leave the probe armed');
+      const restored = disableProbe(h);
+      assert.deepEqual(restored.restored, original, 'a retry must restore the original entry');
+      assert.equal(existsSync(h.backupPath), false,
+        'the successful retry must consume the backup');
+    });
+  }
+
+  it('never rolls back over a settings successor that replaced a committed enable publication', () => {
+    const h = harness();
+    const original = { type: 'command', command: 'original-user-command', padding: 0 };
+    writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
+    let seen = 0;
+    const successorSwap = (phase) => {
+      if (phase !== 'write-after-rename-before-sync') return;
+      seen += 1;
+      if (seen !== 3) return;
+      const published = readFileSync(h.settingsPath);
+      unlinkSync(h.settingsPath);
+      writeFileSync(h.settingsPath, published);
+      throw new Error('injected failure at write-after-rename-before-sync');
+    };
+    let error = null;
+    try {
+      enableProbe(h, { testInterlock: successorSwap });
+    } catch (caught) { error = caught; }
+    assert.ok(error, 'the injected post-commit failure must propagate');
+    assert.equal(error.committedPublication.path, h.settingsPath);
+    const settings = JSON.parse(readFileSync(h.settingsPath, 'utf8'));
+    assert.equal(settings.statusLine['cah-sentinel'], PROBE_SENTINEL,
+      'the successor leaf keeps the committed probe content');
+    assert.equal(existsSync(h.backupPath), false,
+      'a disowned transition must still roll back its own backup');
   });
 });
 

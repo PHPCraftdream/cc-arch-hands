@@ -33,10 +33,11 @@ Do NOT add the sentinel manually — `writeSkills` stamps it automatically.
 If a new skill needs to install a Stop hook or a statusLine in user `settings.json`:
 
 1. Add a Node script under `bin/<bin-name>.js` with `#!/usr/bin/env node`.
-2. Register it in `package.json` under `bin` so `npm install -g` puts it on PATH.
-3. Add the test file to the `test` script in `package.json` too.
-4. **Share transcript parsing and limit math with `lib/transcript-stats.js`** — never recompute `input_tokens + cache_creation_input_tokens + cache_read_input_tokens` inline. That formula is delicate (the cache-read fields dominate after the first turn) and lives in one place for a reason.
-5. Inside the bin: fail-silent on every error path (`try/catch` everything, exit 0 with no stdout). A broken hook must never block the user's session.
+2. Register it in `package.json` under `bin` so `npm install -g` puts it on PATH — **and register the same file in `BinFileDefinitions` (`lib/binstall/runtime.js`)**. The npm `bin` field alone does not install the runtime hooks actually use: `settings.json` references the copies under `~/.claude/cah-bin/`, and `writeBins` copies exactly the frozen `BinFileDefinitions` entries there. Every local `lib/` module your bin imports must also be a registered entry — the derived import graph refuses an unmanaged import at install time — and publication is dependency-first, so leaves land before the bins that import them.
+3. Test the installed artifact, not only the checkout: after `cah install`, the hook runs from `~/.claude/cah-bin/bin/<bin-name>.js`. Black-box tests that spawn the bin cover this; tests that only import the source do not.
+4. Test files need no registration. `npm test` is bare `node --test --test-concurrency=1`, which discovers every `test/*.test.js` automatically — do not add test files to any `package.json` script (`test/discovery-contract.test.js` enforces the exact script and fails if you do).
+5. **Share transcript parsing and limit math with `lib/transcript-stats.js`** — never recompute `input_tokens + cache_creation_input_tokens + cache_read_input_tokens` inline. That formula is delicate (the cache-read fields dominate after the first turn) and lives in one place for a reason.
+6. Inside the bin: fail-silent on every error path (`try/catch` everything, exit 0 with no stdout). A broken hook must never block the user's session.
 
 ## Tests
 

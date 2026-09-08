@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Reusable by publish.yml so a release is gated by this exact matrix run
+  # against the tag being published, not by a weaker private copy of it.
+  workflow_call:
 
 jobs:
   test:
@@ -12,7 +15,9 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        node-version: [18.19.0, 20, 22]
+        # 18.19.0 is the declared minimum in package.json engines; 22 and 24
+        # are the current LTS lines (18 and 20 are EOL but still supported).
+        node-version: [18.19.0, 20, 22, 24]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7

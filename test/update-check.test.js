@@ -141,6 +141,39 @@ describe('isNewerVersion', () => {
     assert.equal(isNewerVersion('0.5.2', undefined), false);
     assert.equal(isNewerVersion('0.5.2', null), false);
   });
+
+  it('orders a prerelease below its own stable release (semver #11)', () => {
+    assert.equal(isNewerVersion('0.8.0-rc.1', '0.8.0'), true);
+    assert.equal(isNewerVersion('0.8.0', '0.8.0-rc.1'), false);
+    assert.equal(isNewerVersion('0.8.0-rc.1', '0.8.0-rc.1'), false);
+  });
+
+  it('compares numeric prerelease identifiers numerically, not lexically', () => {
+    assert.equal(isNewerVersion('0.8.0-rc.2', '0.8.0-rc.10'), true);
+    assert.equal(isNewerVersion('0.8.0-rc.10', '0.8.0-rc.2'), false);
+    assert.equal(isNewerVersion('0.8.0-rc.9', '0.8.0-rc.10'), true);
+  });
+
+  it('detects a newer stable or prerelease after a minor bump', () => {
+    assert.equal(isNewerVersion('0.8.0-rc.1', '0.9.0'), true);
+    assert.equal(isNewerVersion('0.8.0-rc.1', '0.9.0-rc.0'), true);
+    assert.equal(isNewerVersion('0.9.0-rc.0', '0.8.0-rc.1'), false);
+  });
+
+  it('ignores build metadata for precedence', () => {
+    assert.equal(isNewerVersion('0.8.0+build.5', '0.8.0'), false);
+    assert.equal(isNewerVersion('0.8.0', '0.8.1+build.9'), true);
+    assert.equal(isNewerVersion('0.8.0-rc.1+meta', '0.8.0-rc.1'), false);
+    assert.equal(isNewerVersion('0.8.0-rc.1', '0.8.0-rc.1+meta'), false);
+  });
+
+  it('extends a shared prerelease prefix by field count and identifier kind', () => {
+    assert.equal(isNewerVersion('0.8.0-rc.1', '0.8.0-rc.1.1'), true);
+    assert.equal(isNewerVersion('0.8.0-rc', '0.8.0-rc.1'), true);
+    assert.equal(isNewerVersion('0.8.0-alpha', '0.8.0-beta'), true);
+    assert.equal(isNewerVersion('0.8.0-1', '0.8.0-alpha'), true);
+    assert.equal(isNewerVersion('0.8.0-alpha', '0.8.0-1'), false);
+  });
 });
 
 describe('getLatestVersion caching', () => {
