@@ -97,9 +97,14 @@ function stagedNames(repo) {
 }
 
 describe('release and generated-doc contracts', () => {
-  it('does not retain the extracted agent-tree worktree ignore state', () => {
+  it('ignores /wrush task worktrees and nothing else agent-tree-shaped', () => {
+    // /wrush now legitimately creates worktrees/ under this repo (unrelated
+    // to the agent-tree extraction this test used to guard against), so the
+    // ignore entry is expected -- assert its exact, intentional shape
+    // instead of a blanket absence.
     const gitignore = read('.gitignore');
-    assert.doesNotMatch(gitignore, /wrush|\/worktrees\//i);
+    assert.match(gitignore, /^\/worktrees\/$/m);
+    assert.doesNotMatch(gitignore, /agent-tree/i);
   });
 
   it('publish workflow requires tag, package, and CURRENT_VERSION to match', () => {
