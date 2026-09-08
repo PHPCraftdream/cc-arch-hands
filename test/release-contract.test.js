@@ -5,8 +5,8 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -80,14 +80,19 @@ function gitPath(repo, path) {
   return runGit(repo, ['rev-parse', '--path-format=absolute', '--git-path', path]);
 }
 
-// git rev-parse --show-toplevel may or may not resolve a symlinked tmpdir
-// component (macOS's /var -> /private/var) depending on internal state
-// (e.g. after ccheckpoint's own `cd -- "$repo_root" && pwd -P` re-derives
-// and persists the physical path) -- comparing raw strings is comparing an
-// implementation detail, not the actual on-disk location. realpathSync
-// resolves both sides to the same canonical form before comparing.
-function realSlashes(path) {
-  return realpathSync(path).replaceAll('\\', '/');
+// git rev-parse --show-toplevel and a raw mkdtemp() path can spell the same
+// on-disk location two different ways: macOS's /var -> /private/var symlink
+// (which realpathSync resolves), or a Windows short (8.3) name segment like
+// RUNNER~1 standing in for runneradmin (which realpathSync does NOT rewrite
+// -- it resolves symlinks/junctions, not 8.3 aliasing). Comparing raw or
+// even realpath'd strings is comparing a spelling, not the actual location.
+// dev+ino identifies the same filesystem entry regardless of which path
+// string reached it -- the same invariant lib/lease-lock.js's pathIdentity()
+// relies on elsewhere in this codebase.
+function samePath(a, b) {
+  const sa = statSync(a);
+  const sb = statSync(b);
+  return sa.dev === sb.dev && sa.ino === sb.ino;
 }
 
 function indexEntry(repo, path) {
@@ -388,8 +393,8 @@ describe('release and generated-doc contracts', () => {
       runGit(parentRepo, ['worktree', 'add', '-q', '-b', 'linked-contract', worktree, 'HEAD']);
       assert.equal(readFileSync(join(worktree, '.git'), 'utf8').startsWith('gitdir: '), true);
       assert.equal(
-        realSlashes(runGit(worktree, ['rev-parse', '--show-toplevel'])),
-        realSlashes(worktree),
+        samePath(runGit(worktree, ['rev-parse', '--show-toplevel']), worktree),
+        true,
       );
 
       writeFileSync(join(parentRepo, 'docs', 'checkpoints', 'state.md'), 'parent must stay untouched\n');
@@ -412,7 +417,7 @@ describe('release and generated-doc contracts', () => {
 
       const resumeRepoRoot = runGit(worktree, ['rev-parse', '--show-toplevel']);
       const resumeCheckpoint = join(resumeRepoRoot, 'docs', 'checkpoints', 'state.md');
-      assert.equal(realSlashes(resumeRepoRoot), realSlashes(worktree));
+      assert.equal(samePath(resumeRepoRoot, worktree), true);
       assert.equal(readFileSync(resumeCheckpoint, 'utf8'), 'linked worktree update\n');
       assert.equal(readFileSync(join(parentRepo, 'docs', 'checkpoints', 'state.md'), 'utf8'), 'parent must stay untouched\n');
     } finally {
