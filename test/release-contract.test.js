@@ -16,7 +16,10 @@ import { tmpdir } from 'node:os';
 const ROOT = new URL('..', import.meta.url);
 
 function read(name) {
-  return readFileSync(new URL(name, ROOT), 'utf8');
+  // Normalize CRLF -> LF: a Windows checkout (core.autocrlf) converts the
+  // checked-in LF line endings to CRLF, and CHECKPOINT_BLOCK's regex below
+  // (and other line-anchored patterns in this file) require a literal \n.
+  return readFileSync(new URL(name, ROOT), 'utf8').replaceAll('\r\n', '\n');
 }
 
 const CHECKPOINT_SKILL = read('templates/skills/ccheckpoint/SKILL.md');

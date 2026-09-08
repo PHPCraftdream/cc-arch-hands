@@ -20,9 +20,13 @@ import { tmpdir } from 'node:os';
 import { UNSAFE_STATUSLINE_CHARS } from '../lib/probe.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const CLOCK = readFileSync(join(__dirname, '..', 'templates', 'skills', 'clock', 'SKILL.md'), 'utf8');
-const WATCH = readFileSync(
-  join(__dirname, '..', 'templates', 'skills', 'checkpoint-watch', 'SKILL.md'), 'utf8');
+// Normalize CRLF -> LF once at the source: a Windows checkout (core.autocrlf)
+// converts the checked-in LF line endings to CRLF, and every regex below
+// anchored on `$`/end-of-line would otherwise capture a trailing \r.
+const readSkill = (path) => readFileSync(path, 'utf8').replaceAll('\r\n', '\n');
+const CLOCK = readSkill(join(__dirname, '..', 'templates', 'skills', 'clock', 'SKILL.md'));
+const WATCH = readSkill(
+  join(__dirname, '..', 'templates', 'skills', 'checkpoint-watch', 'SKILL.md'));
 
 function commandLines(text) {
   return text.match(/^node "<HOME>[^\n]*$/gm) || [];
