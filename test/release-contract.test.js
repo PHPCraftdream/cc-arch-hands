@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -74,6 +75,16 @@ function toBashPath(path) {
 
 function gitPath(repo, path) {
   return runGit(repo, ['rev-parse', '--path-format=absolute', '--git-path', path]);
+}
+
+// git rev-parse --show-toplevel may or may not resolve a symlinked tmpdir
+// component (macOS's /var -> /private/var) depending on internal state
+// (e.g. after ccheckpoint's own `cd -- "$repo_root" && pwd -P` re-derives
+// and persists the physical path) -- comparing raw strings is comparing an
+// implementation detail, not the actual on-disk location. realpathSync
+// resolves both sides to the same canonical form before comparing.
+function realSlashes(path) {
+  return realpathSync(path).replaceAll('\\', '/');
 }
 
 function indexEntry(repo, path) {
@@ -369,8 +380,8 @@ describe('release and generated-doc contracts', () => {
       runGit(parentRepo, ['worktree', 'add', '-q', '-b', 'linked-contract', worktree, 'HEAD']);
       assert.equal(readFileSync(join(worktree, '.git'), 'utf8').startsWith('gitdir: '), true);
       assert.equal(
-        runGit(worktree, ['rev-parse', '--show-toplevel']).replaceAll('\\', '/'),
-        worktree.replaceAll('\\', '/'),
+        realSlashes(runGit(worktree, ['rev-parse', '--show-toplevel'])),
+        realSlashes(worktree),
       );
 
       writeFileSync(join(parentRepo, 'docs', 'checkpoints', 'state.md'), 'parent must stay untouched\n');
@@ -393,7 +404,7 @@ describe('release and generated-doc contracts', () => {
 
       const resumeRepoRoot = runGit(worktree, ['rev-parse', '--show-toplevel']);
       const resumeCheckpoint = join(resumeRepoRoot, 'docs', 'checkpoints', 'state.md');
-      assert.equal(resumeRepoRoot.replaceAll('\\', '/'), worktree.replaceAll('\\', '/'));
+      assert.equal(realSlashes(resumeRepoRoot), realSlashes(worktree));
       assert.equal(readFileSync(resumeCheckpoint, 'utf8'), 'linked worktree update\n');
       assert.equal(readFileSync(join(parentRepo, 'docs', 'checkpoints', 'state.md'), 'utf8'), 'parent must stay untouched\n');
     } finally {

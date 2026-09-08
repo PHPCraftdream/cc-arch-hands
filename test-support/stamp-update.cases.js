@@ -520,8 +520,16 @@ export function registerStampUpdateCases() {
       const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
       const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
+      // Explicit, strictly-decreasing mtimes (not wall-clock write order) --
+      // victim selection picks the oldest mtimeNs, and a tight write loop can
+      // tie or scramble on fast/coarse-mtime filesystems (readdir's order is
+      // unspecified once mtimes tie -- observed on ext4).
+      const now = Date.now() / 1000;
       for (let i = 0; i < 64; i += 1) {
-        writeFileSync(join(markerDir, `cah-update-shown-${i.toString(16).padStart(64, '0')}`), `victim-${i}`);
+        const marker = join(markerDir, `cah-update-shown-${i.toString(16).padStart(64, '0')}`);
+        writeFileSync(marker, `victim-${i}`);
+        const mtime = now - (64 - i);
+        utimesSync(marker, mtime, mtime);
       }
       const victim = join(markerDir, `cah-update-shown-${'0'.repeat(64)}`);
       const result = runStamp(
@@ -546,8 +554,15 @@ export function registerStampUpdateCases() {
       const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
       const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
+      // Explicit, strictly-decreasing mtimes -- see the identical comment
+      // above in "state-write failure leaves the update capacity victim
+      // intact" for why a tight write loop's wall-clock order isn't enough.
+      const now = Date.now() / 1000;
       for (let i = 0; i < 64; i += 1) {
-        writeFileSync(join(markerDir, `cah-update-shown-${i.toString(16).padStart(64, '0')}`), `victim-${i}`);
+        const marker = join(markerDir, `cah-update-shown-${i.toString(16).padStart(64, '0')}`);
+        writeFileSync(marker, `victim-${i}`);
+        const mtime = now - (64 - i);
+        utimesSync(marker, mtime, mtime);
       }
       const sessionId = 'final-update-unlink-failure';
       const result = runStamp(

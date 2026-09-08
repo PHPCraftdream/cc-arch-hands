@@ -871,8 +871,17 @@ describe('cah-checkpoint-hint bin', () => {
       const home = isolatedHome();
       const markerDir = cacheDir(home);
       mkdirSync(markerDir, { recursive: true });
+      // Explicit, strictly-decreasing mtimes (not wall-clock write order) --
+      // victim selection picks the oldest mtimeNs, and a tight write loop can
+      // tie or scramble on fast/coarse-mtime filesystems (observed: readdir's
+      // unspecified order broke the ties on ext4, picking victim-43 instead
+      // of the expected victim-0).
+      const now = Date.now() / 1000;
       for (let i = 0; i < 64; i += 1) {
-        writeFileSync(join(markerDir, `cah-hint-shown-${i.toString(16).padStart(64, '0')}`), `victim-${i}`);
+        const marker = join(markerDir, `cah-hint-shown-${i.toString(16).padStart(64, '0')}`);
+        writeFileSync(marker, `victim-${i}`);
+        const mtime = now - (64 - i);
+        utimesSync(marker, mtime, mtime);
       }
       const victim = join(markerDir, `cah-hint-shown-${'0'.repeat(64)}`);
       const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
@@ -890,8 +899,15 @@ describe('cah-checkpoint-hint bin', () => {
     const home = isolatedHome();
     const markerDir = cacheDir(home);
     mkdirSync(markerDir, { recursive: true });
+    // Explicit, strictly-decreasing mtimes -- see the identical comment above
+    // in "keeps the capacity victim when delivery crashes or marker writing
+    // fails" for why a tight write loop's wall-clock order isn't enough.
+    const now = Date.now() / 1000;
     for (let i = 0; i < 64; i += 1) {
-      writeFileSync(join(markerDir, `cah-hint-shown-${i.toString(16).padStart(64, '0')}`), `victim-${i}`);
+      const marker = join(markerDir, `cah-hint-shown-${i.toString(16).padStart(64, '0')}`);
+      writeFileSync(marker, `victim-${i}`);
+      const mtime = now - (64 - i);
+      utimesSync(marker, mtime, mtime);
     }
     const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
     const env = { CAH_TEST_ONLY: '1', CAH_TEST_ONLY_FINAL_UNLINK_FAILURE: '1' };
