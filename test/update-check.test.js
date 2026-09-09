@@ -123,6 +123,19 @@ function runUpdateWorker(
 }
 
 describe('isNewerVersion', () => {
+  it('compares numeric identifiers exactly beyond Number precision and range', () => {
+    for (const [current, latest] of [
+      ['9007199254740992.0.0', '9007199254740993.0.0'],
+      ['9007199254740992.1.0', '9007199254740993.0.0'],
+      ['0.8.0-rc.9007199254740992', '0.8.0-rc.9007199254740993'],
+      [`0.8.0-rc.${'9'.repeat(310)}`, `0.8.0-rc.1${'0'.repeat(310)}`],
+    ]) {
+      assert.equal(isNewerVersion(current, latest), true);
+      assert.equal(isNewerVersion(latest, current), false);
+      assert.equal(isNewerVersion(current, current), false);
+    }
+  });
+
   it('true when latest has a higher major/minor/patch', () => {
     assert.equal(isNewerVersion('0.5.2', '0.5.3'), true);
     assert.equal(isNewerVersion('0.5.2', '0.6.0'), true);

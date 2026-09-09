@@ -11,7 +11,10 @@
 // stop` (which restores the previous statusLine entry). This bin is shipped
 // by the installer like the other companion bins but is otherwise dormant.
 
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import {
+  closeSync, constants, fstatSync, lstatSync, mkdirSync,
+  openSync, readFileSync, writeFileSync,
+} from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -20,6 +23,29 @@ const LOG_PATH =
   join(homedir(), '.claude', 'cah-bin', 'cache', 'envelope-probe.log');
 
 const PLACEHOLDER = '(cah probe — run `cah probe statusline stop` to finish)';
+
+function appendRecord(record) {
+  let before = null;
+  try { before = lstatSync(LOG_PATH, { bigint: true }); } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  if (before && (!before.isFile() || before.nlink !== 1n)) return;
+  const flags = constants.O_WRONLY | constants.O_APPEND
+    | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0)
+    | (before ? 0 : constants.O_CREAT | constants.O_EXCL);
+  const fd = openSync(LOG_PATH, flags, 0o600);
+  try {
+    const opened = fstatSync(fd, { bigint: true });
+    const current = lstatSync(LOG_PATH, { bigint: true });
+    if (!opened.isFile() || opened.nlink !== 1n || !current.isFile()
+        || current.nlink !== 1n || opened.dev !== current.dev || opened.ino !== current.ino
+        || (before && (before.dev !== opened.dev || before.ino !== opened.ino))) return;
+    // Append through the verified descriptor, never reopen the pathname.
+    writeFileSync(fd, record);
+  } finally {
+    closeSync(fd);
+  }
+}
 
 function main() {
   let raw = '';
@@ -35,7 +61,7 @@ function main() {
       capturedAt: new Date().toISOString(),
       raw,
     }) + '\n';
-    writeFileSync(LOG_PATH, record, { flag: 'a' });
+    appendRecord(record);
   } catch {
     // fail-silent — the bar must still render even if the log path is unwritable
   }

@@ -11,6 +11,20 @@ import { isolatedDir } from './transcript-test-helpers.js';
 // ---------------------------------------------------------------------------
 
 describe('readTranscriptStats', () => {
+  it('skips non-object JSON records without losing the newest assistant stats', () => {
+    const dir = isolatedDir();
+    const path = join(dir, 'transcript.jsonl');
+    const turn = { type: 'assistant', requestId: 'newest', message: {
+      model: 'claude-opus-4-7', usage: { input_tokens: 42 },
+    } };
+    for (const noise of [null, false, 42, 'noise', []]) {
+      writeFileSync(path, `${JSON.stringify(turn)}\n${JSON.stringify(noise)}\n`);
+      assert.deepEqual(readTranscriptStats(path), {
+        usedTokens: 42, modelId: 'claude-opus-4-7', requestId: 'newest',
+      });
+    }
+  });
+
   it('returns null for missing file', () => {
     const dir = isolatedDir();
     const result = readTranscriptStats(join(dir, 'nonexistent.jsonl'));

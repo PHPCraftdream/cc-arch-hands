@@ -19,6 +19,7 @@ import { sameRollbackState } from '../lib/binstall-repair.js';
 import { enumerateRecoveryArtifacts, maintainRecoveryArtifacts } from '../lib/fs-atomic.js';
 import { recoverPublicationFence } from '../lib/fs-atomic-publication.js';
 import { Scope } from '../lib/scope.js';
+import { LEASE_MAX_MS } from '../lib/lease-clock.js';
 import {
   DEFAULT_CHILD_DEADLINE_MS, DEFAULT_WORKER_DEADLINE_MS, TERMINATION_GRACE_MS, runWorker,
 } from '../test-support/process-batches.js';
@@ -26,6 +27,13 @@ import { stampInvocationEnv, stampSidecarPath, writeTranscript } from '../test-s
 
 function tmpDir() {
   return mkdtempSync(join(tmpdir(), 'cah-bin-test-'));
+}
+
+function expireBinLease(dst) {
+  const path = join(binLifecycleLockPath(dst), 'owner.json');
+  const owner = JSON.parse(readFileSync(path, 'utf8'));
+  owner.timestamp = Date.now() - LEASE_MAX_MS - 1000;
+  writeFileSync(path, JSON.stringify(owner) + '\n');
 }
 
 function runBinSync(file, args, options = {}) {
@@ -243,16 +251,17 @@ function spawnPausedPublisher(dest, interlockBase, phase = P2_INTERLOCK_PHASE) {
 }
 
 describe('writeBins', () => {
-  let src, dst;
+  let fixture, src, dst;
   beforeEach(() => {
-    src = tmpDir();
-    dst = tmpDir();
+    fixture = tmpDir();
+    src = join(fixture, 'source');
+    dst = join(fixture, 'installed');
+    mkdirSync(src);
+    mkdirSync(dst);
     fakeSource(src);
   });
   afterEach(() => {
-    rmSync(src, { recursive: true, force: true });
-    rmSync(dst, { recursive: true, force: true });
-    rmSync(binLifecycleLockPath(dst), { recursive: true, force: true });
+    rmSync(fixture, { recursive: true, force: true });
   });
 
   it('does not sweep a publication fence whose publisher is paused mid-write', async () => {
@@ -1610,13 +1619,16 @@ describe('writeBins', () => {
   it('aborts an expired install resume with a truthful lost-lease error', async () => {
     const interlock = join(dst, 'expired-install-resume-interlock');
     const installing = runBinWorker(
-      dst, src, interlock, 'binstall-after-boundary', 'writeBins', 2000,
+      dst, src, interlock, 'binstall-after-boundary', 'writeBins',
     );
-    await waitForPath(`${interlock}.ready`, 60000, installing);
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 2200));
-    writeFileSync(`${interlock}.go`, 'go');
-
-    const failure = await installing;
+    let failure;
+    try {
+      await waitForPath(`${interlock}.ready`, 60000, installing);
+      expireBinLease(dst);
+    } finally {
+      writeFileSync(`${interlock}.go`, 'go');
+      failure = await installing.catch((error) => error);
+    }
     assert.equal(failure?.code, 'ERR_BIN_LIFECYCLE_LEASE_LOST');
     assert.match(failure?.message || '', /lease lost/);
     assert.ok(existsSync(join(dst, 'package.json')), 'expired owner must not roll back its successor boundary');
@@ -1626,38 +1638,18 @@ describe('writeBins', () => {
   it('does not roll back a successor uninstall after an expired install pauses', async () => {
     const interlock = join(dst, 'expired-install-uninstall-interlock');
     const installing = runBinWorker(
-      dst, src, interlock, 'binstall-after-boundary', 'writeBins', 2000,
+      dst, src, interlock, 'binstall-after-boundary', 'writeBins',
     );
-    await waitForPath(`${interlock}.ready`, 60000, installing);
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 2200));
-    const expiredOwnerPath = join(binLifecycleLockPath(dst), 'owner.json');
-    const expiredOwner = JSON.parse(readFileSync(expiredOwnerPath, 'utf8'));
-    // Comfortably past CAH_TEST_ONLY_BIN_LEASE_MS (2000) so the very first
-    // reclaim attempt sees an expired lease — relying on the retry loop
-    // below to accumulate the remaining margin left this marginal (1000ms
-    // backdate + up to 800ms of retry sleep tops out at 1800ms, under the
-    // threshold) and timer-jitter-sensitive under load.
-    expiredOwner.timestamp = Date.now() - 2500;
-    writeFileSync(expiredOwnerPath, JSON.stringify(expiredOwner) + '\n');
-
-    const priorTestOnly = process.env.CAH_TEST_ONLY;
-    const priorLeaseMs = process.env.CAH_TEST_ONLY_BIN_LEASE_MS;
-    process.env.CAH_TEST_ONLY = '1';
-    process.env.CAH_TEST_ONLY_BIN_LEASE_MS = '2000';
-    let successor;
-    for (let attempt = 0; attempt < 8 && !successor; attempt += 1) {
-      try { successor = removeBins(dst); } catch (error) {
-        if (error?.name !== 'BinLifecycleBusyError' || attempt === 7) throw error;
-        await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
-      }
+    let failure;
+    try {
+      await waitForPath(`${interlock}.ready`, 60000, installing);
+      expireBinLease(dst);
+      const successor = removeBins(dst);
+      assert.equal(successor.removed, 1, 'successor uninstall removes the paused install boundary');
+    } finally {
+      writeFileSync(`${interlock}.go`, 'go');
+      failure = await installing.catch((error) => error);
     }
-    if (priorTestOnly === undefined) delete process.env.CAH_TEST_ONLY;
-    else process.env.CAH_TEST_ONLY = priorTestOnly;
-    if (priorLeaseMs === undefined) delete process.env.CAH_TEST_ONLY_BIN_LEASE_MS;
-    else process.env.CAH_TEST_ONLY_BIN_LEASE_MS = priorLeaseMs;
-    assert.equal(successor.removed, 1, 'successor uninstall removes the paused install boundary');
-    writeFileSync(`${interlock}.go`, 'go');
-    const failure = await installing;
     assert.match(failure?.message || '', /lease lost/);
     assert.ok(!existsSync(join(dst, 'package.json')), 'successor uninstall must remain authoritative');
   });
@@ -1666,38 +1658,18 @@ describe('writeBins', () => {
     writeBins(dst, src);
     const interlock = join(dst, 'expired-uninstall-install-interlock');
     const removing = runBinWorker(
-      dst, src, interlock, 'binstall-before-leaf-remove', 'removeBins', 2000,
+      dst, src, interlock, 'binstall-before-leaf-remove', 'removeBins',
     );
-    await waitForPath(`${interlock}.ready`, 60000, removing);
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 2200));
-    const expiredOwnerPath = join(binLifecycleLockPath(dst), 'owner.json');
-    const expiredOwner = JSON.parse(readFileSync(expiredOwnerPath, 'utf8'));
-    // Comfortably past CAH_TEST_ONLY_BIN_LEASE_MS (2000) so the very first
-    // reclaim attempt sees an expired lease — relying on the retry loop
-    // below to accumulate the remaining margin left this marginal (1000ms
-    // backdate + up to 800ms of retry sleep tops out at 1800ms, under the
-    // threshold) and timer-jitter-sensitive under load.
-    expiredOwner.timestamp = Date.now() - 2500;
-    writeFileSync(expiredOwnerPath, JSON.stringify(expiredOwner) + '\n');
-
-    const priorTestOnly = process.env.CAH_TEST_ONLY;
-    const priorLeaseMs = process.env.CAH_TEST_ONLY_BIN_LEASE_MS;
-    process.env.CAH_TEST_ONLY = '1';
-    process.env.CAH_TEST_ONLY_BIN_LEASE_MS = '2000';
-    let successor;
-    for (let attempt = 0; attempt < 8 && !successor; attempt += 1) {
-      try { successor = writeBins(dst, src); } catch (error) {
-        if (error?.name !== 'BinLifecycleBusyError' || attempt === 7) throw error;
-        await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
-      }
+    let failure;
+    try {
+      await waitForPath(`${interlock}.ready`, 60000, removing);
+      expireBinLease(dst);
+      const successor = writeBins(dst, src);
+      assert.equal(successor.written, BinFiles.length);
+    } finally {
+      writeFileSync(`${interlock}.go`, 'go');
+      failure = await removing.catch((error) => error);
     }
-    if (priorTestOnly === undefined) delete process.env.CAH_TEST_ONLY;
-    else process.env.CAH_TEST_ONLY = priorTestOnly;
-    if (priorLeaseMs === undefined) delete process.env.CAH_TEST_ONLY_BIN_LEASE_MS;
-    else process.env.CAH_TEST_ONLY_BIN_LEASE_MS = priorLeaseMs;
-    assert.equal(successor.written, BinFiles.length);
-    writeFileSync(`${interlock}.go`, 'go');
-    const failure = await removing;
     assert.match(failure?.message || '', /lease lost/);
     for (const file of BinFiles) {
       assert.ok(existsSync(join(dst, file.dest)), `${file.dest} from successor install must survive`);
@@ -1745,16 +1717,17 @@ describe('writeBins', () => {
 });
 
 describe('removeBins', () => {
-  let src, dst;
+  let fixture, src, dst;
   beforeEach(() => {
-    src = tmpDir();
-    dst = tmpDir();
+    fixture = tmpDir();
+    src = join(fixture, 'source');
+    dst = join(fixture, 'installed');
+    mkdirSync(src);
+    mkdirSync(dst);
     fakeSource(src);
   });
   afterEach(() => {
-    rmSync(src, { recursive: true, force: true });
-    rmSync(dst, { recursive: true, force: true });
-    rmSync(binLifecycleLockPath(dst), { recursive: true, force: true });
+    rmSync(fixture, { recursive: true, force: true });
   });
 
   it('removes all our files and the now-empty bin root', () => {

@@ -14,6 +14,7 @@ import {
   migrateLegacyStateFiles, migrateMarkerState,
 } from '../lib/marker-state.js';
 import { acquireLease, releaseLease } from '../lib/lease-lock.js';
+import { sleepSyncWait } from '../lib/lease-clock.js';
 import { semanticFreshness } from '../lib/marker-capacity-ops.js';
 import {
   recoverLegacyCapacityState, transactionRetirementPath, victimFencePath,
@@ -31,11 +32,6 @@ function mkdtempSync(...args) {
   return path;
 }
 
-function spinUntil(ms) {
-  const until = Date.now() + ms;
-  while (Date.now() < until) { /* synchronous settle */ }
-}
-
 // Windows refuses to rename a directory that a live child process holds as
 // its CWD (EBUSY). Other platforms rename it freely, so the CWD-busy repro
 // can only be built where this probe fails to rename.
@@ -45,7 +41,7 @@ async function renameBlockedWhileChildHoldsCwd() {
   const child = spawnMarker(process.execPath, ['-e', 'setTimeout(() => {}, 120)'], {
     cwd: probe, stdio: 'ignore',
   });
-  spinUntil(60);
+  sleepSyncWait(60);
   let blocked = false;
   try {
     renameSync(probe, `${probe}-moved`);
@@ -69,7 +65,7 @@ function probeUntilRenameBlocked(dir) {
     try {
       renameSync(dir, probePath);
       renameSync(probePath, dir); // rename succeeded: child hasn't taken its CWD yet
-      spinUntil(5);
+      sleepSyncWait(5);
     } catch (err) {
       assert.ok(
         ['EPERM', 'EBUSY', 'ENOTEMPTY'].includes(err.code),
@@ -134,13 +130,12 @@ async function waitForPath(path) {
   throw new Error(`timed out waiting for ${path}`);
 }
 
-// Synchronous counterpart for callbacks (e.g. testInterlock) that run inside
-// a synchronous call and cannot await -- busy-polls a bounded deadline.
+// Synchronous readiness wait for filesystem callbacks.
 function waitForPathSync(path, deadlineMs = 5000) {
   const deadline = Date.now() + deadlineMs;
   while (!existsSync(path)) {
     if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`);
-    spinUntil(5);
+    sleepSyncWait(5);
   }
 }
 

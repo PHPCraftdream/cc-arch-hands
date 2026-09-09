@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { beforeEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, existsSync, readFileSync, rmSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -10,6 +10,21 @@ import { BinFiles, binLifecycleLockPath } from '../lib/binstall.js';
 import { LEASE_MAX_MS } from '../lib/lease-lock.js';
 import { AllCodexAgents } from '../lib/manifest.js';
 import { SentinelBin, SentinelCodexAgent, SetForModelCommand } from '../lib/sentinel.js';
+
+beforeEach((t) => {
+  const sandbox = mkdtempSync(join(tmpdir(), 'cah-cli-test-home-'));
+  const previous = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(sandbox, { recursive: true, force: true });
+  });
+  process.env.HOME = sandbox;
+  process.env.USERPROFILE = sandbox;
+});
+
 // os.homedir() reads $HOME / %USERPROFILE% on each call, so we can sandbox the
 // always-global bin directory to a temp dir for the duration of a test.
 function withHome(home, fn) {
