@@ -37,7 +37,7 @@ If a new skill needs to install a Stop hook or a statusLine in user `settings.js
 3. Test the installed artifact, not only the checkout: after `cah install`, the hook runs from `~/.claude/cah-bin/bin/<bin-name>.js`. Black-box tests that spawn the bin cover this; tests that only import the source do not.
 4. Test files need no registration. `npm test` is bare `node --test --test-concurrency=1`, which discovers every `test/*.test.js` automatically — do not add test files to any `package.json` script (`test/discovery-contract.test.js` enforces the exact script and fails if you do).
 5. **Share transcript parsing and limit math with `lib/transcript-stats.js`** — never recompute `input_tokens + cache_creation_input_tokens + cache_read_input_tokens` inline. That formula is delicate (the cache-read fields dominate after the first turn) and lives in one place for a reason.
-6. Inside the bin: fail-silent on every error path (`try/catch` everything, exit 0 with no stdout). A broken hook must never block the user's session.
+6. Inside bins, catch failures and exit 0. Stop/PostToolUse hooks may remain silent when there is nothing to emit. A statusLine command must emit a non-empty fallback (for example `—`); the diagnostic probe likewise keeps its placeholder. Do not apply the hooks' empty-stdout fallback to statusLine bins.
 
 ## Tests
 
