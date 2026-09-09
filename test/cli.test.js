@@ -433,6 +433,17 @@ describe('run install/uninstall --only bins', () => {
   });
   it('surfaces maintenance-preserved artifacts the sweep refused to reclaim', () => {
     const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
+    // Production's real fence freshness window (FENCE_STALE_MS) is only 1s --
+    // comfortable for an actual crashed publisher's microsecond unproved
+    // span, but too tight a margin for THIS test's own install() call to
+    // reliably finish reaching the sweep decision before 1s elapses under a
+    // loaded CI runner (observed real failure: the "fresh" fence read as
+    // already-stale and got swept). CAH_TEST_ONLY_FENCE_STALE_MS widens only
+    // this test's effective window; production behavior is unaffected.
+    const priorTestOnly = process.env.CAH_TEST_ONLY;
+    const priorStaleMs = process.env.CAH_TEST_ONLY_FENCE_STALE_MS;
+    process.env.CAH_TEST_ONLY = '1';
+    process.env.CAH_TEST_ONLY_FENCE_STALE_MS = '10000';
     try {
       withHome(home, () => {
         const cache = join(home, '.claude', 'cah-bin', 'cache');
@@ -451,7 +462,7 @@ describe('run install/uninstall --only bins', () => {
           /maintenance preserved: cache[\\/]stamp-state[\\/]live\.json\.cah-owned-publish/);
         assert.ok(existsSync(freshFence), 'a fresh empty fence must not be swept');
 
-        const past = new Date(Date.now() - 5000);
+        const past = new Date(Date.now() - 15000);
         utimesSync(freshFence, past, past);
         const reinstalled = captureStdout(() => {
           assert.equal(run(['install', '--only', 'bins']), 0);
@@ -461,6 +472,10 @@ describe('run install/uninstall --only bins', () => {
         assert.ok(!existsSync(freshFence), 'a stale empty fence must be swept');
       });
     } finally {
+      if (priorTestOnly === undefined) delete process.env.CAH_TEST_ONLY;
+      else process.env.CAH_TEST_ONLY = priorTestOnly;
+      if (priorStaleMs === undefined) delete process.env.CAH_TEST_ONLY_FENCE_STALE_MS;
+      else process.env.CAH_TEST_ONLY_FENCE_STALE_MS = priorStaleMs;
       rmSync(home, { recursive: true, force: true });
     }
   });
