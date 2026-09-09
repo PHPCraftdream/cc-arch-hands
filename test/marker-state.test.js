@@ -134,6 +134,16 @@ async function waitForPath(path) {
   throw new Error(`timed out waiting for ${path}`);
 }
 
+// Synchronous counterpart for callbacks (e.g. testInterlock) that run inside
+// a synchronous call and cannot await -- busy-polls a bounded deadline.
+function waitForPathSync(path, deadlineMs = 5000) {
+  const deadline = Date.now() + deadlineMs;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`);
+    spinUntil(5);
+  }
+}
+
 function runPausedReconciler(home, markerDir) {
   const markerUrl = new URL('../lib/marker-state.js', import.meta.url).href;
   const interlocksUrl = new URL('../test-support/interlocks.js', import.meta.url).href;
@@ -1116,17 +1126,25 @@ describe('legacy claim migration lease release', () => {
       ownerTestEnv: 'CAH_STAMP_OWNER_MAX_LEASE_MS',
       testInterlock: (phase) => {
         if (phase === 'legacy-claim-reclaim-release' && child === null) {
-          // Holds for 500ms: comfortably more than the process-spawn +
-          // scheduling delay that can elapse under heavy CI load before the
-          // probe loop even starts (a too-short 200ms window let the child
+          // Fixed hold durations raced the process-spawn + scheduling delay
+          // that can elapse under heavy CI load before the probe loop even
+          // starts (200ms, then 500ms, both observed to let the child
           // open-then-close its handle before the probe's first rename
-          // attempt ever ran -- observed real CI failure: probe reported
-          // never-blocked), while staying well under releaseLease()'s own
-          // RELEASE_FENCE_WAIT_MS (750ms) retry budget so the release this
-          // test exercises still has room to actually recover afterward.
-          child = spawnMarker(process.execPath, ['-e', "const p=require('path'),f=require('fs');const q=p.join(process.cwd(),'held');const h=f.openSync(q,'w');setTimeout(() => { try { f.unlinkSync(q); } finally { f.closeSync(h); } }, 500)"], {
+          // attempt ever ran on a sufficiently loaded runner). Instead the
+          // child signals a ready file the moment it actually holds the
+          // handle; the probe only starts once that's observed, so the
+          // spawn/scheduling gap no longer matters -- only the much smaller
+          // gap between the child's own write and the probe's first
+          // synchronous rename attempt does. The 300ms post-ready hold stays
+          // well under releaseLease()'s own RELEASE_FENCE_WAIT_MS (750ms)
+          // retry budget so the release this test exercises still has room
+          // to actually recover afterward.
+          const readyPath = `${targetLock}.holder-ready`;
+          child = spawnMarker(process.execPath, ['-e', `const p=require('path'),f=require('fs');const q=p.join(process.cwd(),'held');const h=f.openSync(q,'w');f.writeFileSync(${JSON.stringify(readyPath)},'ready');setTimeout(() => { try { f.unlinkSync(q); } finally { f.closeSync(h); } }, 300)`], {
             cwd: targetLock,
           });
+          waitForPathSync(readyPath);
+          rmSync(readyPath, { force: true });
           blockedOnce = probeUntilRenameBlocked(targetLock);
         }
       },
