@@ -303,8 +303,8 @@ function buildUpdateNotice(payload, nowMs, testHooks = {}) {
   if (!isNewerVersion(CURRENT_VERSION, latest)) return null;
   const claim = claimMarker({ ...options, sessionId: payload.session_id, nowMs });
   return claim ? { claim, markerDir, text: `\n${String.fromCodePoint(0x1F535)} cc-arch-hands v${latest} is out (you're on v${CURRENT_VERSION}). Update:\n` +
-    '  global: npm install -g cc-arch-hands@latest && npx cah reinstall\n' +
-    '  local:  npm install cc-arch-hands@latest && npx cah reinstall --local' } : null;
+    '  global: npm install -g cc-arch-hands@latest && npx cc-arch-hands reinstall\n' +
+    '  local:  npm install cc-arch-hands@latest && npx cc-arch-hands reinstall --local' } : null;
 }
 
 function settleUpdateNotice(notice, lease, testHooks = {}) {

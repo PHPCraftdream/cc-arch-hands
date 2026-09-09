@@ -107,7 +107,7 @@ describe('gen-docs --check', () => {
         `CLAUDE.md must name installed runtime leaf ${leaf}`);
     }
 
-    const binsInstallStart = README.indexOf('npx cah install --only bins');
+    const binsInstallStart = README.indexOf('npx cc-arch-hands install --only bins');
     const binsInstallEnd = README.indexOf('\n\n# One example', binsInstallStart);
     const binsInstall = README.slice(binsInstallStart, binsInstallEnd);
     for (const leaf of EXPECTED_SHARED_LIB_LEAVES) {

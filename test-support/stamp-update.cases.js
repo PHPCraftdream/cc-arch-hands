@@ -26,7 +26,7 @@ export function registerStampUpdateCases() {
       const first = runStamp(payload, env);
       const firstParsed = JSON.parse(first.stdout.trim());
       assert.match(firstParsed.systemMessage, /99\.0\.0/);
-      assert.match(firstParsed.systemMessage, /npx cah reinstall/);
+      assert.match(firstParsed.systemMessage, /npx cc-arch-hands reinstall/);
 
       // Second Stop in the same session (distinct throttle path so it isn't
       // suppressed by the time/requestId dedup) must NOT repeat the notice.

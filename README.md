@@ -69,9 +69,9 @@ explicitly with `--commands`, or select it as a class via `--only commands`
 (also combinable, e.g. `--only skills,commands`):
 
 ```bash
-npx cah install --commands
-npx cah reinstall --commands
-npx cah uninstall --commands
+npx cc-arch-hands install --commands
+npx cc-arch-hands reinstall --commands
+npx cc-arch-hands uninstall --commands
 ```
 
 A short slash-command for every supported `{model, effort}` pair, plus
@@ -177,9 +177,9 @@ inside Claude Code, so identical names do not collide.
 Codex agents are not part of the default install. Install them explicitly with `--codex-agents`, or select them as a class via `--only codex-agents` (also combinable, e.g. `--only skills,codex-agents`):
 
 ```bash
-npx cah install --codex-agents
-npx cah reinstall --codex-agents
-npx cah uninstall --codex-agents
+npx cc-arch-hands install --codex-agents
+npx cc-arch-hands reinstall --codex-agents
+npx cc-arch-hands uninstall --codex-agents
 ```
 
 Generated agent names use effort prefix + model suffix. Terra (`t`), Luna (`l`), and Sol (`s`) use all six levels: `l/m/h` for `low/medium/high` and `x/xx/u` for `xhigh/max/ultra`. Astra (`a`) uses five levels: `l/m/h/x/xx` for `low/medium/high/xhigh/max`. Their full Codex model IDs are `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.6-sol`, and `gpt-6-astra`. They write TOML custom-agent files for Codex under `~/.codex/agents/`.
@@ -344,6 +344,9 @@ and is owned by its own `claude-init` command.
 
 No install needed — run directly with `npx`:
 
+Use the package name `cc-arch-hands` with `npx`. The shorter `cah` name is an
+executable alias available after an npm installation, not the package name.
+
 ```bash
 npx cc-arch-hands install                # install globally into ~/.claude/
 npx cc-arch-hands uninstall              # remove our Claude files; keep shared bins
@@ -385,18 +388,18 @@ All wrapper scripts forward flags, e.g. `./install.sh --only skills` or
 Via npx (no install):
 
 ```bash
-npx cah install                          # global (default): ~/.claude/{agents,skills,cah-bin}
-npx cah install --local                  # local: <cwd>/.claude/... (must already exist); bins still go global
-npx cah install --cwd /path/to/project   # local at a specific path; bins still go global
-npx cah install --commands               # optional: install only the per-model slash-commands
+npx cc-arch-hands install                          # global (default): ~/.claude/{agents,skills,cah-bin}
+npx cc-arch-hands install --local                  # local: <cwd>/.claude/... (must already exist); bins still go global
+npx cc-arch-hands install --cwd /path/to/project   # local at a specific path; bins still go global
+npx cc-arch-hands install --commands               # optional: install only the per-model slash-commands
                                           #   (opt-in — see the regression note in "What it installs")
-npx cah install --codex-agents           # optional: install only Codex agents into ~/.codex/agents
+npx cc-arch-hands install --codex-agents           # optional: install only Codex agents into ~/.codex/agents
 
 # --only takes install classes, individual skill names, or any mix.
-npx cah install --only skills                       # all 11 skills
-npx cah install --only commands                     # all per-model slash-commands (opt-in)
-npx cah install --only codex-agents                 # all Codex agents into ~/.codex/agents (opt-in)
-npx cah install --only bins                         # companion bins (cah-status, cah-stamp,
+npx cc-arch-hands install --only skills                       # all 11 skills
+npx cc-arch-hands install --only commands                     # all per-model slash-commands (opt-in)
+npx cc-arch-hands install --only codex-agents                 # all Codex agents into ~/.codex/agents (opt-in)
+npx cc-arch-hands install --only bins                         # companion bins (cah-status, cah-stamp,
                                                     #   cah-checkpoint-hint, cah-status-probe,
                                                     #   + shared lib leaves: transcript-stats.js,
                                                     #     update-check.js, lease-lock.js, marker-capacity-ops.js,
@@ -408,45 +411,45 @@ npx cah install --only bins                         # companion bins (cah-status
 
 # One example per skill (every installable artefact has its own line).
 # clock and checkpoint-watch auto-pull `bins` with a notice.
-npx cah install --only repo-sight
-npx cah install --only babysit
-npx cah install --only babygoal
-npx cah install --only task
-npx cah install --only checkpoint
-npx cah install --only ccheckpoint
-npx cah install --only checkpoint-prune
-npx cah install --only resume
-npx cah install --only triage
-npx cah install --only checkpoint-watch             # auto-pulls bins
-npx cah install --only clock                        # auto-pulls bins
+npx cc-arch-hands install --only repo-sight
+npx cc-arch-hands install --only babysit
+npx cc-arch-hands install --only babygoal
+npx cc-arch-hands install --only task
+npx cc-arch-hands install --only checkpoint
+npx cc-arch-hands install --only ccheckpoint
+npx cc-arch-hands install --only checkpoint-prune
+npx cc-arch-hands install --only resume
+npx cc-arch-hands install --only triage
+npx cc-arch-hands install --only checkpoint-watch             # auto-pulls bins
+npx cc-arch-hands install --only clock                        # auto-pulls bins
 
 # Comma-separated combos work as expected.
-npx cah install --only clock,checkpoint-watch       # two skills (auto-pulls bins once)
-npx cah install --only babysit,babygoal,task        # task-list trio
-npx cah install --only commands,clock               # mix class + skill name
+npx cc-arch-hands install --only clock,checkpoint-watch       # two skills (auto-pulls bins once)
+npx cc-arch-hands install --only babysit,babygoal,task        # task-list trio
+npx cc-arch-hands install --only commands,clock               # mix class + skill name
 
 # reinstall and uninstall accept the same --only selector.
 # reinstall does uninstall + install with the same args, so subset is honoured.
 # uninstall is explicit-only — it never auto-pulls deps (so you can drop
 # clock without losing the bins that checkpoint-watch needs).
-npx cah reinstall --only clock                      # uninstall + install of just the clock skill
-npx cah reinstall --commands                        # reinstall only the per-model slash-commands
-npx cah reinstall --codex-agents                    # reinstall only Codex agents
-npx cah uninstall                                   # remove Claude files; keeps shared bins
-npx cah uninstall --only bins                       # remove shared bins globally (warning shown)
-npx cah uninstall --only agents                     # remove only Claude agents
-npx cah uninstall --commands                        # remove only the per-model slash-commands
-npx cah uninstall --codex-agents                    # remove only Codex agents
-npx cah uninstall --only clock                      # remove only the clock skill, keep bins
+npx cc-arch-hands reinstall --only clock                      # uninstall + install of just the clock skill
+npx cc-arch-hands reinstall --commands                        # reinstall only the per-model slash-commands
+npx cc-arch-hands reinstall --codex-agents                    # reinstall only Codex agents
+npx cc-arch-hands uninstall                                   # remove Claude files; keeps shared bins
+npx cc-arch-hands uninstall --only bins                       # remove shared bins globally (warning shown)
+npx cc-arch-hands uninstall --only agents                     # remove only Claude agents
+npx cc-arch-hands uninstall --commands                        # remove only the per-model slash-commands
+npx cc-arch-hands uninstall --codex-agents                    # remove only Codex agents
+npx cc-arch-hands uninstall --only clock                      # remove only the clock skill, keep bins
 
-npx cah list                             # tabular: NAME | KIND | STATE
-npx cah list --json                      # NDJSON for scripting
-npx cah doctor                           # condensed health verdict
-npx cah version                          # version + counts
+npx cc-arch-hands list                             # tabular: NAME | KIND | STATE
+npx cc-arch-hands list --json                      # NDJSON for scripting
+npx cc-arch-hands doctor                           # condensed health verdict
+npx cc-arch-hands version                          # version + counts
 
-npx cah probe statusline start           # diagnostic: capture raw statusLine envelope
-npx cah probe statusline stop            # restore + print captured envelope
-npx cah probe statusline status          # is the probe armed?
+npx cc-arch-hands probe statusline start           # diagnostic: capture raw statusLine envelope
+npx cc-arch-hands probe statusline stop            # restore + print captured envelope
+npx cc-arch-hands probe statusline status          # is the probe armed?
 ```
 
 `cah probe statusline` atomically rewires `settings.statusLine` to a
