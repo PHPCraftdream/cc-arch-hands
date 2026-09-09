@@ -148,33 +148,46 @@ fields are our ownership sentinel):
   `cah-sentinel === "cah-hook:v1"` and `cah-name === "checkpoint-watch"` belongs
   to the user or another tool — leave it exactly as is.
 - **Lock `settings.json` for the whole read-modify-write cycle.** Cooperating
-  cah skills (`/clock` and `/checkpoint-watch`) can run at the same time, and
-  verification alone cannot stop two in-flight writers from passing the same
-  check just before both rename — the second rename would silently erase the
-  first writer's own change. Before your FIRST read of `settings.json` in any
-  mode that will save, take the shared settings lock and hold it until the
-  save attempt is fully finished:
+  cah skills (`/clock` and `/checkpoint-watch`) — and `cah probe
+  --enable/--disable`, which takes the same lock (`lib/probe.js`) — can run at
+  the same time, and verification alone cannot stop two in-flight writers from
+  passing the same check just before both rename — the second rename would
+  silently erase the first writer's own change. Before your FIRST read of
+  `settings.json` in any mode that will save, take the shared settings lock
+  and hold it until the save attempt is fully finished. The executable
+  implementation of this protocol is `lib/settings-lock.js` (built on the
+  directory leases of `lib/lease-lock.js`); follow its rules exactly:
   1. Try to create a lock directory named `settings.json.lock` beside
      `settings.json`. Directory creation is atomic across processes: it either
      does not exist and you win, or it exists and someone else holds it.
   2. On winning, immediately write an `owner.json` file inside it containing
-     your process id and the current epoch ms, e.g.
-     `{"pid":12345,"timestamp":1789000000000}`.
-  3. If the lock already exists, read its `owner.json`. If the owner file is
-     missing or unreadable, the holder has abandoned the lock. Otherwise the
-     holder has abandoned the lock when its `pid` is no longer a live process,
-     or when the recorded `timestamp` is more than 5 minutes old (the same
-     lease window `lib/lease-lock.js` uses for the companion bins). An
-     abandoned lock: rename it aside to a unique
-     `settings.json.lock.stale.<random-suffix>` name, delete that renamed
-     copy, and start again at step 1. A live holder: wait about 200 ms and
-     retry, up to a bounded total wait of about 30 seconds.
-  4. If the lock still cannot be acquired, write nothing, delete nothing you
+     your process id, the current epoch ms, and a fresh random token, e.g.
+     `{"pid":12345,"timestamp":1789000000000,"token":"8f14e45f"}`. Until that
+     write lands the reservation is not established: an ownerless lock is
+     possibly-initializing, NEVER proof of abandonment.
+  3. If the lock already exists, read its `owner.json`. A missing or
+     unreadable owner file means "possibly initializing": wait a short grace
+     period and read again. Reclaim an ownerless lock only when the lock
+     directory itself is older than the grace window (about 30 seconds). An
+     owner you CAN read is abandoned only when its `pid` is no longer a live
+     process, or when its `timestamp` is more than 5 minutes old (the same
+     lease window `lib/lease-lock.js` uses for the companion bins).
+  4. To reclaim: rename the lock aside to a unique
+     `settings.json.lock.stale.<random-suffix>` name, re-read what you moved
+     and confirm it is still the abandoned claim you observed, and only then
+     delete the renamed copy — only ever its owner.json-style lock state. If
+     the renamed copy holds anything else, do NOT delete it: keep it in a
+     clearly named quarantine location and mention it to the user. A live
+     holder: wait about 200 ms and retry, up to a bounded total wait of about
+     30 seconds.
+  5. If the lock still cannot be acquired, write nothing, delete nothing you
      do not own, and tell the user the settings are busy and to re-run
      `/checkpoint-watch` once the other operation finishes.
-  5. Release the lock by deleting `settings.json.lock` in EVERY outcome:
-     after a successful rename, and on every early exit — unreadable JSON,
-     the concurrent-edit refusal below, or the user cancelling.
+  6. Release the lock on EVERY exit path — but "release" means delete it only
+     if a fresh re-read of `owner.json` still carries YOUR process id and
+     token. If a successor now owns the lock (your lease was reclaimed while
+     you worked), delete nothing, do not publish your pending save, and tell
+     the user the settings changed while /checkpoint-watch was working.
   This lock serializes only writers that follow this protocol. A writer that
   ignores it is still caught by the byte-for-byte re-read in the next rule.
 - **Atomic write only — with a concurrent-edit check.** Do this whole
@@ -194,7 +207,10 @@ fields are our ownership sentinel):
   modified by something else while /checkpoint-watch was working; nothing was
   written — re-run /checkpoint-watch to apply the change on top of the new
   content". Only when the re-read matches, rename your unique temp file over
-  `settings.json`. Never do a partial or in-place truncating write.
+  `settings.json`. **Also re-verify the lock owner immediately before the
+  final rename**: if `owner.json` no longer carries your token, your lease
+  was reclaimed while you were working — refuse to publish exactly as for a
+  concurrent edit. Never do a partial or in-place truncating write.
 - **Serialize with `JSON.stringify(value, null, 2) + "\n"`** — 2-space indent and
   a trailing newline.
 - **Never delete `settings.json` itself.** The `--off` path only edits content;

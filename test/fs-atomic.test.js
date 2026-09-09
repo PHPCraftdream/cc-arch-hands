@@ -788,3 +788,79 @@ describe('a leased committed publisher', () => {
     }
   });
 });
+
+describe('transient publication-fence mkdir failures', () => {
+  function setEnv(values) {
+    const prior = {};
+    for (const [key, value] of Object.entries(values)) {
+      prior[key] = process.env[key];
+      process.env[key] = value;
+    }
+    return prior;
+  }
+  function restoreEnv(prior) {
+    for (const [key, value] of Object.entries(prior)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+  function assertNoFenceResidue(dir, dest) {
+    const residue = readdirSync(dir).filter((name) => name.startsWith(`${dest}.cah-owned-publish`));
+    assert.deepEqual(residue, []);
+  }
+
+  it('survives exactly one transient EPERM on the publication-fence mkdir and still publishes', () => {
+    // Structural guard: without the new bounded retry, the very first
+    // synthesized EPERM would propagate out of beginFence() and fail this
+    // test at the writeFileAtomic call below (demonstrated by reverting the
+    // lib change; not re-run here by design).
+    const dir = mkdtempSync(join(tmpdir(), 'cah-fence-eparm-'));
+    const dest = join(dir, 'leaf');
+    const payload = 'fence-retry-payload\n';
+    writeFileSync(dest, 'seed\n');
+    const prior = setEnv({
+      CAH_TEST_ONLY: '1',
+      CAH_TEST_ONLY_PUBLICATION_FENCE_MKDIR_TRANSIENT_FAILURES: '1',
+    });
+    try {
+      writeFileAtomic(dest, payload, {
+        expectedDestination: captureRegularFileSnapshot(dest).expectedDestination,
+      });
+      assert.equal(readFileSync(dest, 'utf8'), payload);
+      // Normal call immediately after, no injection active.
+      delete process.env.CAH_TEST_ONLY;
+      delete process.env.CAH_TEST_ONLY_PUBLICATION_FENCE_MKDIR_TRANSIENT_FAILURES;
+      writeFileAtomic(dest, `${payload}again\n`, {
+        expectedDestination: captureRegularFileSnapshot(dest).expectedDestination,
+      });
+      assert.equal(readFileSync(dest, 'utf8'), `${payload}again\n`);
+      assertNoFenceResidue(dir, dest);
+    } finally {
+      restoreEnv(prior);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a persistent EPERM on the publication-fence mkdir fails bounded with the original error and no residue', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-fence-eparm-'));
+    const dest = join(dir, 'leaf');
+    writeFileSync(dest, 'untouched\n');
+    const prior = setEnv({
+      CAH_TEST_ONLY: '1',
+      CAH_TEST_ONLY_PUBLICATION_FENCE_MKDIR_TRANSIENT_FAILURES: '999',
+    });
+    try {
+      const startedAt = Date.now();
+      assert.throws(() => writeFileAtomic(dest, 'replaced\n', {
+        expectedDestination: captureRegularFileSnapshot(dest).expectedDestination,
+      }), (error) => error.code === 'EPERM');
+      assert.ok(Date.now() - startedAt >= 1500,
+        'the persistent EPERM must surface only after the bounded transient window, not immediately');
+      assert.equal(readFileSync(dest, 'utf8'), 'untouched\n');
+      assertNoFenceResidue(dir, dest);
+    } finally {
+      restoreEnv(prior);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

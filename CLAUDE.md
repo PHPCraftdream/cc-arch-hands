@@ -110,6 +110,7 @@ never exposed before its complete mirrored dependency chain is present.
 | `lib/fs-atomic-identity.js` | Exact BigInt identities and stable file snapshots |
 | `lib/fs-atomic-publication.js` | Generation-fenced no-overwrite publication transaction |
 | `lib/lease-clock.js` | Shared lease heartbeat/expiry rule (`LEASE_MAX_MS`, `ownerTimestamp`, `leaseExpired`) used by both lease-lock and fs-atomic-publication |
+| `lib/settings-lock.js` | Shared cross-process settings.json lock — acquire/release with ownership-verified reclaim and release, built on lease-lock; used by lib/probe.js and the skills' published protocol |
 | `lib/fs-atomic.js` | Atomic publication, quarantine, and conditional removal |
 | `lib/transcript-stats.js` | Shared transcript walker + status-line formatter for all hook bins |
 | `lib/marker-capacity-ops.js` | Durable marker-capacity transitions, exact victim CAS, and surfaced mismatch recovery |
