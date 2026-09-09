@@ -332,9 +332,10 @@ describe('skill data-loss protection', { concurrency: false }, () => {
     const result = await resultPromise;
     const recovery = join(`${orphan}.cah-owned-remove`, 'payload');
     assert.equal(result.pruned, 0);
-    assert.deepEqual(result.recovery, [recovery]);
-    assert.equal(existsSync(orphan), false);
-    assert.equal(readFileSync(recovery, 'utf8'), successor);
+    assert.deepEqual(result.recovery, []);
+    assert.deepEqual(result.preserved, [orphan]);
+    assert.equal(existsSync(recovery), false);
+    assert.equal(readFileSync(orphan, 'utf8'), successor);
   });
 
   it('pruneOrphanDirs spares a copied skill dir that holds extra user files', () => {

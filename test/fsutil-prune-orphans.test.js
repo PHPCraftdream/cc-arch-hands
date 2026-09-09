@@ -1,120 +1,92 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import fs, { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pruneOrphanDirs, pruneOrphans } from '../lib/fsutil.js';
 import { SetForSkill } from '../lib/sentinel.js';
 
-const FILLER = `${'x'.repeat(120)}\n`;
+const CONTENT = '<!-- cah-skill:v1 -->\nmanaged\n';
 
-function largeManagedManifestContent() {
-  let content = '<!-- cah-skill:v1 -->\n';
-  while (content.length < 64 * 1024 * 1024) content += FILLER;
-  return content;
+function fixture(t) {
+  const root = mkdtempSync(join(tmpdir(), 'cah-prune-boundary-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  return root;
 }
 
-// A real remover process that fires the instant the managed removal
-// reserves its deterministic quarantine namespace — i.e. strictly inside
-// removeOwnedRegularFile(), while the 64 MB manifest is being re-read.
-// That lands the concurrent unlink inside captureRegularFileSnapshot()'s
-// double-lstat window, the exact escape shape round 68 closes.
-function spawnReservationSignaledRemover(manifestPath) {
-  const reservation = `${manifestPath}.cah-owned-remove`;
-  const script = `
-    const fs = require('node:fs');
-    const reservation = ${JSON.stringify(reservation)};
-    const target = ${JSON.stringify(manifestPath)};
-    const deadline = Date.now() + 30000;
-    (function poll() {
-      if (Date.now() > deadline) process.exit(2);
-      if (fs.existsSync(reservation)) {
-        try { fs.unlinkSync(target); } catch { /* already gone */ }
-        process.exit(0);
-      }
-      setTimeout(poll, 1);
-    })();
-  `;
-  return spawn(process.execPath, ['-e', script], { stdio: 'ignore' });
+function atRead(path, armed, change, operation) {
+  const nativeRead = fs.readFileSync;
+  let reached = false;
+  fs.readFileSync = (target, ...args) => {
+    const value = nativeRead(target, ...args);
+    if (target === path && !reached && armed()) {
+      reached = true;
+      change();
+    }
+    return value;
+  };
+  syncBuiltinESMExports();
+  try {
+    const result = operation();
+    assert.equal(reached, true, 'the required snapshot boundary must execute');
+    return result;
+  } finally {
+    fs.readFileSync = nativeRead;
+    syncBuiltinESMExports();
+  }
 }
 
 describe('pruneOrphanDirs', () => {
-  it('preserves an orphan directory removed by a concurrent process during the snapshot window', () => {
-    const root = mkdtempSync(join(tmpdir(), 'cah-prune-race-'));
-    const orphanDir = join(root, 'zzz-orphan');
-    mkdirSync(orphanDir);
-    // ~64 MB manifest so captureRegularFileSnapshot's double hash widens the
-    // race window to well over 100 ms, comfortably covering the
-    // snapshot -> pre-removal re-read window.
-    let content = '<!-- cah-skill:v1 -->\n';
-    while (content.length < 64 * 1024 * 1024) content += FILLER;
-    writeFileSync(join(orphanDir, 'SKILL.md'), content);
-
-    const remover = spawn(
-      process.execPath,
-      ['-e', `const fs = require('node:fs'); setTimeout(() => { try { fs.rmSync(${JSON.stringify(orphanDir)}, { recursive: true, force: true }); } catch {} }, 60);`],
-      { stdio: 'ignore', env: { ...process.env, HOME: root, USERPROFILE: root } },
-    );
-
-    let result;
-    try {
-      result = pruneOrphanDirs(root, new Set(), 'SKILL.md', SetForSkill);
-    } finally {
-      remover.kill();
-    }
-
-    // The concurrent removal must not escape as a raw ENOENT.
+  it('handles a directory disappearing inside its initial snapshot', (t) => {
+    const root = fixture(t);
+    const orphan = join(root, 'zzz-orphan');
+    mkdirSync(orphan);
+    const manifest = join(orphan, 'SKILL.md');
+    writeFileSync(manifest, CONTENT);
+    const result = atRead(manifest, () => true,
+      () => rmSync(orphan, { recursive: true }),
+      () => pruneOrphanDirs(root, new Set(), 'SKILL.md', SetForSkill));
     assert.equal(result.pruned, 0);
-    assert.ok(result.preserved.includes('zzz-orphan'),
-      `expected 'zzz-orphan' preserved, got ${JSON.stringify(result)}`);
+    assert.deepEqual(result.preserved, ['zzz-orphan']);
+    assert.equal(existsSync(orphan), false);
   });
 });
 
 describe('pruneOrphanDirs concurrent manifest removal', () => {
-  it('preserves the orphan when a real remover makes the manifest vanish mid-removal', () => {
-    const root = mkdtempSync(join(tmpdir(), 'cah-prune-midremoval-'));
-    const orphanDir = join(root, 'zzz-orphan');
-    mkdirSync(orphanDir);
-    writeFileSync(join(orphanDir, 'SKILL.md'), largeManagedManifestContent());
-    const remover = spawnReservationSignaledRemover(join(orphanDir, 'SKILL.md'));
-    let result;
-    try {
-      result = pruneOrphanDirs(root, new Set(), 'SKILL.md', SetForSkill);
-    } finally {
-      remover.kill();
-    }
-    // The vanished leaf must converge to preserve-and-continue, never a raw
-    // 'managed destination leaf changed concurrently' throw.
+  it('handles a manifest disappearing after reserving its removal slot', (t) => {
+    const root = fixture(t);
+    const orphan = join(root, 'zzz-orphan');
+    mkdirSync(orphan);
+    const manifest = join(orphan, 'SKILL.md');
+    writeFileSync(manifest, CONTENT);
+    const reservation = manifest + '.cah-owned-remove';
+    const result = atRead(manifest, () => existsSync(reservation),
+      () => fs.unlinkSync(manifest),
+      () => pruneOrphanDirs(root, new Set(), 'SKILL.md', SetForSkill));
     assert.equal(result.pruned, 0);
-    assert.ok(result.preserved.includes('zzz-orphan'),
-      `expected 'zzz-orphan' preserved, got ${JSON.stringify({ pruned: result.pruned, preserved: result.preserved })}`);
+    assert.deepEqual(result.preserved, ['zzz-orphan']);
+    assert.deepEqual(result.recovery, []);
+    assert.equal(existsSync(orphan), true);
+    assert.equal(existsSync(manifest), false);
+    assert.equal(existsSync(reservation), false);
   });
 });
 
 describe('pruneOrphans concurrent orphan removal', () => {
-  it('preserves the orphan when a real remover makes it vanish mid-removal', () => {
-    const root = mkdtempSync(join(tmpdir(), 'cah-prune-orphans-race-'));
-    const orphanPath = join(root, 'zzz-retired-skill.md');
-    writeFileSync(orphanPath, largeManagedManifestContent());
-    const remover = spawnReservationSignaledRemover(orphanPath);
-    let result;
-    try {
-      result = pruneOrphans(root, new Set(), SetForSkill);
-    } finally {
-      remover.kill();
-    }
-    // Verified behavior: the reservation fires near the quarantine rename,
-    // so the remover's unlink either hits an already-moved path (clean
-    // prune), or wins the race entirely and the vanished leaf is skipped.
-    // All observed outcomes are { pruned: 1 } or { pruned: 0, preserved: [],
-    // recovery: [] } — the invariant under test is that the concurrent
-    // unlink NEVER escapes as a throw and never corrupts the report.
-    assert.equal(typeof result.pruned, 'number');
-    assert.ok(Array.isArray(result.preserved) && Array.isArray(result.recovery));
-    assert.ok(
-      result.pruned === 1 || (result.pruned === 0 && result.preserved.length + result.recovery.length <= 1),
-      `unexpected report shape, got ${JSON.stringify({ pruned: result.pruned, preserved: result.preserved, recovery: result.recovery })}`);
+  it('handles an orphan disappearing after reserving its removal slot', (t) => {
+    const root = fixture(t);
+    const orphan = join(root, 'zzz-retired-skill.md');
+    writeFileSync(orphan, CONTENT);
+    const reservation = orphan + '.cah-owned-remove';
+    const result = atRead(orphan, () => existsSync(reservation),
+      () => fs.unlinkSync(orphan),
+      () => pruneOrphans(root, new Set(), SetForSkill));
+    assert.equal(result.pruned, 0);
+    assert.deepEqual(result.preserved, []);
+    assert.deepEqual(result.recovery, []);
+    assert.equal(existsSync(orphan), false);
+    assert.equal(existsSync(reservation), false);
   });
 });
 
