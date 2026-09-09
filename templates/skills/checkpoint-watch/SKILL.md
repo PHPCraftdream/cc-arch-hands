@@ -148,8 +148,8 @@ fields are our ownership sentinel):
   `cah-sentinel === "cah-hook:v1"` and `cah-name === "checkpoint-watch"` belongs
   to the user or another tool — leave it exactly as is.
 - **Lock `settings.json` for the whole read-modify-write cycle.** Cooperating
-  cah skills (`/clock` and `/checkpoint-watch`) — and `cah probe
-  --enable/--disable`, which takes the same lock (`lib/probe.js`) — can run at
+  cah skills (`/clock` and `/checkpoint-watch`) — and
+  `cah probe statusline start` / `cah probe statusline stop`, which take the same lock — can run at
   the same time, and verification alone cannot stop two in-flight writers from
   passing the same check just before both rename — the second rename would
   silently erase the first writer's own change. Before your FIRST read of
@@ -173,7 +173,7 @@ fields are our ownership sentinel):
      process, or when its `timestamp` is more than 5 minutes old (the same
      lease window `lib/lease-lock.js` uses for the companion bins).
   4. To reclaim: rename the lock aside to a unique
-     `settings.json.lock.stale.<random-suffix>` name, re-read what you moved
+     `settings.json.lock.stale-<pid>-<random-suffix>` name, re-read what you moved
      and confirm it is still the abandoned claim you observed, and only then
      delete the renamed copy — only ever its owner.json-style lock state. If
      the renamed copy holds anything else, do NOT delete it: keep it in a

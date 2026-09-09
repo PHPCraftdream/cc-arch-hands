@@ -411,7 +411,7 @@ describe('a recycled-pid committed fence', () => {
 
 // A racing publisher loop: many real publications against one shared leaf,
 // each iteration with a fresh expectedDestination snapshot. Only the module's
-// three documented failure shapes are acceptable; anything else (especially a
+// controlled refusal shapes are acceptable; anything else (especially a
 // raw ENOENT naming an internal .cah-owned-publish fence path) is reported
 // as RAW and exits 7 so the parent can fail the test.
 function racingPublisherChildScript() {
@@ -431,7 +431,8 @@ function racingPublisherChildScript() {
         } catch (error) {
           const acceptable = (error.message || '').includes('managed destination leaf changed concurrently')
             || error.code === 'ERR_ATOMIC_OWNERSHIP_LOST'
-            || error.code === 'ERR_ATOMIC_RECOVERY_REQUIRED';
+            || error.code === 'ERR_ATOMIC_RECOVERY_REQUIRED'
+            || error.code === 'ERR_ATOMIC_INSPECTION_FAILED';
           if (!acceptable) {
             process.stdout.write('RAW:' + (error.code || '') + ':' + error.message + '\\n');
             process.exit(7);

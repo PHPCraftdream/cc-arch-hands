@@ -68,7 +68,7 @@ function runProbeWorker(
   phase,
   fsInterlock = null,
   fsPhase = null,
-  { timeoutMs, graceMs, hang = false } = {},
+  { timeoutMs, graceMs, hang = false, failAfterPhase = null } = {},
 ) {
   const probeUrl = new URL('../lib/probe.js', import.meta.url).href;
   const hooksUrl = new URL('../test-support/interlocks.js', import.meta.url).href;
@@ -84,7 +84,15 @@ function runProbeWorker(
         process.env.CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE = workerData.fsPhase;
       }
       const { makeInterlock } = await import(workerData.hooksUrl);
-      const testInterlock = makeInterlock(process.env);
+      const pause = makeInterlock(process.env);
+      let injected = false;
+      const testInterlock = (...phases) => {
+        pause(...phases);
+        if (!injected && workerData.failAfterPhase && phases.includes(workerData.failAfterPhase)) {
+          injected = true;
+          throw new Error('injected probe post-publication failure');
+        }
+      };
       const probe = await import(workerData.probeUrl);
       try {
         const value = probe[workerData.action](workerData.paths, { testInterlock });
@@ -97,7 +105,7 @@ function runProbeWorker(
   const worker = new Worker(source, {
     eval: true,
     workerData: {
-      action, paths, interlock, phase, fsInterlock, fsPhase, probeUrl, hooksUrl, hang,
+      action, paths, interlock, phase, fsInterlock, fsPhase, probeUrl, hooksUrl, hang, failAfterPhase,
     },
   });
   return runWorker(worker, {
@@ -476,7 +484,7 @@ describe('probe concurrency', () => {
       'enable must not remove a foreign backup successor');
   });
 
-  it('rolls back the exact settings leaf when backup changes after stop publication', async () => {
+  it('keeps restored settings when backup changes after stop publication', async () => {
     const h = harness();
     const original = { type: 'command', command: 'original', padding: 0 };
     writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
@@ -494,8 +502,8 @@ describe('probe concurrency', () => {
     const result = await worker;
     assert.equal(result.ok, false);
     assert.match(result.message, /probe backup changed concurrently/);
-    assert.ok(JSON.parse(readFileSync(h.settingsPath, 'utf8')).statusLine['cah-sentinel'],
-      'failed stop must retain the probe after restoring from stale data is refused');
+    assert.deepEqual(JSON.parse(readFileSync(h.settingsPath, 'utf8')).statusLine, original,
+      'failed stop must not reactivate a probe without its verified backup');
     assert.deepEqual(JSON.parse(readFileSync(h.backupPath, 'utf8')), successor,
       'stop must preserve a foreign backup successor');
   });
@@ -543,10 +551,10 @@ describe('probe concurrency', () => {
       'disable-post-settings-rename',
       fsInterlock,
       'probe-rollback-before-final',
+      { failAfterPhase: 'disable-post-settings-rename' },
     );
     await waitForPath(`${probeInterlock}.ready`);
-    unlinkSync(h.backupPath);
-    writeFileSync(h.backupPath, JSON.stringify({ previous: { owner: 'C' } }));
+    assert.deepEqual(JSON.parse(readFileSync(h.backupPath, 'utf8')).previous, original);
     writeFileSync(`${probeInterlock}.go`, 'go');
     await waitForPath(`${fsInterlock}.ready`);
     assert.equal(existsSync(h.settingsPath), true,

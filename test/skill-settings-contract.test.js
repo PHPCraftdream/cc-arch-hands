@@ -192,7 +192,7 @@ describe('published clock/checkpoint-watch settings instructions', () => {
         `${name}: the published 5-minute lease window must be pinned`);
       assert.match(text, /lib\/lease-lock\.js/,
         `${name}: the lock must mirror the library's lease semantics`);
-      assert.match(text, /settings\.json\.lock\.stale\.<random-suffix>/,
+      assert.match(text, /settings\.json\.lock\.stale-<pid>-<random-suffix>/,
         `${name}: abandoned-lock recovery must rename the lock aside`);
       assert.match(text, /about 30 seconds/,
         `${name}: the bounded lock wait must be pinned`);
