@@ -20,6 +20,9 @@ import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 import {
   enableProbe,
@@ -849,6 +852,123 @@ describe('probe backup vs ordinary settings edits (review round 2 P1-1)', () => 
       'disable must restore the original statusLine through the editor content');
     assert.equal(JSON.parse(readFileSync(h.settingsPath, 'utf8')).editorSetting, 'preserve me',
       'disable must preserve the unrelated editor key');
+    assert.equal(existsSync(h.backupPath), false, 'a successful disable consumes the backup');
+  });
+});
+
+describe('probe settings root validation (review round-5 P2-1)', () => {
+  it('refuses a valid-JSON non-object settings root on enable, disable, and status without any side effects (round-5 P2-1)', async () => {
+    for (const root of ['[]', '"just a string"', '42', 'true', 'null']) {
+      const h = harness();
+      writeFileSync(h.settingsPath, root + '\n');
+
+      await assert.rejects(async () => enableProbe(h), (error) =>
+        error instanceof MalformedSettingsError
+        && /expected a JSON object at the document root/.test(error.message));
+      // A refused enable must be side-effect free: no reformat, no cache dir,
+      // no backup, no log.
+      assert.equal(readFileSync(h.settingsPath, 'utf8'), root + '\n');
+      assert.equal(existsSync(h.backupPath), false);
+      assert.equal(existsSync(h.logPath), false);
+      assert.equal(existsSync(dirname(h.backupPath)), false,
+        'a refused enable must not create the cache directory');
+
+      await assert.rejects(async () => disableProbe(h), MalformedSettingsError);
+      assert.throws(() => probeStatus(h), MalformedSettingsError);
+    }
+  });
+
+  it('still enables and disables normally for a plain object root (round-5 P2-1 regression guard)', () => {
+    const h = harness();
+    writeFileSync(h.settingsPath, JSON.stringify({ editorSetting: 'keep' }, null, 2) + '\n');
+
+    enableProbe(h);
+    const s = JSON.parse(readFileSync(h.settingsPath, 'utf8'));
+    assert.equal(s.statusLine['cah-sentinel'], PROBE_SENTINEL);
+    assert.equal(s.editorSetting, 'keep', 'unrelated keys must survive');
+    assert.equal(JSON.parse(readFileSync(h.backupPath, 'utf8')).previous, null);
+
+    const stop = disableProbe(h);
+    assert.deepEqual(stop.restored, null);
+    const after = JSON.parse(readFileSync(h.settingsPath, 'utf8'));
+    assert.ok(!('statusLine' in after));
+    assert.equal(after.editorSetting, 'keep');
+    assert.equal(existsSync(h.backupPath), false, 'a successful disable consumes the backup');
+  });
+});
+
+describe('probe lease expiry vs successor backup (review round-5 P1-1)', () => {
+  it('an enable that lost its lease must not overwrite the successor backup, settings, or log (round-5 P1-1)', async () => {
+    const h = harness();
+    writeFileSync(h.settingsPath, JSON.stringify({
+      statusLine: { type: 'command', command: 'original-before-edit', padding: 0 },
+      editorSetting: 'keep',
+    }, null, 2) + '\n');
+
+    const interlock = join(h.settingsPath, '..', 'stale-enable-interlock');
+    const worker = runProbeWorker('enableProbe', h, interlock, 'enable-after-read');
+    await waitForPath(`${interlock}.ready`);
+
+    // Backdate A's lease owner so the lease is exactly as reclaimable as a
+    // real expiry, then play an external editor and let B take over.
+    const ownerPath = join(h.settingsPath + '.lock', 'owner.json');
+    assert.equal(existsSync(ownerPath), true, 'the paused enable must hold a lease owner file');
+    const owner = JSON.parse(readFileSync(ownerPath, 'utf8'));
+    owner.timestamp = Date.now() - 6 * 60 * 1000;
+    writeFileSync(ownerPath, JSON.stringify(owner) + '\n');
+
+    writeFileSync(h.settingsPath, JSON.stringify({
+      statusLine: { type: 'command', command: 'new-user-command', padding: 0 },
+      editorSetting: 'keep',
+    }));
+
+    // B is a real separate process running the real enableProbe to completion.
+    const probeUrl = pathToFileURL(join(__dirname, '..', 'lib', 'probe.js')).href;
+    const childPath = join(h.settingsPath, '..', 'successor-enable.mjs');
+    writeFileSync(childPath, [
+      'const { enableProbe } = await import(process.argv[2]);',
+      'const paths = JSON.parse(process.argv[3]);',
+      'try {',
+      '  enableProbe(paths);',
+      "  console.log('B_OK');",
+      '} catch (error) {',
+      "  console.log('B_FAIL ' + error.name + ': ' + error.message);",
+      '  process.exit(1);',
+      '}',
+    ].join('\n'));
+    const b = spawnSync(process.execPath, [childPath, probeUrl,
+      JSON.stringify({
+        settingsPath: h.settingsPath,
+        probeBinAbsPath: h.probeBinAbsPath,
+        backupPath: h.backupPath,
+        logPath: h.logPath,
+      })], { encoding: 'utf8' });
+    assert.equal(b.status, 0, `successor enable B failed: ${b.stdout} ${b.stderr}`);
+    assert.ok(b.stdout.includes('B_OK'), `successor enable B did not succeed: ${b.stdout} ${b.stderr}`);
+    assert.equal(JSON.parse(readFileSync(h.backupPath, 'utf8')).previous.command, 'new-user-command');
+
+    writeFileSync(`${interlock}.go`, 'go');
+    const result = await worker;
+    // A must notice its lease was stolen, not proceed with its stale state.
+    assert.equal(result.ok, false, `stale enable should fail, got ${JSON.stringify(result)}`);
+    assert.equal(result.name, 'ProbeLeaseLostError',
+      `expected ProbeLeaseLostError, got ${result.name}: ${result.message}`);
+    assert.match(result.message, /lease was lost/);
+
+    // B's published state must have survived A entirely.
+    assert.equal(JSON.parse(readFileSync(h.backupPath, 'utf8')).previous.command, 'new-user-command',
+      'the stale enable must not remove or overwrite the successor backup');
+    const s = JSON.parse(readFileSync(h.settingsPath, 'utf8'));
+    assert.equal(s.statusLine['cah-sentinel'], PROBE_SENTINEL,
+      'the stale enable must not overwrite the successor settings');
+    assert.equal(s.editorSetting, 'keep');
+
+    // Everything is still cleanly stoppable.
+    const stop = disableProbe(h);
+    assert.deepEqual(stop.restored, { type: 'command', command: 'new-user-command', padding: 0 });
+    const after = JSON.parse(readFileSync(h.settingsPath, 'utf8'));
+    assert.deepEqual(after.statusLine, { type: 'command', command: 'new-user-command', padding: 0 });
+    assert.equal(after.editorSetting, 'keep');
     assert.equal(existsSync(h.backupPath), false, 'a successful disable consumes the backup');
   });
 });
