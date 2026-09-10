@@ -20,6 +20,16 @@ function spinWait(ms) {
   while (Date.now() < until) { /* synchronous settle */ }
 }
 
+// Synchronous busy-poll for a ready-file signal, replacing a guess at how
+// long a child process needs to start (same pattern as marker-state.test.js).
+function waitForPathSync(path, deadlineMs = 10_000) {
+  const deadline = Date.now() + deadlineMs;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`);
+    spinWait(5);
+  }
+}
+
 // Restores a sabotaged fence directory's mode after a fixed delay, from an
 // independent thread that keeps running while the test thread is blocked
 // inside the library's synchronous retry loops.
@@ -97,13 +107,20 @@ describe('lease release recovery budget', () => {
     // inside it: Windows refuses to rename a directory with open descendant
     // handles (EPERM/EBUSY) until the handle closes, so the release fence
     // rename can only succeed by retrying under a freshly computed budget.
-    // The child unlinks the file and exits ~30 ms after its startup completes,
-    // inside the 250 ms recovery window, and removes the file so it never
-    // trips the fence's stray-entry guard after takeFence.
+    // The child signals via a ready-file the instant it holds the handle —
+    // starting the rename-probe loop only then removes the process-spawn
+    // timing race (a real node.exe spawn under CI contention can take far
+    // longer than the probe's own polling interval, so a probe that starts
+    // immediately after spawn() returns can exhaust its window before the
+    // child has even opened the file). The child then unlinks both files and
+    // exits ~30 ms after opening, inside the 250 ms recovery window, so
+    // nothing trips the fence's stray-entry guard after takeFence.
     spinWait(300);
-    const child = spawn(process.execPath, ['-e', "const p=require('path'),f=require('fs');const q=p.join(process.cwd(),'held');const h=f.openSync(q,'w');setTimeout(() => { try { f.unlinkSync(q); } finally { f.closeSync(h); } }, 30)"], {
+    const readyPath = join(leasePath, 'held.ready');
+    const child = spawn(process.execPath, ['-e', "const p=require('path'),f=require('fs');const q=p.join(process.cwd(),'held');const r=p.join(process.cwd(),'held.ready');const h=f.openSync(q,'w');f.writeFileSync(r,'ready');setTimeout(() => { try { f.unlinkSync(q); f.unlinkSync(r); } finally { f.closeSync(h); } }, 30)"], {
       cwd: leasePath, stdio: ['ignore', 'pipe', 'pipe'],
     });
+    waitForPathSync(readyPath);
     const blockedOnce = probeUntilRenameBlocked(leasePath);
     assert.ok(blockedOnce, 'probe must prove the first fence rename attempt was blocked by the child\'s open handle (retry is exercised only then)');
     const released = releaseLease(lease);
