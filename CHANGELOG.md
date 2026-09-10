@@ -5,7 +5,7 @@ All notable changes to `cc-arch-hands` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.8.0] - 2026-09-04
+## [0.8.0] - 2026-09-10
 
 ### Added
 
@@ -50,6 +50,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `npx agent-tree install` (or `node bin/agent-tree.js install` from its
   checkout); that installer accepts the former `<!-- cah-agent-tree:v1 -->`
   marker and rewrites the skills with its current ownership marker.
+
+### Fixed
+
+- **Hardened the shared `settings.json` lock and statusline-probe machinery
+  against concurrent-access races**, closed across an extensive internal
+  review of `lib/settings-lock.js`, `lib/probe.js`, `lib/lease-lock.js`, and
+  `lib/fs-atomic*.js`: a stale probe operation could overwrite a live
+  successor's backup and restore the wrong `statusLine` on
+  `/checkpoint-watch` stop; the lock's reclaim/release rules could delete
+  another process's still-live lock or data under PID reuse; a `settings.json`
+  whose root was a JSON array (instead of an object) silently no-op'd
+  `enableProbe()` while still reporting success and creating an orphaned
+  backup; and several related fence/rollback races could strand the probe
+  enabled with no backup, or destroy the last valid one. None of this is
+  reachable through ordinary single-session use — it needs real concurrent
+  writers racing the same `settings.json`.
+- **Fixed several correctness bugs in the shared update-check cache** used by
+  `cah-status`/`cah-stamp`: a future-dated or schema-less cache record could
+  outrank a valid one by timestamp, a concurrent refresh could lose an update
+  to a fresher writer, different projects sharing one machine could collide
+  on the same cache namespace, and the bundled SemVer comparator mis-ordered
+  or lost precision on some valid version strings.
+- **`cah doctor` no longer reports agent/command/skill symlinks as a healthy
+  install** when the real installer would not treat them that way — the
+  health gate now agrees with the installer.
+- Fixed a real cross-platform bug in the marker-capacity recovery path
+  (`lib/marker-capacity-recovery.js`) that could abort a reconciliation pass
+  on Linux while silently no-op'ing the same code path on Windows.
+- Corrected stale documentation: `CONTRIBUTING.md` pointed at an outdated
+  companion-bin path, and the README's one-shot `npx` examples used the bin
+  alias instead of the package name.
 
 ### Notes
 
