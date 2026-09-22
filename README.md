@@ -6,8 +6,7 @@ skills. Requires Node.js >=18.19.0 and has zero runtime dependencies — only
 Node.js built-ins.
 
 ```bash
-npx cc-arch-hands install        # that's it — installs agents & skills into ~/.claude/
-                                  # (per-model slash-commands are opt-in — see below)
+npx cc-arch-hands install        # that's it — installs commands, agents & skills into ~/.claude/
 ```
 
 > Other ways to run: [npm global install](#quick-start), [from source](#from-source). Full command reference in [Use](#use).
@@ -21,12 +20,12 @@ statusLine commands, or diagnostics, copied into `~/.claude/cah-bin/` at
 install time.
 
 The artifacts:
+- **per-model slash-commands** (<!--gen:count:model-commands-->44<!--/gen-->) under `~/.claude/commands/`,
 - **per-model sub-agents** (<!--gen:count:model-commands-->44<!--/gen-->) under `~/.claude/agents/`,
 - **skills** (11) under `~/.claude/skills/`,
 - **companion bins** under `~/.claude/cah-bin/` (since 0.4.0).
 
 Optional artifacts are installed only when requested:
-- **per-model slash-commands** (<!--gen:count:model-commands-->44<!--/gen-->) under `~/.claude/commands/`, via `--commands`. Opt-in — see the [known Claude Code regression](#1-per-model-slash-commands-44) below; the sub-agent half above is unaffected and stays in the default install.
 - **Codex custom agents** (<!--gen:count:codex-agents-->23<!--/gen-->) under `~/.codex/agents/`, via `--codex-agents`.
 
 > **Since 0.4.0:** `cah install` copies the companion bins into
@@ -64,9 +63,9 @@ served from the prompt cache) and a naive percentage would always read 0%.
 
 ### 1. Per-model slash-commands (<!--gen:count:model-commands-->44<!--/gen-->)
 
-Not part of the default install (see the regression note below). Install
-explicitly with `--commands`, or select it as a class via `--only commands`
-(also combinable, e.g. `--only skills,commands`):
+Part of the default install. To manage only the commands, use `--commands`,
+or select them as a class via `--only commands` (also combinable, e.g.
+`--only skills,commands`):
 
 ```bash
 npx cc-arch-hands install --commands
@@ -92,24 +91,12 @@ no effort suffix because Claude Code does not expose effort control for Haiku.
 Suffixes: `l` low · `m` medium · `h` high · `x` xhigh · `xx` max.
 Whatever you type after the command becomes the prompt for that turn.
 
-> **Known Claude Code regression (interactive sessions).** Since Claude Code
-> v2.1.220 the `model:`/`effort:` frontmatter that these commands rely on is
-> **silently ignored on the interactive TUI path** — the turn runs on the
-> session's current model/effort instead, with no warning, and the model
-> will still *claim* to be the one you asked for. Tracked upstream in
-> [anthropics/claude-code#81318](https://github.com/anthropics/claude-code/issues/81318)
-> (worked on v2.1.197; intermittent, not 100%). Until it is fixed:
->
-> - **Per-task pinning → use the sub-agents (`@oh`, `@f1x`, …) instead.**
->   The `Agent`-tool dispatch path honors `model:`/`effort:` reliably; the
->   slash-command path does not.
-> - **Session-wide → `/model <name>`** (survives across turns), and
->   `CLAUDE_CODE_EFFORT_LEVEL=<level>` in the environment for effort.
-> - **Scripts / CI → `claude -p "/oh …"`** — the headless path applies the
->   frontmatter correctly.
-> - **To see what actually ran**, look at the `cah-stamp` line `/clock`
->   installs after every turn: if it says `Sonnet 5` right after `/oh`, the
->   override did not fire. The model's own self-report is not evidence.
+> **Note.** Claude Code v2.1.220–v2.1.27x silently ignored these commands'
+> `model:`/`effort:` frontmatter on the interactive path
+> ([anthropics/claude-code#81318](https://github.com/anthropics/claude-code/issues/81318)).
+> Fixed in v2.1.280 — update Claude Code if a command runs on the session's
+> model instead of the requested one. The `cah-stamp` line `/clock` installs
+> shows the model that actually served each turn.
 
 ### 2. Per-model sub-agents (<!--gen:count:model-commands-->44<!--/gen-->)
 
@@ -153,10 +140,10 @@ still encode the actual version number where the alias has one (`s45*`, `h45`).
 |---|---|---|---|---|---|---|---|
 | **Fable** (top, 1M) | `claude-fable-5-1` | — | `/fl` | `/fm` | `/fh` | `/fx` | `/fxx` |
 | Fable 5 (1M) | `claude-fable-5` | — | `/f1l` | `/f1m` | `/f1h` | `/f1x` | `/f1xx` |
-| **Opus** (top, 1M) | `claude-opus-5` | — | `/ol` | `/om` | `/oh` | `/ox` | `/oxx` |
-| Opus 4.8 (1M) | `claude-opus-4-8` | — | `/o1l` | `/o1m` | `/o1h` | `/o1x` | `/o1xx` |
-| Opus 4.7 (1M) | `claude-opus-4-7` | — | `/o2l` | `/o2m` | `/o2h` | `/o2x` | `/o2xx` |
-| Opus 4.6 (1M) | `claude-opus-4-6` | — | `/o3l` | `/o3m` | `/o3h` | `/o3x` | `/o3xx` |
+| **Opus** (top, 1M) | `claude-opus-5-5` | — | `/ol` | `/om` | `/oh` | `/ox` | `/oxx` |
+| Opus 5 (1M) | `claude-opus-5` | — | `/o1l` | `/o1m` | `/o1h` | `/o1x` | `/o1xx` |
+| Opus 4.8 (1M) | `claude-opus-4-8` | — | `/o2l` | `/o2m` | `/o2h` | `/o2x` | `/o2xx` |
+| Opus 4.7 (1M) | `claude-opus-4-7` | — | `/o3l` | `/o3m` | `/o3h` | `/o3x` | `/o3xx` |
 | **Sonnet** (top, 1M) | `claude-sonnet-5` | — | `/sl` | `/sm` | `/sh` | `/sx` | `/sxx` |
 | Sonnet 4.6 (200k) | `claude-sonnet-4-6` | — | `/s4l` | `/s4m` | `/s4h` | — | `/s4xx` |
 | Sonnet 4.5 (200k) | `claude-sonnet-4-5` | — | `/s45l` | `/s45m` | `/s45h` | — | — |
@@ -388,16 +375,15 @@ All wrapper scripts forward flags, e.g. `./install.sh --only skills` or
 Via npx (no install):
 
 ```bash
-npx cc-arch-hands install                          # global (default): ~/.claude/{agents,skills,cah-bin}
+npx cc-arch-hands install                          # global (default): ~/.claude/{commands,agents,skills,cah-bin}
 npx cc-arch-hands install --local                  # local: <cwd>/.claude/... (must already exist); bins still go global
 npx cc-arch-hands install --cwd /path/to/project   # local at a specific path; bins still go global
-npx cc-arch-hands install --commands               # optional: install only the per-model slash-commands
-                                          #   (opt-in — see the regression note in "What it installs")
+npx cc-arch-hands install --commands               # install only the per-model slash-commands
 npx cc-arch-hands install --codex-agents           # optional: install only Codex agents into ~/.codex/agents
 
 # --only takes install classes, individual skill names, or any mix.
 npx cc-arch-hands install --only skills                       # all 11 skills
-npx cc-arch-hands install --only commands                     # all per-model slash-commands (opt-in)
+npx cc-arch-hands install --only commands                     # all per-model slash-commands
 npx cc-arch-hands install --only codex-agents                 # all Codex agents into ~/.codex/agents (opt-in)
 npx cc-arch-hands install --only bins                         # companion bins (cah-status, cah-stamp,
                                                     #   cah-checkpoint-hint, cah-status-probe,

@@ -109,8 +109,8 @@ describe('resolveScope', () => {
 // ---------------------------------------------------------------------------
 describe('parseOnly', () => {
   it('empty returns all classes in order, no individual skills', () => {
-    assert.deepEqual(parseOnly(''), { classes: ['agents', 'skills', 'bins'], skills: [] });
-    assert.deepEqual(parseOnly(undefined), { classes: ['agents', 'skills', 'bins'], skills: [] });
+    assert.deepEqual(parseOnly(''), { classes: ['commands', 'agents', 'skills', 'bins'], skills: [] });
+    assert.deepEqual(parseOnly(undefined), { classes: ['commands', 'agents', 'skills', 'bins'], skills: [] });
   });
   it('single class', () => {
     assert.deepEqual(parseOnly('skills'), { classes: ['skills'], skills: [] });
@@ -668,7 +668,7 @@ describe('run install/uninstall --codex-agents', () => {
         // codex-agents is an opt-in selector — valid via --only but excluded from
         // the default (empty --only) install set.
         assert.deepEqual(parseOnly('codex-agents'), { classes: ['codex-agents'], skills: [] });
-        assert.deepEqual(parseOnly(''), { classes: ['agents', 'skills', 'bins'], skills: [] });
+        assert.deepEqual(parseOnly(''), { classes: ['commands', 'agents', 'skills', 'bins'], skills: [] });
       });
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -781,19 +781,16 @@ describe('run install/uninstall --codex-agents', () => {
 });
 
 describe('run install/uninstall --commands', () => {
-  it('default install does not write the per-model slash-commands', () => {
+  it('default install writes the per-model slash-commands again', () => {
     const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
     try {
       withHome(home, () => {
         assert.equal(run(['install']), 0);
-        assert.ok(!existsSync(join(home, '.claude', 'commands')));
-        // Sub-agents (same registry, other half) still install by default —
-        // only the frontmatter-reliant slash-command half is opt-in.
+        // Default again since anthropics/claude-code#81318 was fixed.
+        assert.ok(existsSync(join(home, '.claude', 'commands', 'oh.md')));
         assert.ok(existsSync(join(home, '.claude', 'agents')));
-        // commands is an opt-in selector — valid via --only but excluded from
-        // the default (empty --only) install set.
         assert.deepEqual(parseOnly('commands'), { classes: ['commands'], skills: [] });
-        assert.deepEqual(parseOnly(''), { classes: ['agents', 'skills', 'bins'], skills: [] });
+        assert.deepEqual(parseOnly(''), { classes: ['commands', 'agents', 'skills', 'bins'], skills: [] });
       });
     } finally {
       rmSync(home, { recursive: true, force: true });

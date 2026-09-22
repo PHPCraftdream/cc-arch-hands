@@ -5,6 +5,23 @@ All notable changes to `cc-arch-hands` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-09-22
+
+### Changed
+
+- **Per-model slash-commands (`/oh`, `/fh`, ...) are back in the default
+  install.** A bare `cah install`/`reinstall` writes `~/.claude/commands/`
+  again, and `cah doctor` counts missing commands as unhealthy. They were
+  opt-in in 0.8.0 only because Claude Code ignored their `model:`/`effort:`
+  frontmatter on the interactive path
+  ([anthropics/claude-code#81318](https://github.com/anthropics/claude-code/issues/81318));
+  that is fixed in Claude Code v2.1.280. `--commands` / `--only commands`
+  still select just the commands.
+- **Opus 5.5 is the new top Opus.** `ol`/`om`/`oh`/`ox`/`oxx` now point at
+  `claude-opus-5-5`; the N-back tiers shift one slot: `o1*` → `claude-opus-5`,
+  `o2*` → `claude-opus-4-8`, `o3*` → `claude-opus-4-7`. Opus 4.6 drops out of
+  the table. Command/agent counts are unchanged (44/44).
+
 ## [0.8.0] - 2026-09-10
 
 ### Added
