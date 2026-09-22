@@ -45,8 +45,10 @@ describe('writeCodexAgents', { concurrency: false }, () => {
 
     for (const [name, model, display] of [
       ['xt', 'gpt-5.6-terra', 'Terra - Extra High'],
-      ['xl', 'gpt-5.6-luna', 'Luna - Extra High'],
-      ['xs', 'gpt-5.6-sol', 'Sol - Extra High'],
+      ['xl', 'gpt-6-luna', 'Luna - Extra High'],
+      ['xs', 'gpt-6-sol', 'Sol - Extra High'],
+      ['xl1', 'gpt-5.6-luna', 'Luna 5.6 - Extra High'],
+      ['xs1', 'gpt-5.6-sol', 'Sol 5.6 - Extra High'],
       ['xa', 'gpt-6-astra', 'Astra - Extra High'],
     ]) {
       const data = readFileSync(join(agentsDir, `${name}.toml`), 'utf8');
@@ -269,7 +271,7 @@ describe('shared leaf publication', { concurrency: false }, () => {
   for (const [kind, install, leaf] of [
     ['commands', (scope) => writeModelCommands(null, scope), ['.claude', 'commands', 'fl.md']],
     ['agents', (scope) => writeModelAgents(null, scope), ['.claude', 'agents', 'fl.md']],
-    ['codex', (scope) => writeCodexAgents(null, scope), ['.codex', 'agents', 'lt.toml']],
+    ['codex', (scope) => writeCodexAgents(null, scope), ['.codex', 'agents', 'ls.toml']],
   ]) {
     it(`${kind} refuses a foreign successor and preserves its mode`, async () => {
       const dir = tmpDir();
@@ -291,7 +293,7 @@ describe('shared leaf publication', { concurrency: false }, () => {
   for (const [kind, install, leaf] of [
     ['commands', (scope) => writeModelCommands(null, scope), ['.claude', 'commands', 'fl.md']],
     ['agents', (scope) => writeModelAgents(null, scope), ['.claude', 'agents', 'fl.md']],
-    ['codex', (scope) => writeCodexAgents(null, scope), ['.codex', 'agents', 'lt.toml']],
+    ['codex', (scope) => writeCodexAgents(null, scope), ['.codex', 'agents', 'ls.toml']],
   ]) {
     it(`${kind} rejects an in-place same-size edit with restored mtime and mode`, async () => {
       const dir = tmpDir();

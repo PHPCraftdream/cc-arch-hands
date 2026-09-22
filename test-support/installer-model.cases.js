@@ -257,7 +257,8 @@ describe('Haiku no-effort aliases', { concurrency: false }, () => {
       AllModelCommands.filter((entry) => entry.model.includes('haiku')).map((entry) => [entry.name, entry.effort]),
       [['h', null], ['h45', null]],
     );
-    assert.equal(AllCodexAgents.find((entry) => entry.name === 'hl').model, 'gpt-5.6-luna');
+    assert.equal(AllCodexAgents.find((entry) => entry.name === 'hl').model, 'gpt-6-luna');
+    assert.equal(AllCodexAgents.find((entry) => entry.name === 'hl1').model, 'gpt-5.6-luna');
     for (const legacy of ['hl', 'hm', 'hh', 'h45l', 'h45m', 'h45h']) {
       assert.equal(AllModelCommands.some((entry) => entry.name === legacy), false, `${legacy} is a misleading legacy alias`);
     }

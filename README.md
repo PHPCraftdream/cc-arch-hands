@@ -26,7 +26,7 @@ The artifacts:
 - **companion bins** under `~/.claude/cah-bin/` (since 0.4.0).
 
 Optional artifacts are installed only when requested:
-- **Codex custom agents** (<!--gen:count:codex-agents-->23<!--/gen-->) under `~/.codex/agents/`, via `--codex-agents`.
+- **Codex custom agents** (<!--gen:count:codex-agents-->33<!--/gen-->) under `~/.codex/agents/`, via `--codex-agents`.
 
 > **Since 0.4.0:** `cah install` copies the companion bins into
 > `~/.claude/cah-bin/` and `settings.json` references them by absolute path
@@ -159,7 +159,7 @@ inside Claude Code, so identical names do not collide.
 <!--gen:count:model-commands-->44<!--/gen--> commands, <!--gen:count:model-commands-->44<!--/gen--> agents — one line per row-cell in
 [`lib/manifest.js`](lib/manifest.js).
 
-### 3. Optional Codex custom agents (<!--gen:count:codex-agents-->23<!--/gen-->)
+### 3. Optional Codex custom agents (<!--gen:count:codex-agents-->33<!--/gen-->)
 
 Codex agents are not part of the default install. Install them explicitly with `--codex-agents`, or select them as a class via `--only codex-agents` (also combinable, e.g. `--only skills,codex-agents`):
 
@@ -169,14 +169,16 @@ npx cc-arch-hands reinstall --codex-agents
 npx cc-arch-hands uninstall --codex-agents
 ```
 
-Generated agent names use effort prefix + model suffix. Terra (`t`), Luna (`l`), and Sol (`s`) use all six levels: `l/m/h` for `low/medium/high` and `x/xx/u` for `xhigh/max/ultra`. Astra (`a`) uses five levels: `l/m/h/x/xx` for `low/medium/high/xhigh/max`. Their full Codex model IDs are `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.6-sol`, and `gpt-6-astra`. They write TOML custom-agent files for Codex under `~/.codex/agents/`.
+Generated agent names use an effort prefix plus a model suffix. The current Sol (`s`) and Luna (`l`) aliases use `l/m/h/x/xx` for `low/medium/high/xhigh/max`, with model IDs `gpt-6-sol` and `gpt-6-luna`. Their previous 5.6 releases have a `1` suffix (`ls1`, `ll1`, etc.) and also offer `u` for `ultra`. Terra (`t`) uses all six levels; Astra (`a`) uses five (`l/m/h/x/xx`). Their model IDs are `gpt-5.6-terra` and `gpt-6-astra`. These aliases write TOML custom-agent files for Codex under `~/.codex/agents/`.
 
 <!--gen:table:codex-agents (run `npm run gen:docs` after editing lib/manifest.js) -->
 | Model | Agents by effort |
 |---|---|
+| Sol | `ls` low · `ms` medium · `hs` high · `xs` xhigh · `xxs` max |
+| Luna | `ll` low · `ml` medium · `hl` high · `xl` xhigh · `xxl` max |
 | Terra | `lt` low · `mt` medium · `ht` high · `xt` xhigh · `xxt` max · `ut` ultra |
-| Luna | `ll` low · `ml` medium · `hl` high · `xl` xhigh · `xxl` max · `ul` ultra |
-| Sol | `ls` low · `ms` medium · `hs` high · `xs` xhigh · `xxs` max · `us` ultra |
+| Luna 5.6 | `ll1` low · `ml1` medium · `hl1` high · `xl1` xhigh · `xxl1` max · `ul1` ultra |
+| Sol 5.6 | `ls1` low · `ms1` medium · `hs1` high · `xs1` xhigh · `xxs1` max · `us1` ultra |
 | Astra | `la` low · `ma` medium · `ha` high · `xa` xhigh · `xxa` max |
 <!--/gen:table:codex-agents-->
 
@@ -318,7 +320,7 @@ What `/resume` does:
 | Slash-commands | <!--gen:count:model-commands-->44<!--/gen--> | `<scope>/.claude/commands/<name>.md` (only with `--commands`) |
 | Sub-agents | <!--gen:count:model-commands-->44<!--/gen--> | `<scope>/.claude/agents/<name>.md` |
 | Skills | 11 | `<scope>/.claude/skills/<name>/` |
-| Codex custom agents | <!--gen:count:codex-agents-->23<!--/gen--> | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
+| Codex custom agents | <!--gen:count:codex-agents-->33<!--/gen--> | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
 
 `<scope>` is `~/` by default (global install). Use `--local` or `--cwd`
 to target a specific project directory instead.
@@ -514,7 +516,7 @@ cc-arch-hands/
 ├── bin/cah-status-probe.js      # diagnostic statusLine bin used by `cah probe statusline`
 ├── lib/
 │   ├── cli.js                   # dispatch, arg parsing (node:util parseArgs), --only resolver
-│   ├── manifest.js              # AllModelCommands (44 definitions), AllCodexAgents (23), AllSkills (11), SkillDeps
+│   ├── manifest.js              # AllModelCommands (44 definitions), AllCodexAgents (33), AllSkills (11), SkillDeps
 │   ├── sentinel.js              # new + legacy markers, ownership classifier
 │   ├── scope.js                 # global vs local target dir resolution
 │   ├── templates.js             # bundled / disk template abstraction

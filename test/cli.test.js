@@ -684,9 +684,11 @@ describe('run install/uninstall --codex-agents', () => {
         assert.ok(readFileSync(join(home, '.codex', 'agents', 'ha.toml'), 'utf8').includes('model = "gpt-6-astra"'));
         assert.ok(readFileSync(join(home, '.codex', 'agents', 'xxt.toml'), 'utf8').includes('model = "gpt-5.6-terra"'));
         assert.ok(readFileSync(join(home, '.codex', 'agents', 'xxt.toml'), 'utf8').includes('model_reasoning_effort = "max"'));
-        assert.ok(readFileSync(join(home, '.codex', 'agents', 'ul.toml'), 'utf8').includes('model = "gpt-5.6-luna"'));
-        assert.ok(readFileSync(join(home, '.codex', 'agents', 'us.toml'), 'utf8').includes('model = "gpt-5.6-sol"'));
-        assert.ok(readFileSync(join(home, '.codex', 'agents', 'us.toml'), 'utf8').includes('model_reasoning_effort = "ultra"'));
+        assert.ok(readFileSync(join(home, '.codex', 'agents', 'll.toml'), 'utf8').includes('model = "gpt-6-luna"'));
+        assert.ok(readFileSync(join(home, '.codex', 'agents', 'ls.toml'), 'utf8').includes('model = "gpt-6-sol"'));
+        assert.ok(readFileSync(join(home, '.codex', 'agents', 'ul1.toml'), 'utf8').includes('model = "gpt-5.6-luna"'));
+        assert.ok(readFileSync(join(home, '.codex', 'agents', 'us1.toml'), 'utf8').includes('model = "gpt-5.6-sol"'));
+        assert.ok(readFileSync(join(home, '.codex', 'agents', 'us1.toml'), 'utf8').includes('model_reasoning_effort = "ultra"'));
 
         const out = captureStdout(() => run(['list', '--json']));
         const rows = out.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
