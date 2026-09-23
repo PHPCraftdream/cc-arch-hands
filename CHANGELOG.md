@@ -5,7 +5,22 @@ All notable changes to `cc-arch-hands` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.10.1] - 2026-09-23
+## [0.11.0] - 2026-09-23
+
+### Added
+
+- **Opus 4.6 is back**, as `o4l`/`o4m`/`o4h`/`o4x`/`o4xx`. It fell out of the
+  table when Opus 5.5 shifted everyone back a slot in 0.9.0 (only 3 N-back
+  tiers were kept); the window is now 4 deep.
+
+### Changed
+
+- **BREAKING: Sonnet now uses "releases behind top" naming, same as Opus and
+  Fable.** `s45*` (Sonnet 4.5) is renamed `s2*`; `s4*` (Sonnet 4.6) is renamed
+  `s1*`. `sl`/`sm`/`sh`/`sx`/`sxx` (top, Sonnet 5) are unchanged. Re-run
+  `cah install --commands` / `--codex-agents` as usual to pick up the
+  renamed files — the old `s4*`/`s45*` files are pruned as orphans on
+  install/reinstall, not left stranded.
 
 ### Fixed
 

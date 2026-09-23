@@ -20,8 +20,8 @@ statusLine commands, or diagnostics, copied into `~/.claude/cah-bin/` at
 install time.
 
 The artifacts:
-- **per-model slash-commands** (<!--gen:count:model-commands-->44<!--/gen-->) under `~/.claude/commands/`,
-- **per-model sub-agents** (<!--gen:count:model-commands-->44<!--/gen-->) under `~/.claude/agents/`,
+- **per-model slash-commands** (<!--gen:count:model-commands-->49<!--/gen-->) under `~/.claude/commands/`,
+- **per-model sub-agents** (<!--gen:count:model-commands-->49<!--/gen-->) under `~/.claude/agents/`,
 - **skills** (11) under `~/.claude/skills/`,
 - **companion bins** under `~/.claude/cah-bin/` (since 0.4.0).
 
@@ -61,7 +61,7 @@ Claude Code's own `used_percentage` formula. Without this, raw
 `input_tokens` after the first turn is ~1 token (everything else is
 served from the prompt cache) and a naive percentage would always read 0%.
 
-### 1. Per-model slash-commands (<!--gen:count:model-commands-->44<!--/gen-->)
+### 1. Per-model slash-commands (<!--gen:count:model-commands-->49<!--/gen-->)
 
 Part of the default install. To manage only the commands, use `--commands`,
 or select them as a class via `--only commands` (also combinable, e.g.
@@ -98,7 +98,7 @@ Whatever you type after the command becomes the prompt for that turn.
 > model instead of the requested one. The `cah-stamp` line `/clock` installs
 > shows the model that actually served each turn.
 
-### 2. Per-model sub-agents (<!--gen:count:model-commands-->44<!--/gen-->)
+### 2. Per-model sub-agents (<!--gen:count:model-commands-->49<!--/gen-->)
 
 The same supported effort matrix as the commands, plus Haiku's no-effort
 aliases — but as **delegated sub-agents** instead of inline commands. Use them to hand a self-contained task to a fresh
@@ -125,13 +125,14 @@ Rows are sorted by tier (strongest first). Bold rows are **top** shortcuts
 that always point at the freshest version of each family — use them when
 you don't care about pinning an exact version.
 
-**Opus and Fable use "releases behind top" numbering, not a version
-number.** `o1*` is whichever Opus was top before the current one, `o2*`
-the one before that, and so on — so `o1x` today means Opus 4.8, but after
-the next Opus release `o1x` will mean today's `ox` (the model, not the
-number, shifts). Fable follows the same convention: `f1*` is whichever
-Fable was top before the current one. Other families (Sonnet, Haiku)
-still encode the actual version number where the alias has one (`s45*`, `h45`).
+**Opus, Fable, and Sonnet use "releases behind top" numbering, not a
+version number.** `o1*` is whichever Opus was top before the current one,
+`o2*` the one before that, and so on — so `o1x` today means Opus 5, but
+after the next Opus release `o1x` will mean today's `ox` (the model, not
+the number, shifts). Fable and Sonnet follow the same convention: `f1*`
+is whichever Fable was top before the current one, `s1*` whichever Sonnet
+was. Haiku still encodes the actual version number where the alias has
+one (`h45`) — it has no N-back tiers.
 
 **Slash-commands**
 
@@ -144,9 +145,10 @@ still encode the actual version number where the alias has one (`s45*`, `h45`).
 | Opus 5 (1M) | `claude-opus-5` | — | `/o1l` | `/o1m` | `/o1h` | `/o1x` | `/o1xx` |
 | Opus 4.8 (1M) | `claude-opus-4-8` | — | `/o2l` | `/o2m` | `/o2h` | `/o2x` | `/o2xx` |
 | Opus 4.7 (1M) | `claude-opus-4-7` | — | `/o3l` | `/o3m` | `/o3h` | `/o3x` | `/o3xx` |
+| Opus 4.6 (1M) | `claude-opus-4-6` | — | `/o4l` | `/o4m` | `/o4h` | `/o4x` | `/o4xx` |
 | **Sonnet** (top, 1M) | `claude-sonnet-5` | — | `/sl` | `/sm` | `/sh` | `/sx` | `/sxx` |
-| Sonnet 4.6 (200k) | `claude-sonnet-4-6` | — | `/s4l` | `/s4m` | `/s4h` | — | `/s4xx` |
-| Sonnet 4.5 (200k) | `claude-sonnet-4-5` | — | `/s45l` | `/s45m` | `/s45h` | — | — |
+| Sonnet 4.6 (200k) | `claude-sonnet-4-6` | — | `/s1l` | `/s1m` | `/s1h` | — | `/s1xx` |
+| Sonnet 4.5 (200k) | `claude-sonnet-4-5` | — | `/s2l` | `/s2m` | `/s2h` | — | — |
 | **Haiku** (top, 200k) | `claude-haiku-4-5` | `/h` | — | — | — | — | — |
 | Haiku 4.5 (200k) | `claude-haiku-4-5` | `/h45` | — | — | — | — | — |
 <!--/gen:table:model-commands-->
@@ -156,7 +158,7 @@ slash-command body; `oh` (no prefix) is the agent invoked by the `Agent`
 tool with `subagent_type: "oh"`. The two live in separate lookup tables
 inside Claude Code, so identical names do not collide.
 
-<!--gen:count:model-commands-->44<!--/gen--> commands, <!--gen:count:model-commands-->44<!--/gen--> agents — one line per row-cell in
+<!--gen:count:model-commands-->49<!--/gen--> commands, <!--gen:count:model-commands-->49<!--/gen--> agents — one line per row-cell in
 [`lib/manifest.js`](lib/manifest.js).
 
 ### 3. Optional Codex custom agents (<!--gen:count:codex-agents-->33<!--/gen-->)
@@ -317,8 +319,8 @@ What `/resume` does:
 
 | Artifact | Count | Destination |
 |---|---|---|
-| Slash-commands | <!--gen:count:model-commands-->44<!--/gen--> | `<scope>/.claude/commands/<name>.md` (only with `--commands`) |
-| Sub-agents | <!--gen:count:model-commands-->44<!--/gen--> | `<scope>/.claude/agents/<name>.md` |
+| Slash-commands | <!--gen:count:model-commands-->49<!--/gen--> | `<scope>/.claude/commands/<name>.md` (only with `--commands`) |
+| Sub-agents | <!--gen:count:model-commands-->49<!--/gen--> | `<scope>/.claude/agents/<name>.md` |
 | Skills | 11 | `<scope>/.claude/skills/<name>/` |
 | Codex custom agents | <!--gen:count:codex-agents-->33<!--/gen--> | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
 
@@ -516,7 +518,7 @@ cc-arch-hands/
 ├── bin/cah-status-probe.js      # diagnostic statusLine bin used by `cah probe statusline`
 ├── lib/
 │   ├── cli.js                   # dispatch, arg parsing (node:util parseArgs), --only resolver
-│   ├── manifest.js              # AllModelCommands (44 definitions), AllCodexAgents (33), AllSkills (11), SkillDeps
+│   ├── manifest.js              # AllModelCommands (49 definitions), AllCodexAgents (33), AllSkills (11), SkillDeps
 │   ├── sentinel.js              # new + legacy markers, ownership classifier
 │   ├── scope.js                 # global vs local target dir resolution
 │   ├── templates.js             # bundled / disk template abstraction
@@ -555,8 +557,8 @@ cc-arch-hands/
 └── package.json
 ```
 
-The <!--gen:count:model-commands-->44<!--/gen--> model definitions render
-<!--gen:count:model-bodies-->88<!--/gen--> command+agent bodies, which are
+The <!--gen:count:model-commands-->49<!--/gen--> model definitions render
+<!--gen:count:model-bodies-->98<!--/gen--> command+agent bodies, which are
 **rendered parametrically** at install time from `AllModelCommands`, not stored
 as nearly-identical files. Adding a new `{model, effort}` pair = one object in
 `lib/manifest.js`.
