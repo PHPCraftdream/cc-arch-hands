@@ -20,7 +20,7 @@ Companion to `/checkpoint`. Removes checkpoint files from the same directory `/c
 
 ## Behavior
 
-1. **Locate the directory.** Use `<repo-root>/docs/checkpoints/` if a `.git` is found in cwd or any parent; otherwise `~/.claude/checkpoints/`. If it doesn't exist, say so and stop.
+1. **Locate the directory.** From the caller's original working directory, run `git rev-parse --show-toplevel`. If it succeeds with a non-empty path, use that path as `<repo-root>` and target `<repo-root>/docs/checkpoints/`. **If the command fails or returns an empty path (caller is outside any Git repository), refuse and stop** — checkpoints are project-scoped; never target `~/.claude/checkpoints/` or any other path shared across projects/agents. If the resolved directory doesn't exist, say so and stop.
 2. **Resolve the selection** by parsing the argument in this order — the **first rule that matches wins**:
    - **no argument** → target every checkpoint (mode: `all`).
    - **digits followed by `d` or `h`** (e.g. `14d`, `48h`) → target every file whose mtime is older than `now - N` (mode: `older-than`).

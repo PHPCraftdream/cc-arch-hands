@@ -20,6 +20,8 @@ fails.
 
 1. Invoke `Skill('checkpoint', <the same argument, or none>)` from the same
    caller working directory and take note of the absolute path it reports.
+   If `/checkpoint` refused because the caller is outside any Git repository,
+   relay that refusal and stop — there is no file to commit.
    `/checkpoint` resolves that caller repository with
    `git rev-parse --show-toplevel`, so a linked worktree's `.git` file resolves
    to the worktree root, not the parent repository. Before running another

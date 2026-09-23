@@ -382,7 +382,8 @@ describe('release and generated-doc contracts', () => {
     assert.match(RESUME_SKILL, /git rev-parse --show-toplevel/);
     assert.match(RESUME_SKILL, /linked worktree's `.git` file/);
     assert.doesNotMatch(RESUME_SKILL, /if a `.git` directory exists in the current working directory or any parent/);
-    assert.match(RESUME_SKILL, /otherwise \(only when the command fails or returns an empty path/);
+    assert.match(RESUME_SKILL, /If the command fails or returns an empty path \(caller is outside any Git repository\), refuse and stop/);
+    assert.match(RESUME_SKILL, /never read `~\/\.claude\/checkpoints\/` or any other path shared across projects\/agents/);
     assert.match(RESUME_SKILL, /Exact filename match \(with or without `\.md`\): take it/);
     assert.match(RESUME_SKILL, /sort every `\.md` in the directory by filesystem mtime descending/);
 

@@ -246,7 +246,7 @@ switches, and long pauses. The flow:
 ```bash
 # In a session, before a context compact or before stepping away:
 /checkpoint pre-refactor       # writes docs/checkpoints/pre-refactor.md
-                               # (or ~/.claude/checkpoints/ if not in a git repo)
+                               # (refuses outside a git repo — never a shared global path)
 
 # Iteratively update the same named checkpoint as work progresses:
 /checkpoint pre-refactor       # overwrites the same file

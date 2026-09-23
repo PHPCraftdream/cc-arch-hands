@@ -5,6 +5,17 @@ All notable changes to `cc-arch-hands` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] - 2026-09-23
+
+### Fixed
+
+- **`/checkpoint`, `/resume`, and `/checkpoint-prune` no longer fall back to
+  `~/.claude/checkpoints/` when the caller isn't inside a git repository.**
+  That fallback mixed checkpoint files from unrelated projects/agents into
+  one shared global directory. All three now refuse and stop outside a git
+  repo; checkpoints are strictly project-scoped, under
+  `<repo-root>/docs/checkpoints/`.
+
 ## [0.10.0] - 2026-09-22
 
 ### Added
