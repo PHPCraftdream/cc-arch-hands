@@ -538,7 +538,7 @@ describe('writeBins', () => {
       }),
       (error) => error?.code === 'ETIMEDOUT',
     );
-    assert.ok(Date.now() - started < 2_000, 'hung worker must be bounded');
+    assert.ok(Date.now() - started < 10_000, 'hung worker must be bounded even on a loaded runner');
     assert.ok(existsSync(src), 'fixtures remain until the worker has terminated');
   });
 

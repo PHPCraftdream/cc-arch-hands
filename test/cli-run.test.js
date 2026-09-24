@@ -14,11 +14,17 @@ function waitFor(path, ready, timeoutMs = 15_000) {
   return new Promise((resolve, reject) => {
     const observer = watch(dirname(path), () => check());
     const timeout = setTimeout(() => finish(new Error(`timed out waiting for ${path}`)), timeoutMs);
+    let settled = false;
     function finish(error) {
+      if (settled) return;
+      settled = true;
       clearTimeout(timeout);
+      observer.once('close', () => {
+        if (error) reject(error); else resolve();
+      });
       observer.close();
-      if (error) reject(error); else resolve();
     }
+    observer.on('error', finish);
     function check() {
       try { if (ready()) finish(); } catch (error) { finish(error); }
     }
