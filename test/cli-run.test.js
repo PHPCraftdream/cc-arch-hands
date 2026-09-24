@@ -1,36 +1,15 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, watch } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { waitForPath } from '../test-support/installer-test-helpers.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const cli = join(root, 'templates', 'codex-skills', 'cli-run', 'scripts', 'cli-run.mjs');
 const fakeCli = join(root, 'test-support', 'cli-run-fake-codex.mjs');
-
-function waitFor(path, ready, timeoutMs = 15_000) {
-  return new Promise((resolve, reject) => {
-    const observer = watch(dirname(path), () => check());
-    const timeout = setTimeout(() => finish(new Error(`timed out waiting for ${path}`)), timeoutMs);
-    let settled = false;
-    function finish(error) {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      observer.once('close', () => {
-        if (error) reject(error); else resolve();
-      });
-      observer.close();
-    }
-    observer.on('error', finish);
-    function check() {
-      try { if (ready()) finish(); } catch (error) { finish(error); }
-    }
-    check();
-  });
-}
 
 describe('cli-run worker', () => {
   it('returns before parallel commands finish, then queues each result', async (t) => {
@@ -55,12 +34,10 @@ describe('cli-run worker', () => {
     const { runId, statusDir } = JSON.parse(launch.stdout);
     assert.equal(runId.length, 36);
     assert.ok(!existsSync(join(statusDir, 'second.result.json')));
-    await waitFor(join(statusDir, 'first.delivery.json'), () => {
-      if (!existsSync(join(statusDir, 'first.delivery.json'))) return false;
-      return JSON.parse(readFileSync(join(statusDir, 'first.delivery.json'), 'utf8')).ok;
-    });
+    await waitForPath(join(statusDir, 'first.delivery.json'), 30_000);
+    assert.equal(JSON.parse(readFileSync(join(statusDir, 'first.delivery.json'), 'utf8')).ok, true);
     assert.ok(!existsSync(join(statusDir, 'second.result.json')));
-    await waitFor(join(statusDir, 'finished.json'), () => existsSync(join(statusDir, 'finished.json')))
+    await waitForPath(join(statusDir, 'finished.json'), 30_000)
       .catch((error) => {
         const files = readFileSync(join(statusDir, 'status.json'), 'utf8');
         throw new Error(`${error.message}; initial=${files}`);
@@ -107,7 +84,7 @@ describe('cli-run worker', () => {
     });
     assert.equal(launch.status, 0, launch.stderr);
     const { statusDir } = JSON.parse(launch.stdout);
-    await waitFor(join(statusDir, 'finished.json'), () => existsSync(join(statusDir, 'finished.json')));
+    await waitForPath(join(statusDir, 'finished.json'), 30_000);
     const status = spawnSync(process.execPath, [cli, 'status', '--run', JSON.parse(launch.stdout).runId], {
       env, encoding: 'utf8',
     });
