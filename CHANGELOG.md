@@ -5,6 +5,20 @@ All notable changes to `cc-arch-hands` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Optional `--codex-skills` install/reinstall/uninstall class, initially shipping
+  `cli-run`, `checkpoint`, `ccheckpoint`, and `resume`. `cli-run` runs approved
+  CLI commands independently and queues one Codex notification per completion.
+  The checkpoint skills save project-scoped session state, restore it, and
+  optionally make a local checkpoint-only commit.
+- `--codex-skills` also manages a marked section in Codex's global
+  `AGENTS.md` requiring `$cli-run` for CLI commands. Reinstall refreshes it;
+  uninstall removes only that section and preserves other instructions, even
+  when the skill selection uses `--local` or `--cwd`.
+
 ## [0.11.0] - 2026-09-23
 
 ### Added

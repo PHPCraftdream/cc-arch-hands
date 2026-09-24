@@ -102,7 +102,7 @@ never exposed before its complete mirrored dependency chain is present.
 | `bin/cah-stamp.js` | Stop hook bin: per-turn audit-trail systemMessage |
 | `bin/cah-status-probe.js` | diagnostic statusLine bin: captures raw envelopes for `cah probe` |
 | `lib/cli.js` | CLI dispatch, arg parsing (`node:util parseArgs`), presentation |
-| `lib/manifest.js` | `AllModelCommands` registry + `AllCodexAgents` registry + `AllSkills` list |
+| `lib/manifest.js` | `AllModelCommands` registry + `AllCodexAgents` registry + `AllSkills` and `AllCodexSkills` lists |
 | `lib/sentinel.js` | Sentinel constants, `classifyContent` |
 | `lib/scope.js` | `Scope` class, `resolve*Dir()`, strict-mode guard |
 | `lib/templates.js` | Bundled / disk template abstraction, `skillTree` walker |
@@ -121,6 +121,8 @@ never exposed before its complete mirrored dependency chain is present.
 | `lib/commands.js` | `writeModelCommands` / `removeModelCommands` |
 | `lib/agents.js` | `writeModelAgents` / `removeModelAgents`, git-safety & test-scope clauses |
 | `lib/codex-agents.js` | `writeCodexAgents` / `removeCodexAgents` for optional Codex TOML custom agents |
+| `lib/codex-skills.js` | Reuses the owned skill-tree installer for optional Codex skills under `.codex/skills/` |
+| `lib/codex-instructions.js` | Manages only the marked `$cli-run` section in global Codex `AGENTS.md`; refuses masked or malformed state |
 | `lib/skills.js` | `writeSkills` / `removeSkills` — overwrite owned files in place (atomic), never wipe the whole dir; user-added files inside a managed skill are preserved and reported |
 | `lib/binstall.js` | `writeBins` / `removeBins` + `BinFiles` registry — copies companion bins into `~/.claude/cah-bin/` with `// cah-bin:v1` sentinel |
 | `lib/binstall/runtime.js` | `BinFileDefinitions` — frozen data description of the companion runtime files, plus the derived local import graph and publication order used by install/repair |
@@ -136,21 +138,21 @@ never exposed before its complete mirrored dependency chain is present.
 - Tests use `node:test` (describe/it) + `node:assert/strict`. No external test dependencies.
 - Tests that mutate `AllSkills` must save/restore the array in a try/finally block — it's a module-level mutable export.
 - Agent bodies include two hardcoded clauses (git-safety, test-scope) — these are contract text, not templates. Edit with care.
-- **README install examples must cover every installable artefact.** The `Use` section must contain a one-line `npx cc-arch-hands install --only <name>` example for **every** skill in `AllSkills`, for `bins`, and for the class-flag classes (`commands`, `codex-agents`). Class `agents` is exempt — it has no point-install story. When adding a new skill to `AllSkills`, add its example line in `README.md` in the same PR; CI does not enforce this, the project does.
+- **README install examples must cover every installable artefact.** The `Use` section must contain a one-line `npx cc-arch-hands install --only <name>` example for **every** skill in `AllSkills`, for `bins`, and for the class-flag classes (`commands`, `codex-agents`, `codex-skills`). Class `agents` is exempt — it has no point-install story. Document any new `AllCodexSkills` entry in the Codex skills section; Codex skills are selected as a class, not by individual name.
 - **The model-commands table, the Codex-agents table, and every generated count in README.md are generated, not hand-written.** They live between `<!--gen:table:KEY-->`/`<!--/gen:table:KEY-->` and `<!--gen:count:KEY-->N<!--/gen-->` markers. After editing `AllModelCommands` or `AllCodexAgents`, run `npm run gen:docs` — never hand-edit the content between those markers, it will just be overwritten. `test/gen-docs.test.js` runs `npm run gen:docs:check` and fails the suite if README.md has drifted from the manifest.
 - **Opus, Fable, and Sonnet use "releases behind top" command/agent naming, not a version number.** `o1*` means "whichever Opus was top before the current one", `o2*` the one before that, etc. — `lib/manifest.js`'s Opus block must be renumbered (not the model ids) every time a new Opus generation ships and everyone shifts back one slot. Fable and Sonnet follow the identical convention (`f1*`/`s1*` = previous top), renumbered the same way when a new generation ships. Haiku still encodes the literal version number where the alias has one (`h45`) — it has no N-back tiers.
 - **Skill ⇄ dependency map is centralised in `lib/manifest.js` `SkillDeps`.** When a new skill needs companion bins or any other class, register it there — `lib/cli.js resolveDeps()` reads from that map and prints the `notice: auto-added 'bins' (required by: …)` line on install. Uninstall is explicit-only and never consults `SkillDeps`.
 - **`parseOnly` returns `{classes, skills}`, not a flat array.** When wiring a new subcommand that takes `--only`, use `resolveDeps(parseOnly(vals.only))` and pass `skillsSubset` into `writeSkills` / `removeSkills` so subset installs/uninstalls leave foreign skills untouched.
 - **Never recursively delete a skill directory based only on the `SKILL.md` sentinel.** `writeSkills`/`removeSkills`/`pruneOrphanDirs` must classify per-file: anything beyond the owned template tree is user data — preserve it and report via the `preserved` list. All file writes that carry an end-of-body sentinel go through `writeFileAtomic` (tmp + rename) so a torn write can't strand a file in `foreign` state.
 - **`cah doctor` exits non-zero when unhealthy** — 2 if any `foreign` files block a clean install, 1 if expected files are `missing`, 0 only when fully healthy. It is a CI/script health gate; don't regress it back to always-0.
-- **Class flags (`--codex-agents`, `--commands`) share one flag-handling path.**
+- **Class flags (`--codex-agents`, `--codex-skills`, `--commands`) share one flag-handling path.**
   `lib/cli.js`'s `OPT_IN_FLAG_CLASSES` + `applyOptInFlags()` is the single
   place that implements "`--<flag>` alone replaces the default class set;
   `--<flag>` combined with `--only` adds to it." Add a new flag-selectable
   class here rather than hand-rolling another `applyXFlag` function. A class
   is opt-in only if it is absent from `SELECTOR_CLASSES` (the default-install
-  set) — today that is just `codex-agents`. `cmdDoctor()` gates opt-in rows:
-  an opt-in class with zero installed items is excluded from the health count
-  (`hasCodexAgents`). `commands` was opt-in in 0.8.0 because of
+  set) — today those are `codex-agents` and `codex-skills`. `cmdDoctor()` gates
+  each opt-in class with zero installed items out of the health count.
+  `commands` was opt-in in 0.8.0 because of
   [anthropics/claude-code#81318](https://github.com/anthropics/claude-code/issues/81318);
   it is back in the default set since that was fixed in Claude Code v2.1.280.

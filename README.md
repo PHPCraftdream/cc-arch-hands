@@ -27,6 +27,7 @@ The artifacts:
 
 Optional artifacts are installed only when requested:
 - **Codex custom agents** (<!--gen:count:codex-agents-->33<!--/gen-->) under `~/.codex/agents/`, via `--codex-agents`.
+- **Codex skills** (<!--gen:count:codex-skills-->4<!--/gen-->) under `~/.codex/skills/`, via `--codex-skills`.
 
 > **Since 0.4.0:** `cah install` copies the companion bins into
 > `~/.claude/cah-bin/` and `settings.json` references them by absolute path
@@ -184,6 +185,20 @@ Generated agent names use an effort prefix plus a model suffix. The current Sol 
 | Astra | `la` low · `ma` medium · `ha` high · `xa` xhigh · `xxa` max |
 <!--/gen:table:codex-agents-->
 
+Install the optional Codex skills with `--codex-skills`: `cli-run` runs an
+approved array of CLI commands in a separate Node.js worker and sends a
+`codex queue` message after each completion, without holding the chat open.
+`checkpoint` saves project-scoped session state under `docs/checkpoints/`,
+`resume` restores it, and `ccheckpoint` additionally commits only that file
+locally. Invoke them in Codex as `$checkpoint`, `$ccheckpoint`, and `$resume`.
+Existing foreign skills at the destination are preserved.
+The same flag also adds a marked section to the global `~/.codex/AGENTS.md`
+requiring `$cli-run` for CLI commands. Reinstall refreshes only that section;
+uninstall removes only that section. Other AGENTS.md text is preserved. This
+global change also applies with `--local`/`--cwd`; an active global
+`AGENTS.override.md` masks the main file, so installation refuses until the
+override is resolved.
+
 ### 4. Skills (11)
 
 Reusable capability packs Claude Code loads on demand. Each is invoked as
@@ -323,6 +338,7 @@ What `/resume` does:
 | Sub-agents | <!--gen:count:model-commands-->49<!--/gen--> | `<scope>/.claude/agents/<name>.md` |
 | Skills | 11 | `<scope>/.claude/skills/<name>/` |
 | Codex custom agents | <!--gen:count:codex-agents-->33<!--/gen--> | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
+| Codex skills | <!--gen:count:codex-skills-->4<!--/gen--> | `<scope>/.codex/skills/<name>/` (only with `--codex-skills`) |
 
 `<scope>` is `~/` by default (global install). Use `--local` or `--cwd`
 to target a specific project directory instead.
@@ -384,11 +400,13 @@ npx cc-arch-hands install --local                  # local: <cwd>/.claude/... (m
 npx cc-arch-hands install --cwd /path/to/project   # local at a specific path; bins still go global
 npx cc-arch-hands install --commands               # install only the per-model slash-commands
 npx cc-arch-hands install --codex-agents           # optional: install only Codex agents into ~/.codex/agents
+npx cc-arch-hands install --codex-skills           # optional: install Codex skills into ~/.codex/skills
 
 # --only takes install classes, individual skill names, or any mix.
 npx cc-arch-hands install --only skills                       # all 11 skills
 npx cc-arch-hands install --only commands                     # all per-model slash-commands
 npx cc-arch-hands install --only codex-agents                 # all Codex agents into ~/.codex/agents (opt-in)
+npx cc-arch-hands install --only codex-skills                 # Codex skills into ~/.codex/skills (opt-in)
 npx cc-arch-hands install --only bins                         # companion bins (cah-status, cah-stamp,
                                                     #   cah-checkpoint-hint, cah-status-probe,
                                                     #   + shared lib leaves: transcript-stats.js,
@@ -425,11 +443,13 @@ npx cc-arch-hands install --only commands,clock               # mix class + skil
 npx cc-arch-hands reinstall --only clock                      # uninstall + install of just the clock skill
 npx cc-arch-hands reinstall --commands                        # reinstall only the per-model slash-commands
 npx cc-arch-hands reinstall --codex-agents                    # reinstall only Codex agents
+npx cc-arch-hands reinstall --codex-skills                    # reinstall only Codex skills
 npx cc-arch-hands uninstall                                   # remove Claude files; keeps shared bins
 npx cc-arch-hands uninstall --only bins                       # remove shared bins globally (warning shown)
 npx cc-arch-hands uninstall --only agents                     # remove only Claude agents
 npx cc-arch-hands uninstall --commands                        # remove only the per-model slash-commands
 npx cc-arch-hands uninstall --codex-agents                    # remove only Codex agents
+npx cc-arch-hands uninstall --codex-skills                    # remove only Codex skills
 npx cc-arch-hands uninstall --only clock                      # remove only the clock skill, keep bins
 
 npx cc-arch-hands list                             # tabular: NAME | KIND | STATE
@@ -530,15 +550,16 @@ cc-arch-hands/
 │   ├── marker-capacity-recovery.js # generation-aware transaction retirement/recovery
 │   ├── fs-atomic.js             # atomic publication, identity, quarantine helpers
 │   ├── transcript-stats.js      # shared: stats, formatStatusLine, makeBar, reset formatters
-│   ├── commands.js              # render + install + remove (44 .md bodies)
-│   ├── agents.js                # render + install + remove (44 .md bodies)
+│   ├── commands.js              # render + install + remove (49 .md bodies)
+│   ├── agents.js                # render + install + remove (49 .md bodies)
 │   ├── skills.js                # mirror templates/skills/<n>/ tree, optional subset
+│   ├── codex-skills.js          # optional Codex skill installation
 │   ├── binstall.js              # copy companion bins into ~/.claude/cah-bin/ (// cah-bin:v1)
 │   └── probe.js                 # enable/disable cah-status-probe via settings.json edits
 ├── templates/
-│   └── skills/                  # repo-sight, task, babygoal, babysit,
-│       └── <name>/SKILL.md      # checkpoint, ccheckpoint, resume, checkpoint-prune, triage,
-│                                # checkpoint-watch, clock
+│   ├── skills/                  # Claude Code skill templates
+│   │   └── <name>/SKILL.md
+│   └── codex-skills/            # cli-run, checkpoint, ccheckpoint, resume
 ├── test/
 │   ├── installer.test.js        # installer tests (node:test + node:assert)
 │   ├── cli.test.js              # CLI layer tests (scope, parseOnly, resolveDeps, --only subset)

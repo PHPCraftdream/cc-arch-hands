@@ -16,7 +16,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AllModelCommands, AllCodexAgents, AllSkills } from '../lib/manifest.js';
+import { AllModelCommands, AllCodexAgents, AllCodexSkills, AllSkills } from '../lib/manifest.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const README_PATH = join(__dirname, '..', 'README.md');
@@ -91,6 +91,7 @@ const COUNTS = {
   'model-commands': AllModelCommands.length,
   'model-bodies': AllModelCommands.length * 2,
   'codex-agents': AllCodexAgents.length,
+  'codex-skills': AllCodexSkills.length,
 };
 
 // Hand-written prose counts for skills are gated via literal annotations only

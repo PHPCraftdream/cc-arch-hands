@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AllModelCommands, AllCodexAgents } from '../lib/manifest.js';
+import { AllModelCommands, AllCodexAgents, AllCodexSkills } from '../lib/manifest.js';
 import {
   BinFiles, deriveBinFilePublicationOrder, getBinFileImportGraph, validateBinFileOrder,
 } from '../lib/binstall.js';
@@ -54,10 +54,12 @@ describe('gen-docs --check', () => {
     assert.equal(AllModelCommands.length, 49);
     assert.equal(AllModelCommands.length * 2, 98);
     assert.equal(AllCodexAgents.length, 33);
+    assert.deepEqual(AllCodexSkills, ['cli-run', 'checkpoint', 'ccheckpoint', 'resume']);
 
     assert.match(README, /<!--gen:count:model-commands-->49<!--\/gen-->/);
     assert.match(README, /<!--gen:count:model-bodies-->98<!--\/gen--> command\+agent bodies/);
     assert.match(README, /<!--gen:count:codex-agents-->33<!--\/gen-->/);
+    assert.match(README, /<!--gen:count:codex-skills-->4<!--\/gen-->/);
     assert.match(
       README,
       /AllCodexAgents \(33\)/,
