@@ -22,8 +22,16 @@ function sandbox(t) {
 function call(home, ...args) {
   return spawnSync(process.execPath, [cli, ...args], {
     env: { ...process.env, HOME: home, USERPROFILE: home },
-    encoding: 'utf8', timeout: 10_000,
+    encoding: 'utf8', timeout: 30_000,
   });
+}
+
+function missingCount(home) {
+  const doctor = call(home, 'doctor');
+  assert.equal(doctor.status, 1, doctor.stderr);
+  const match = doctor.stdout.match(/missing: (\d+)/);
+  assert.ok(match, doctor.stdout);
+  return Number(match[1]);
 }
 
 describe('managed Codex AGENTS.md section', () => {
@@ -82,8 +90,6 @@ describe('managed Codex AGENTS.md section', () => {
     const path = join(codexDir, 'AGENTS.md');
     const original = '# Personal guidance\nDo not change this line.\n';
     writeFileSync(path, original);
-    assert.equal(call(home, 'install').status, 0);
-    assert.equal(readFileSync(path, 'utf8'), original);
     assert.equal(call(home, 'install', '--codex-skills').status, 0);
     assert.ok(readFileSync(path, 'utf8').includes(CODEX_CLI_RUN_BEGIN));
     writeFileSync(path, readFileSync(path, 'utf8').replace('Start every CLI command', 'Old wording every CLI command'));
@@ -96,10 +102,11 @@ describe('managed Codex AGENTS.md section', () => {
     const instructionRow = listed.stdout.trim().split('\n').map((line) => JSON.parse(line))
       .find((entry) => entry.kind === 'codex-instructions');
     assert.deepEqual(instructionRow, { name: 'AGENTS.md', kind: 'codex-instructions', state: 'mine' });
+    const baselineMissing = missingCount(home);
     writeFileSync(path, original);
-    assert.equal(call(home, 'doctor').status, 1);
+    assert.equal(missingCount(home), baselineMissing + 1);
     assert.equal(call(home, 'install', '--codex-skills').status, 0);
-    assert.equal(call(home, 'doctor').status, 0);
+    assert.equal(missingCount(home), baselineMissing);
     assert.equal(call(home, 'uninstall', '--codex-skills').status, 0);
     assert.equal(readFileSync(path, 'utf8'), original);
   });

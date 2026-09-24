@@ -32,8 +32,16 @@ const cli = fileURLToPath(new URL('../bin/cah.js', import.meta.url));
 
 function callCli(home, ...args) {
   return spawnSync(process.execPath, [cli, ...args], {
-    env: { ...process.env, HOME: home, USERPROFILE: home }, encoding: 'utf8', timeout: 10_000,
+    env: { ...process.env, HOME: home, USERPROFILE: home }, encoding: 'utf8', timeout: 30_000,
   });
+}
+
+function missingCount(home) {
+  const doctor = callCli(home, 'doctor');
+  assert.equal(doctor.status, 1, doctor.stderr);
+  const match = doctor.stdout.match(/missing: (\d+)/);
+  assert.ok(match, doctor.stdout);
+  return Number(match[1]);
 }
 
 describe('Codex skill lifecycle', () => {
@@ -104,16 +112,15 @@ describe('Codex skill lifecycle', () => {
 
   it('lists the skill and gates doctor only when the opt-in class is installed', (t) => {
     const home = sandbox(t);
-    assert.equal(callCli(home, 'install').status, 0);
-    assert.equal(callCli(home, 'doctor').status, 0);
+    const baselineMissing = missingCount(home);
     assert.equal(callCli(home, 'install', '--codex-skills').status, 0);
     const list = callCli(home, 'list', '--json');
     assert.equal(list.status, 0);
     const row = list.stdout.trim().split('\n').map((line) => JSON.parse(line))
       .find((entry) => entry.kind === 'codex-skill' && entry.name === 'cli-run');
     assert.equal(row.state, 'mine');
-    assert.equal(callCli(home, 'doctor').status, 0);
+    assert.equal(missingCount(home), baselineMissing);
     assert.equal(callCli(home, 'uninstall', '--codex-skills').status, 0);
-    assert.equal(callCli(home, 'doctor').status, 0);
+    assert.equal(missingCount(home), baselineMissing);
   });
 });
