@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { createConnection } from 'node:net';
+import { createConnection, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -185,6 +185,98 @@ describe('cli-run worker', () => {
     const messages = readFileSync(queueLog, 'utf8');
     assert.match(messages, /queue\|thread-test\|cli-run .*first exited 0/);
     assert.match(messages, /queue\|thread-test\|cli-run .*second exited 7/);
+  });
+
+  it('launch --wait keeps the launcher alive until the worker finishes', async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-cli-run-wait-'));
+    const queueLog = join(dir, 'queue.log');
+    const server = createServer();
+    let workerSocket;
+    let launcher;
+    let launcherClosed;
+    t.after(async () => {
+      if (workerSocket && !workerSocket.destroyed) workerSocket.end('release');
+      if (server.listening) server.close();
+      if (launcher && launcherClosed && launcher.exitCode === null && launcher.signalCode === null) {
+        const killTimer = setTimeout(() => launcher.kill(), 5000);
+        await launcherClosed;
+        clearTimeout(killTimer);
+      }
+      rmSync(dir, { recursive: true, force: true });
+    });
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    const port = server.address().port;
+    let resolveWorkerReady;
+    const workerReady = new Promise((resolve) => { resolveWorkerReady = resolve; });
+    server.once('connection', (socket) => {
+      workerSocket = socket;
+      let message = '';
+      socket.on('data', (chunk) => {
+        message += chunk.toString();
+        if (message.includes('ready')) resolveWorkerReady(socket);
+      });
+    });
+
+    const script = [
+      "const net = require('node:net');",
+      'let released = false;',
+      `const socket = net.createConnection(${port}, '127.0.0.1');`,
+      "socket.once('connect', () => socket.write('ready'));",
+      "socket.on('data', () => { released = true; socket.end(); });",
+      "socket.once('close', () => { if (!released) process.exitCode = 1; });",
+      "socket.once('error', () => { process.exitCode = 1; });",
+    ].join('\n');
+    const env = {
+      ...process.env,
+      CODEX_HOME: join(dir, 'codex-home'),
+      CODEX_THREAD_ID: 'thread-test',
+      CLI_RUN_TEST_QUEUE_LOG: queueLog,
+      CLI_RUN_CODEX_CLI: fakeCli,
+    };
+    launcher = spawn(process.execPath, [cli, 'launch', '--spec', '-', '--wait'], {
+      cwd: dir, env, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let ackSettled = false;
+    const launchAck = new Promise((resolve, reject) => {
+      launcher.stdout.setEncoding('utf8');
+      launcher.stderr.setEncoding('utf8');
+      launcher.stdout.on('data', (chunk) => {
+        stdout += chunk;
+        const lineEnd = stdout.indexOf('\n');
+        if (lineEnd < 0 || ackSettled) return;
+        ackSettled = true;
+        try { resolve(JSON.parse(stdout.slice(0, lineEnd))); } catch (error) { reject(error); }
+      });
+      launcher.stderr.on('data', (chunk) => { stderr += chunk; });
+      launcher.once('error', reject);
+      launcher.once('close', (code, signal) => {
+        if (!ackSettled) reject(new Error(stderr || `launcher exited ${code ?? signal}`));
+      });
+    });
+    launcherClosed = new Promise((resolve) => {
+      launcher.once('close', (code, signal) => resolve({ code, signal }));
+    });
+    launcher.stdin.end(JSON.stringify([{
+      id: 'waited', argv: [process.execPath, '-e', script],
+    }]));
+
+    const [started, socket] = await Promise.all([launchAck, workerReady]);
+    const finishedPath = join(started.statusDir, 'finished.json');
+    assert.equal(started.commands, 1);
+    assert.ok(!existsSync(finishedPath));
+    assert.equal(launcher.exitCode, null);
+    socket.end('release');
+
+    const { code } = await launcherClosed;
+    assert.equal(code, 0, stderr);
+    assert.ok(existsSync(finishedPath));
+    assert.equal(JSON.parse(readFileSync(join(started.statusDir, 'waited.result.json'), 'utf8')).exitCode, 0);
+    assert.equal(JSON.parse(readFileSync(join(started.statusDir, 'waited.delivery.json'), 'utf8')).ok, true);
   });
 
   it('rejects malformed specs before launching a worker', (t) => {

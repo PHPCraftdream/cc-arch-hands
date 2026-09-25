@@ -5,13 +5,17 @@ description: Run coding-task CLI commands as jobs in a persistent Background Ter
 
 # CLI run
 
-Invoke this skill's `scripts/cli-run.mjs` by its absolute path, keeping the shell in the user's intended working directory. Run `node <skill-directory>/scripts/cli-run.mjs launch --spec -` and pass a JSON array on stdin. Each item has a unique `id` and either `argv` (preferred) or a platform-shell `command` string; `cwd` defaults to the launch directory. For example: `[{"id":"tests","argv":["node","--test"]}]`. Set `--max-parallel N` when the default of 4 concurrent commands would be inappropriate.
+Invoke this skill's `scripts/cli-run.mjs` by its absolute path, keeping the shell in the user's intended working directory. Run `node <skill-directory>/scripts/cli-run.mjs launch --spec - --wait` and pass a JSON array on stdin. Each item has a unique `id` and either `argv` (preferred) or a platform-shell `command` string; `cwd` defaults to the launch directory. For example: `[{"id":"tests","argv":["node","--test"]}]`. Set `--max-parallel N` when the default of 4 concurrent commands would be inappropriate.
+
+When building the spec from a shell, serialize an actual array with its JSON encoder; do not hand-escape nested JSON inside a command string.
 
 On Windows, use `command` for `.cmd` or `.bat` wrappers such as `npm`; `argv` starts a program directly and is for executable paths such as `node.exe`.
 
 ## Required command routing
 
 During a coding task, run every shell/CLI command through this skill, including read-only investigation (`git`, `rg`, file listing), edits performed by command-line tools, and checks such as tests, builds, and lint. Do not start task commands directly in a terminal or `exec` tool: routing them through `cli-run` gives each command a completion notification and a saved log. Prefer `argv`, assign unique job IDs, and group related independent commands into one launch when useful.
+
+Keep the command array minimal and task-directed. Do not run generic version or workspace-inventory probes unless the task needs them. Once a launch returns a `runId`, continue that run; never relaunch its jobs just to recover the wait or result.
 
 Direct command-line calls are limited to bootstrapping `cli-run launch`, reading `cli-run status --run <id>`, and the terminal wrapper described below. That wrapper may start `cli-run` and wait on its worker PID, but all actual task commands must still be jobs inside `cli-run`. Native file-reading and editing tools are not command-line executions. If `cli-run` or its completion notification mechanism is unavailable, stop and ask rather than silently running task commands outside it.
 
@@ -21,9 +25,9 @@ Check the effects of every requested command before launch. Do not add synthetic
 
 Run the `$cli-run` launcher from a persistent Codex Background Terminal with PTY enabled. The PTY keeps the launcher terminal visible while its worker runs; individual job processes are spawned without interactive stdin, and their combined stdout/stderr go to per-job log files. Do not assume jobs have a PTY. This is mandatory for every command and duration, even if the user only says "run". Never launch `cli-run launch` from an ordinary terminal/exec call and never use a detached-only fallback; a detached worker alone is not visible in `/ps`.
 
-1. Start the terminal wrapper in the active repository/worktree. Pass each complete task command as an `argv` job to `node <absolute-skill-path>/scripts/cli-run.mjs launch --spec -` on stdin.
-2. Parse and print the launch JSON (`runId`, `pid`, status directory), then keep the same terminal alive by waiting on that exact worker PID. In PowerShell, use `Wait-Process -Id ([int]$started.pid)`; on other shells, use the equivalent blocking OS wait. This is not polling.
-3. Preserve the terminal/session handle returned by the host; it must remain inspectable in `/ps` while the worker is alive. After securing the handle, free the chat and use the `cli-run` completion message and saved log for the result. Do not wait on the terminal merely to discover completion or launch a duplicate.
+1. Start the terminal wrapper in the active repository/worktree. Pass the complete job array on stdin to `node <absolute-skill-path>/scripts/cli-run.mjs launch --spec - --wait`.
+2. The launcher prints its JSON acknowledgment, then waits for its worker using Node child-process events. Keep this launcher in the same PTY; do not parse a PID or invoke an OS-specific process-wait command.
+3. Preserve the terminal/session handle returned by the host; it must remain inspectable in `/ps` while the worker is alive. After securing the handle, free the chat and use the `cli-run` completion message and saved log for the result. Do not launch a duplicate or poll status to discover completion.
 
 If a native Background Terminal option is not exposed but `exec_command` can create a PTY and return a live session handle (for example, `tty: true`), use that PTY and retain its handle. If neither a native Background Terminal nor a persistent PTY/session handle is available, stop and ask rather than launching detached.
 

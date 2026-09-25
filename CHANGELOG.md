@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `cli-run launch --wait` keeps its launcher alive until the worker exits using
+  Node child-process events, without OS-specific process-wait commands.
+
 ## [0.12.1] - 2026-09-25
 
 ### Changed

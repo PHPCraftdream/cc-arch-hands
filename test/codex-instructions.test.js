@@ -50,7 +50,8 @@ describe('managed Codex AGENTS.md section', () => {
     assert.ok(installed.includes('persistent Codex Background Terminal'));
     assert.ok(installed.includes('The PTY is for the launcher terminal only'));
     assert.ok(installed.includes('job processes receive ignored stdin'));
-    assert.ok(installed.includes('Wait-Process -Id ([int]$started.pid)'));
+    assert.ok(installed.includes('include `--wait`'));
+    assert.ok(installed.includes('Node child-process events'));
     assert.equal(writeCodexInstructions(scope).written, 0);
     assert.equal(removeCodexInstructions(scope).removed, 1);
     assert.deepEqual(readFileSync(path), original);
@@ -102,6 +103,7 @@ describe('managed Codex AGENTS.md section', () => {
     assert.ok(refreshed.includes('Start every CLI command'));
     assert.ok(refreshed.includes('persistent Codex Background Terminal'));
     assert.ok(refreshed.includes('The PTY is for the launcher terminal only'));
+    assert.ok(refreshed.includes('include `--wait`'));
     assert.ok(refreshed.includes('Never use a detached-only or ordinary foreground fallback'));
     assert.ok(refreshed.startsWith(original));
     const listed = call(home, 'list', '--json');

@@ -26,6 +26,9 @@ async function launch(args) {
     cwd: tmpdir(),
     stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
   });
+  const childExit = new Promise((resolve) => {
+    child.once('exit', (code, signal) => resolve({ code, signal }));
+  });
   const ready = await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('worker startup timed out')), 5000);
     child.on('message', (message) => {
@@ -36,8 +39,13 @@ async function launch(args) {
     child.on('exit', (code) => { clearTimeout(timeout); reject(new Error(`worker exited before ready: ${code}`)); });
   }).catch((error) => { child.kill(); throw error; });
   if (child.connected) child.disconnect();
-  child.unref();
   console.log(JSON.stringify({ runId, pid: ready.pid, statusDir: dir, commands: commands.length }));
+  if (args.includes('--wait')) {
+    const { code, signal } = await childExit;
+    if (code !== 0) throw new Error(`worker exited ${code ?? signal ?? 'unknown'}`);
+  } else {
+    child.unref();
+  }
 }
 
 async function main() {
@@ -50,7 +58,7 @@ async function main() {
     console.log(JSON.stringify(readStatus(runId), null, 2));
     return;
   }
-  throw new Error('usage: cli-run.mjs launch --spec <file|-> [--thread id] [--max-parallel N] | status --run <id>');
+  throw new Error('usage: cli-run.mjs launch --spec <file|-> [--thread id] [--max-parallel N] [--wait] | status --run <id>');
 }
 
 try {
