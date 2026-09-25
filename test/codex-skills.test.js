@@ -77,14 +77,15 @@ describe('Codex skill lifecycle', () => {
       fileURLToPath(new URL('../templates/codex-skills/cli-run/SKILL.md', import.meta.url)),
       'utf8',
     );
-    const installedTemplate = `${template.trimEnd()}\n\n${SentinelSkill}\n`;
+    const normalizeEol = (text) => text.replace(/\r\n/g, '\n');
+    const installedTemplate = `${normalizeEol(template).trimEnd()}\n\n${SentinelSkill}\n`;
 
     assert.equal(callCli(home, 'install', '--codex-skills', '--cwd', dir).status, 0);
-    assert.equal(readFileSync(installed, 'utf8'), installedTemplate);
+    assert.equal(normalizeEol(readFileSync(installed, 'utf8')), installedTemplate);
 
     writeFileSync(installed, `stale installed instructions\n${SentinelSkill}\n`);
     assert.equal(callCli(home, 'reinstall', '--codex-skills', '--cwd', dir).status, 0);
-    assert.equal(readFileSync(installed, 'utf8'), installedTemplate);
+    assert.equal(normalizeEol(readFileSync(installed, 'utf8')), installedTemplate);
   });
 
   it('preserves foreign skills and user files beside managed files', (t) => {
