@@ -69,6 +69,24 @@ describe('Codex skill lifecycle', () => {
     assert.ok(!readFileSync(join(home, '.codex', 'AGENTS.md'), 'utf8').includes('<!-- cah-cli-run:start -->'));
   });
 
+  it('reinstall publishes the current cli-run instructions from the bundled template', (t) => {
+    const dir = sandbox(t);
+    const home = isolatedHome(dir);
+    const installed = join(skillDir(dir), 'SKILL.md');
+    const template = readFileSync(
+      fileURLToPath(new URL('../templates/codex-skills/cli-run/SKILL.md', import.meta.url)),
+      'utf8',
+    );
+    const installedTemplate = `${template.trimEnd()}\n\n${SentinelSkill}\n`;
+
+    assert.equal(callCli(home, 'install', '--codex-skills', '--cwd', dir).status, 0);
+    assert.equal(readFileSync(installed, 'utf8'), installedTemplate);
+
+    writeFileSync(installed, `stale installed instructions\n${SentinelSkill}\n`);
+    assert.equal(callCli(home, 'reinstall', '--codex-skills', '--cwd', dir).status, 0);
+    assert.equal(readFileSync(installed, 'utf8'), installedTemplate);
+  });
+
   it('preserves foreign skills and user files beside managed files', (t) => {
     const dir = sandbox(t);
     const home = isolatedHome(dir);

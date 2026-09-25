@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-09-25
+
+### Changed
+
+- `cli-run` completion notifications now include the original command and a
+  bounded tail of its output.
+- Codex guidance clarifies that the PTY belongs to the `cli-run` launcher;
+  worker jobs have no interactive stdin and write output to per-job logs.
+
+### Fixed
+
+- `cli-run` now records child-process spawn errors as terminal results and
+  prevents duplicate completion handling.
+- Replaced `fs.watch` coordination in the parallel-worker test with a local
+  TCP rendezvous to avoid Windows/Node.js libuv watcher crashes.
+
+## [0.12.0] - 2026-09-24
+
 ### Added
 
 - Optional `--codex-skills` install/reinstall/uninstall class, initially shipping

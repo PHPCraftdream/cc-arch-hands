@@ -1,12 +1,17 @@
 import { spawn } from 'node:child_process';
-import { closeSync, openSync, readFileSync, unlinkSync } from 'node:fs';
+import { closeSync, fstatSync, openSync, readFileSync, readSync, unlinkSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { queueCompletion } from './queue.mjs';
 import { writeJson } from './store.mjs';
 
+const OUTPUT_TAIL_LINES = 10;
+const OUTPUT_TAIL_MAX_BYTES = 256 * 1024;
+const OUTPUT_TAIL_MAX_LINE_CHARS = 1000;
+
 function execute(command, dir) {
   const started = Date.now();
   const log = join(dir, `${command.id}.log`);
+  const commandLine = command.command ?? JSON.stringify(command.argv);
   const fd = openSync(log, 'wx', 0o600);
   let child;
   try {
@@ -20,23 +25,77 @@ function execute(command, dir) {
   } catch (error) {
     closeSync(fd);
     return Promise.resolve({ id: command.id, exitCode: null, signal: null,
-      seconds: 0, log, error: error.message });
+      seconds: 0, log, error: error.message, commandLine });
   }
   closeSync(fd);
   return new Promise((resolve) => {
     let spawnError = null;
-    child.on('error', (error) => { spawnError = error.message; });
-    child.on('exit', (exitCode, signal) => resolve({
-      id: command.id, exitCode, signal,
-      seconds: Math.round((Date.now() - started) / 1000), log, error: spawnError,
-    }));
+    let settled = false;
+    const finish = (exitCode, signal) => {
+      if (settled) return;
+      settled = true;
+      resolve({
+        id: command.id, exitCode, signal,
+        seconds: Math.round((Date.now() - started) / 1000), log, error: spawnError,
+        commandLine,
+      });
+    };
+    child.once('error', (error) => {
+      spawnError = error.message;
+      finish(null, null);
+    });
+    child.once('exit', finish);
   });
 }
 
 function completionMessage(runId, result) {
   const status = result.error ? `failed to start (${result.error})`
     : result.signal ? `stopped by ${result.signal}` : `exited ${result.exitCode}`;
-  return `cli-run ${runId}: ${result.id} ${status}; log: ${result.log}`;
+  const { lines, truncated } = readOutputTail(result.log);
+  const tailLabel = `Last ${lines.length} output lines${truncated ? ' (long lines truncated)' : ''}`;
+  return `cli-run ${runId}: ${result.id} ${status}; command: ${result.commandLine}; log: ${result.log}\n\n${tailLabel}:\n${lines.length ? lines.join('\n') : '(no output)'}`;
+}
+
+function readOutputTail(path) {
+  const fd = openSync(path, 'r');
+  try {
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, OUTPUT_TAIL_MAX_BYTES);
+    const start = size - length;
+    const buffer = Buffer.allocUnsafe(length);
+    let bytesRead = 0;
+    while (bytesRead < length) {
+      const count = readSync(fd, buffer, bytesRead, length - bytesRead, start + bytesRead);
+      if (count === 0) break;
+      bytesRead += count;
+    }
+
+    let text = buffer.subarray(0, bytesRead).toString('utf8');
+    if (start > 0) {
+      const previousByte = Buffer.allocUnsafe(1);
+      readSync(fd, previousByte, 0, 1, start - 1);
+      if (previousByte[0] !== 0x0a && previousByte[0] !== 0x0d) {
+        const firstBreak = text.match(/\r\n|\r|\n/);
+        text = firstBreak
+          ? text.slice(firstBreak.index + firstBreak[0].length)
+          : text.replace(/^\uFFFD/, '');
+      }
+    }
+
+    const allLines = text.split(/\r\n|\r|\n/);
+    if (allLines.at(-1) === '') allLines.pop();
+    let truncated = false;
+    const lines = allLines.slice(-OUTPUT_TAIL_LINES).map((line) => {
+      const characters = Array.from(line);
+      if (characters.length <= OUTPUT_TAIL_MAX_LINE_CHARS) return line;
+      truncated = true;
+      const marker = '...[line truncated] ';
+      return marker + characters.slice(-(OUTPUT_TAIL_MAX_LINE_CHARS - marker.length)).join('');
+    });
+    return { lines, truncated };
+  } finally {
+    closeSync(fd);
+  }
 }
 
 export async function runWorker(dir) {

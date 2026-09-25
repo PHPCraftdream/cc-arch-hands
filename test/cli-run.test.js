@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,13 +13,129 @@ const cli = join(root, 'templates', 'codex-skills', 'cli-run', 'scripts', 'cli-r
 const fakeCli = join(root, 'test-support', 'cli-run-fake-codex.mjs');
 
 describe('cli-run worker', () => {
+  it('queues only the last ten output lines while preserving the full log', async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-cli-run-tail-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const queueLog = join(dir, 'queue.log');
+    const outputLines = Array.from({ length: 12 }, (_, index) => `line-${index + 1}`);
+    const output = `${outputLines.join('\n')}\n`;
+    const spec = [{
+      id: 'tail',
+      argv: [process.execPath, '-e', `process.stdout.write(${JSON.stringify(output)})`],
+    }];
+    const env = {
+      ...process.env,
+      CODEX_HOME: join(dir, 'codex-home'),
+      CODEX_THREAD_ID: 'thread-test',
+      CLI_RUN_TEST_QUEUE_LOG: queueLog,
+      CLI_RUN_CODEX_CLI: fakeCli,
+    };
+    const launch = spawnSync(process.execPath, [cli, 'launch', '--spec', '-'], {
+      cwd: dir, env, input: JSON.stringify(spec), encoding: 'utf8', timeout: 5000,
+    });
+    assert.equal(launch.status, 0, launch.stderr);
+    const { runId, statusDir } = JSON.parse(launch.stdout);
+    await waitForPath(join(statusDir, 'finished.json'), 30_000);
+
+    const notification = readFileSync(queueLog, 'utf8');
+    const heading = 'Last 10 output lines:\n';
+    const tail = notification.split(heading)[1];
+    assert.ok(tail, notification);
+    assert.ok(notification.includes(`command: ${JSON.stringify(spec[0].argv)}; log:`), notification);
+    assert.deepEqual(tail.trimEnd().split(/\r?\n/), outputLines.slice(-10));
+    const status = spawnSync(process.execPath, [cli, 'status', '--run', runId], { env, encoding: 'utf8' });
+    assert.equal(status.status, 0, status.stderr);
+    assert.equal(readFileSync(JSON.parse(status.stdout).results[0].log, 'utf8'), output);
+  });
+
+  it('caps long output lines in notifications but preserves them in the log', async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-cli-run-tail-long-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const queueLog = join(dir, 'queue.log');
+    const output = `${'x'.repeat(2500)}tail-marker\n`;
+    const env = {
+      ...process.env,
+      CODEX_HOME: join(dir, 'codex-home'),
+      CODEX_THREAD_ID: 'thread-test',
+      CLI_RUN_TEST_QUEUE_LOG: queueLog,
+      CLI_RUN_CODEX_CLI: fakeCli,
+    };
+    const launch = spawnSync(process.execPath, [cli, 'launch', '--spec', '-'], {
+      cwd: dir,
+      env,
+      input: JSON.stringify([{
+        id: 'long-line',
+        argv: [process.execPath, '-e', `process.stdout.write(${JSON.stringify(output)})`],
+      }]),
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+    assert.equal(launch.status, 0, launch.stderr);
+    const { runId, statusDir } = JSON.parse(launch.stdout);
+    await waitForPath(join(statusDir, 'finished.json'), 30_000);
+
+    const notification = readFileSync(queueLog, 'utf8');
+    const heading = 'Last 1 output lines (long lines truncated):\n';
+    const tail = notification.split(heading)[1]?.trimEnd();
+    assert.ok(tail, notification);
+    assert.equal(tail.length, 1000);
+    assert.ok(tail.endsWith('tail-marker'));
+    const status = spawnSync(process.execPath, [cli, 'status', '--run', runId], { env, encoding: 'utf8' });
+    assert.equal(status.status, 0, status.stderr);
+    assert.equal(readFileSync(JSON.parse(status.stdout).results[0].log, 'utf8'), output);
+  });
+
+  it('reports spawn errors and completes the run', async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-cli-run-spawn-error-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const env = {
+      ...process.env,
+      CODEX_HOME: join(dir, 'codex-home'),
+      CODEX_THREAD_ID: 'thread-test',
+      CLI_RUN_TEST_QUEUE_LOG: join(dir, 'queue.log'),
+      CLI_RUN_CODEX_CLI: fakeCli,
+    };
+    const missingCommand = join(dir, 'missing-executable');
+    const launch = spawnSync(process.execPath, [cli, 'launch', '--spec', '-'], {
+      cwd: dir, env, input: JSON.stringify([{ id: 'missing', argv: [missingCommand] }]),
+      encoding: 'utf8', timeout: 5000,
+    });
+    assert.equal(launch.status, 0, launch.stderr);
+    const { runId, statusDir } = JSON.parse(launch.stdout);
+    await waitForPath(join(statusDir, 'finished.json'), 5000);
+
+    const status = spawnSync(process.execPath, [cli, 'status', '--run', runId], { env, encoding: 'utf8' });
+    assert.equal(status.status, 0, status.stderr);
+    const state = JSON.parse(status.stdout);
+    assert.equal(state.completed, 1);
+    assert.equal(state.delivered, 1);
+    assert.equal(state.results[0].exitCode, null);
+    assert.match(state.results[0].error, /ENOENT/);
+    const notification = readFileSync(env.CLI_RUN_TEST_QUEUE_LOG, 'utf8');
+    assert.match(notification, /failed to start/);
+    assert.match(notification, /Last 0 output lines:\n\(no output\)/);
+  });
+
   it('returns before parallel commands finish, then queues each result', async (t) => {
     const dir = mkdtempSync(join(tmpdir(), 'cah-cli-run-'));
     t.after(() => rmSync(dir, { recursive: true, force: true }));
     const queueLog = join(dir, 'queue.log');
+    const secondReady = join(dir, 'second-ready');
+    const secondScript = [
+      "const fs = require('node:fs');",
+      "const net = require('node:net');",
+      `const ready = ${JSON.stringify(secondReady)};`,
+      'const server = net.createServer((socket) => {',
+      '  socket.end();',
+      '  server.close(() => { process.exitCode = 7; });',
+      '});',
+      "server.listen(0, '127.0.0.1', () => {",
+      "  fs.writeFileSync(ready, String(server.address().port));",
+      '});',
+    ].join('\n');
     const spec = [
-      { id: 'first', argv: [process.execPath, '-e', 'setTimeout(() => process.exit(0), 300)'] },
-      { id: 'second', argv: [process.execPath, '-e', 'setTimeout(() => process.exit(7), 700)'] },
+      { id: 'first', argv: [process.execPath, '-e', 'process.exit(0)'] },
+      { id: 'second', argv: [process.execPath, '-e', secondScript] },
     ];
     const env = {
       ...process.env,
@@ -34,9 +151,21 @@ describe('cli-run worker', () => {
     const { runId, statusDir } = JSON.parse(launch.stdout);
     assert.equal(runId.length, 36);
     assert.ok(!existsSync(join(statusDir, 'second.result.json')));
-    await waitForPath(join(statusDir, 'first.delivery.json'), 30_000);
+    await Promise.all([
+      waitForPath(join(statusDir, 'first.delivery.json'), 30_000),
+      waitForPath(secondReady, 30_000),
+    ]);
     assert.equal(JSON.parse(readFileSync(join(statusDir, 'first.delivery.json'), 'utf8')).ok, true);
     assert.ok(!existsSync(join(statusDir, 'second.result.json')));
+    const port = Number(readFileSync(secondReady, 'utf8'));
+    await new Promise((resolve, reject) => {
+      const socket = createConnection(port, '127.0.0.1');
+      socket.once('error', reject);
+      socket.once('connect', () => {
+        socket.end();
+        resolve();
+      });
+    });
     await waitForPath(join(statusDir, 'finished.json'), 30_000)
       .catch((error) => {
         const files = readFileSync(join(statusDir, 'status.json'), 'utf8');
