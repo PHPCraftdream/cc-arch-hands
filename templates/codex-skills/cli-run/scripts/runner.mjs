@@ -8,10 +8,28 @@ const OUTPUT_TAIL_LINES = 10;
 const OUTPUT_TAIL_MAX_BYTES = 256 * 1024;
 const OUTPUT_TAIL_MAX_LINE_CHARS = 1000;
 
+function displayArgument(value) {
+  return `[${value
+    .replaceAll('[', '\\[')
+    .replaceAll(']', '\\]')
+    .replaceAll('"', '\\u0022')
+    .replaceAll("'", '\\u0027')
+    .replaceAll('\r', '\\r')
+    .replaceAll('\n', '\\n')
+    .replaceAll('\t', '\\t')}]`;
+}
+
+function displayCommand(command) {
+  return command.argv
+    ? `argv ${command.argv.map(displayArgument).join(' ')}`
+    : `shell ${displayArgument(command.command)}`;
+}
+
 function execute(command, dir) {
   const started = Date.now();
   const log = join(dir, `${command.id}.log`);
   const commandLine = command.command ?? JSON.stringify(command.argv);
+  const commandDisplay = displayCommand(command);
   const fd = openSync(log, 'wx', 0o600);
   let child;
   try {
@@ -25,7 +43,7 @@ function execute(command, dir) {
   } catch (error) {
     closeSync(fd);
     return Promise.resolve({ id: command.id, exitCode: null, signal: null,
-      seconds: 0, log, error: error.message, commandLine });
+      seconds: 0, log, error: error.message, commandLine, commandDisplay });
   }
   closeSync(fd);
   return new Promise((resolve) => {
@@ -37,7 +55,7 @@ function execute(command, dir) {
       resolve({
         id: command.id, exitCode, signal,
         seconds: Math.round((Date.now() - started) / 1000), log, error: spawnError,
-        commandLine,
+        commandLine, commandDisplay,
       });
     };
     child.once('error', (error) => {
@@ -53,7 +71,7 @@ function completionMessage(runId, result) {
     : result.signal ? `stopped by ${result.signal}` : `exited ${result.exitCode}`;
   const { lines, truncated } = readOutputTail(result.log);
   const tailLabel = `Last ${lines.length} output lines${truncated ? ' (long lines truncated)' : ''}`;
-  return `cli-run ${runId}: ${result.id} ${status}; command: ${result.commandLine}; log: ${result.log}\n\n${tailLabel}:\n${lines.length ? lines.join('\n') : '(no output)'}`;
+  return `cli-run ${runId}: ${result.id} ${status}; command: ${result.commandDisplay}; log: ${result.log}\n\n${tailLabel}:\n${lines.length ? lines.join('\n') : '(no output)'}`;
 }
 
 function readOutputTail(path) {

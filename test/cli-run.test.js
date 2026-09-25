@@ -19,9 +19,10 @@ describe('cli-run worker', () => {
     const queueLog = join(dir, 'queue.log');
     const outputLines = Array.from({ length: 12 }, (_, index) => `line-${index + 1}`);
     const output = `${outputLines.join('\n')}\n`;
+    const script = `process.stdout.write(${JSON.stringify(output)}); void "release: 0.12.1"`;
     const spec = [{
       id: 'tail',
-      argv: [process.execPath, '-e', `process.stdout.write(${JSON.stringify(output)})`],
+      argv: [process.execPath, '-e', script],
     }];
     const env = {
       ...process.env,
@@ -41,7 +42,9 @@ describe('cli-run worker', () => {
     const heading = 'Last 10 output lines:\n';
     const tail = notification.split(heading)[1];
     assert.ok(tail, notification);
-    assert.ok(notification.includes(`command: ${JSON.stringify(spec[0].argv)}; log:`), notification);
+    assert.ok(notification.includes('command: argv ['), notification);
+    assert.ok(notification.includes('release: 0.12.1\\u0022]'), notification);
+    assert.ok(!notification.includes('"'), notification);
     assert.deepEqual(tail.trimEnd().split(/\r?\n/), outputLines.slice(-10));
     const status = spawnSync(process.execPath, [cli, 'status', '--run', runId], { env, encoding: 'utf8' });
     assert.equal(status.status, 0, status.stderr);
