@@ -1,50 +1,23 @@
 #!/usr/bin/env node
-import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { readCommands, option } from './spec.mjs';
-import { createRun, readStatus, writeJson } from './store.mjs';
+import { readStatus, writeJson } from './store.mjs';
 import { runWorker } from './runner.mjs';
+import { checkMaxParallel, startRun } from './launch.mjs';
 
 async function launch(args) {
   const thread = option(args, '--thread', process.env.CODEX_THREAD_ID);
   const delivery = option(args, '--delivery', 'queue');
-  if (!['queue', 'file'].includes(delivery)) throw new Error('delivery must be queue or file');
   if (delivery === 'queue' && !thread) throw new Error('CODEX_THREAD_ID or --thread is required');
-  const maxParallel = Number(option(args, '--max-parallel', '4'));
-  if (!Number.isInteger(maxParallel) || maxParallel < 1 || maxParallel > 16) {
-    throw new Error('max-parallel must be 1-16');
-  }
+  const maxParallel = checkMaxParallel(Number(option(args, '--max-parallel', '4')));
   const commands = await readCommands(option(args, '--spec'));
-  const runId = randomUUID();
-  const dir = createRun(runId, { thread, commands, maxParallel, delivery });
-  const child = spawn(process.execPath, [fileURLToPath(import.meta.url), 'worker', dir], {
-    detached: true,
-    windowsHide: true,
-    cwd: tmpdir(),
-    stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
-  });
-  const childExit = new Promise((resolve) => {
-    child.once('exit', (code, signal) => resolve({ code, signal }));
-  });
-  const ready = await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error('worker startup timed out')), 5000);
-    child.on('message', (message) => {
-      if (message?.type === 'ready') { clearTimeout(timeout); resolve(message); }
-      if (message?.type === 'error') { clearTimeout(timeout); reject(new Error(message.error)); }
-    });
-    child.on('error', (error) => { clearTimeout(timeout); reject(error); });
-    child.on('exit', (code) => { clearTimeout(timeout); reject(new Error(`worker exited before ready: ${code}`)); });
-  }).catch((error) => { child.kill(); throw error; });
-  if (child.connected) child.disconnect();
-  console.log(JSON.stringify({ runId, pid: ready.pid, statusDir: dir, commands: commands.length }));
+  const run = await startRun({ commands, thread, maxParallel, delivery });
+  console.log(JSON.stringify({ runId: run.runId, pid: run.pid, statusDir: run.statusDir, commands: run.commands }));
   if (args.includes('--wait')) {
-    const { code, signal } = await childExit;
+    const { code, signal } = await run.exited;
     if (code !== 0) throw new Error(`worker exited ${code ?? signal ?? 'unknown'}`);
   } else {
-    child.unref();
+    run.child.unref();
   }
 }
 

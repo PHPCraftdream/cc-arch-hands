@@ -122,7 +122,9 @@ never exposed before its complete mirrored dependency chain is present.
 | `lib/agents.js` | `writeModelAgents` / `removeModelAgents`, git-safety & test-scope clauses |
 | `lib/codex-agents.js` | `writeCodexAgents` / `removeCodexAgents` for optional Codex TOML custom agents |
 | `lib/codex-skills.js` | Reuses the owned skill-tree installer for optional Codex skills under `.codex/skills/` |
-| `lib/codex-instructions.js` | Manages only the marked `$cli-run` section in global Codex `AGENTS.md`; refuses masked or malformed state |
+| `lib/codex-instructions.js` | Manages only the marked `cli-run` section in global Codex `AGENTS.md`; refuses masked or malformed state |
+| `lib/codex-mcp-config.js` | Manages only the marked `[mcp_servers.cli-run]` block in the scope's Codex `config.toml`; refuses an unmanaged `cli-run` server or malformed markers |
+| `templates/codex-skills/cli-run/scripts/mcp-server.mjs` | Zero-dependency stdio MCP server (`run`/`status`); takes the target thread from `tools/call` `_meta.threadId` because Codex does not set `CODEX_THREAD_ID` for MCP servers |
 | `lib/skills.js` | `writeSkills` / `removeSkills` — overwrite owned files in place (atomic), never wipe the whole dir; user-added files inside a managed skill are preserved and reported |
 | `lib/binstall.js` | `writeBins` / `removeBins` + `BinFiles` registry — copies companion bins into `~/.claude/cah-bin/` with `// cah-bin:v1` sentinel |
 | `lib/binstall/runtime.js` | `BinFileDefinitions` — frozen data description of the companion runtime files, plus the derived local import graph and publication order used by install/repair |

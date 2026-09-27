@@ -320,3 +320,171 @@ describe('cli-run worker', () => {
     assert.equal(result.delivery.ok, false);
   });
 });
+
+const mcpServer = join(root, 'templates', 'codex-skills', 'cli-run', 'scripts', 'mcp-server.mjs');
+
+function startMcp(t, env) {
+  const child = spawn(process.execPath, [mcpServer], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+  t.after(() => { if (child.exitCode === null) child.kill(); });
+  const pending = new Map();
+  const received = [];
+  let buffer = '';
+  let stderr = '';
+  let nextId = 1;
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => {
+    buffer += chunk;
+    for (let at = buffer.indexOf('\n'); at >= 0; at = buffer.indexOf('\n')) {
+      const message = JSON.parse(buffer.slice(0, at));
+      buffer = buffer.slice(at + 1);
+      received.push(message);
+      pending.get(message.id)?.(message);
+      pending.delete(message.id);
+    }
+  });
+  const exited = new Promise((resolve) => child.once('exit', resolve));
+  return {
+    received,
+    request(method, params) {
+      const id = nextId++;
+      const reply = new Promise((resolve) => pending.set(id, resolve));
+      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
+      return reply;
+    },
+    notify(method, params) {
+      child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`);
+    },
+    async close() {
+      child.stdin.end();
+      const code = await exited;
+      assert.equal(code, 0, stderr);
+    },
+  };
+}
+
+function mcpEnv(dir, extra = {}) {
+  const env = {
+    ...process.env,
+    CODEX_HOME: join(dir, 'codex-home'),
+    CLI_RUN_TEST_QUEUE_LOG: join(dir, 'queue.log'),
+    CLI_RUN_CODEX_CLI: fakeCli,
+    ...extra,
+  };
+  delete env.CODEX_THREAD_ID;
+  return env;
+}
+
+function toolText(reply) {
+  assert.equal(reply.error, undefined, JSON.stringify(reply.error));
+  assert.notEqual(reply.result.isError, true, reply.result.content?.[0]?.text);
+  return reply.result.content[0].text;
+}
+
+describe('cli-run MCP server', () => {
+  it('initializes and lists only the run and status tools', async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-cli-run-mcp-init-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const mcp = startMcp(t, mcpEnv(dir));
+    const init = await mcp.request('initialize', {
+      protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'test', version: '0' },
+    });
+    assert.equal(init.result.protocolVersion, '2025-06-18');
+    assert.deepEqual(init.result.capabilities, { tools: {} });
+    mcp.notify('notifications/initialized');
+    const list = await mcp.request('tools/list', {});
+    assert.deepEqual(list.result.tools.map((tool) => tool.name), ['run', 'status']);
+    assert.deepEqual(list.result.tools[0].inputSchema.required, ['jobs']);
+    const unknownTool = await mcp.request('tools/call', { name: 'nope', arguments: {} });
+    assert.equal(unknownTool.error.code, -32602);
+    const unknownMethod = await mcp.request('resources/list', {});
+    assert.equal(unknownMethod.error.code, -32601);
+    await mcp.close();
+  });
+
+  it('routes completion messages to the thread named in the call metadata', async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-cli-run-mcp-run-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const env = mcpEnv(dir);
+    const mcp = startMcp(t, env);
+    await mcp.request('initialize', { protocolVersion: '2025-06-18', capabilities: {} });
+    const reply = await mcp.request('tools/call', {
+      name: 'run',
+      arguments: { jobs: [
+        { id: 'ok', argv: [process.execPath, '-e', 'console.log(process.cwd())'] },
+        { id: 'fails', argv: [process.execPath, '-e', 'process.exit(3)'], cwd: dir },
+      ] },
+      _meta: {
+        threadId: 'thread-from-meta',
+        'x-codex-turn-metadata': { thread_id: 'ignored', workspaces: { [dir]: {} } },
+      },
+    });
+    const started = JSON.parse(toolText(reply));
+    assert.equal(started.jobs, 2);
+    await waitForPath(join(started.statusDir, 'finished.json'), 30_000);
+
+    const messages = readFileSync(env.CLI_RUN_TEST_QUEUE_LOG, 'utf8');
+    assert.match(messages, new RegExp(`queue\|thread-from-meta\|cli-run ${started.runId}: ok exited 0`));
+    assert.match(messages, new RegExp(`queue\|thread-from-meta\|cli-run ${started.runId}: fails exited 3`));
+    assert.ok(messages.includes(dir), 'job without cwd runs in the single workspace root');
+
+    const status = JSON.parse(toolText(await mcp.request('tools/call', {
+      name: 'status', arguments: { runId: started.runId },
+    })));
+    assert.equal(status.completed, 2);
+    assert.equal(status.delivered, 2);
+    await mcp.close();
+  });
+
+  it('falls back to the turn metadata thread ID', async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-cli-run-mcp-fallback-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const env = mcpEnv(dir);
+    const mcp = startMcp(t, env);
+    const reply = await mcp.request('tools/call', {
+      name: 'run',
+      arguments: { jobs: [{ id: 'ok', argv: [process.execPath, '-e', '0'], cwd: dir }] },
+      _meta: { 'x-codex-turn-metadata': { thread_id: 'thread-from-turn' } },
+    });
+    const { statusDir } = JSON.parse(toolText(reply));
+    await waitForPath(join(statusDir, 'finished.json'), 30_000);
+    assert.match(readFileSync(env.CLI_RUN_TEST_QUEUE_LOG, 'utf8'), /queue\|thread-from-turn\|cli-run /);
+    await mcp.close();
+  });
+
+  it('refuses runs it cannot route or place without starting a worker', async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-cli-run-mcp-refuse-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const env = mcpEnv(dir);
+    const mcp = startMcp(t, env);
+    const job = { id: 'ok', argv: [process.execPath, '-e', '0'], cwd: dir };
+
+    const noThread = await mcp.request('tools/call', { name: 'run', arguments: { jobs: [job] } });
+    assert.equal(noThread.result.isError, true);
+    assert.match(noThread.result.content[0].text, /thread ID/);
+
+    const meta = { threadId: 'thread-test' };
+    const relative = await mcp.request('tools/call', {
+      name: 'run', arguments: { jobs: [{ ...job, cwd: 'relative' }] }, _meta: meta,
+    });
+    assert.equal(relative.result.isError, true);
+    assert.match(relative.result.content[0].text, /absolute path/);
+
+    const twoRoots = await mcp.request('tools/call', {
+      name: 'run',
+      arguments: { jobs: [{ id: 'ok', argv: [process.execPath, '-e', '0'] }] },
+      _meta: { ...meta, 'x-codex-turn-metadata': { workspaces: { [dir]: {}, [tmpdir()]: {} } } },
+    });
+    assert.equal(twoRoots.result.isError, true);
+
+    const badParallel = await mcp.request('tools/call', {
+      name: 'run', arguments: { jobs: [job], maxParallel: 99 }, _meta: meta,
+    });
+    assert.equal(badParallel.result.isError, true);
+    assert.match(badParallel.result.content[0].text, /max-parallel/);
+
+    assert.ok(!existsSync(join(env.CODEX_HOME, 'cli-run', 'runs')));
+    await mcp.close();
+  });
+});

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `cli-run` is now a Codex MCP server. `--codex-skills` registers it in the
+  selected scope's Codex `config.toml` as a marked `[mcp_servers.cli-run]`
+  block. Reinstall refreshes only that block, and uninstall removes only it.
+  Install refuses if an unmanaged `cli-run` server is already defined.
+- The MCP tool `run` starts jobs in the existing detached worker and returns
+  a `runId` immediately. Completion messages are routed to the calling
+  thread, which is taken from Codex's tool-call metadata. The `status` tool
+  reads a run's saved state.
+- The Codex `AGENTS.md` section and the `cli-run` skill now direct commands
+  through the MCP tools. They no longer require a Background Terminal, a PTY,
+  or a launcher wait.
+
 ### Added
 
 - `cli-run launch --wait` keeps its launcher alive until the worker exits using

@@ -1,5 +1,5 @@
 import { readFileSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 
 export const idPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
@@ -27,7 +27,10 @@ async function readInput(source) {
 }
 
 export async function readCommands(source) {
-  const commands = JSON.parse((await readInput(source)).replace(/^\uFEFF/, ''));
+  return normalizeCommands(JSON.parse((await readInput(source)).replace(/^\uFEFF/, '')), process.cwd());
+}
+
+export function normalizeCommands(commands, defaultCwd) {
   if (!Array.isArray(commands) || commands.length < 1 || commands.length > 64) {
     throw new Error('spec must be an array of 1-64 commands');
   }
@@ -51,8 +54,16 @@ export async function readCommands(source) {
       throw new Error(`${id}: argv must be nonempty strings`);
     }
     if (hasCommand && !item.command.trim()) throw new Error(`${id}: command must be nonempty`);
-    const cwd = resolve(item.cwd ?? process.cwd());
-    if (!statSync(cwd).isDirectory()) throw new Error(`${id}: cwd is not a directory`);
+    if (item.cwd !== undefined && (typeof item.cwd !== 'string' || !item.cwd)) {
+      throw new Error(`${id}: cwd must be a nonempty string`);
+    }
+    if (!defaultCwd && !(item.cwd && isAbsolute(item.cwd))) {
+      throw new Error(`${id}: cwd must be an absolute path`);
+    }
+    const cwd = defaultCwd ? resolve(defaultCwd, item.cwd ?? '') : resolve(item.cwd);
+    if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) {
+      throw new Error(`${id}: cwd is not a directory`);
+    }
     return hasArgv ? { id, argv: item.argv, cwd } : { id, command: item.command, cwd };
   });
 }

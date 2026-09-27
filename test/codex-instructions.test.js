@@ -47,11 +47,11 @@ describe('managed Codex AGENTS.md section', () => {
     const installed = readFileSync(path, 'utf8');
     assert.ok(installed.includes(CODEX_CLI_RUN_BEGIN));
     assert.ok(installed.includes('Start every CLI command'));
-    assert.ok(installed.includes('persistent Codex Background Terminal'));
-    assert.ok(installed.includes('The PTY is for the launcher terminal only'));
-    assert.ok(installed.includes('job processes receive ignored stdin'));
-    assert.ok(installed.includes('include `--wait`'));
-    assert.ok(installed.includes('Node child-process events'));
+    assert.ok(installed.includes('`cli-run` MCP tool `run`'));
+    assert.ok(installed.includes('without interactive stdin or a PTY'));
+    assert.ok(installed.includes('do not wait or poll `status` to discover completion'));
+    assert.ok(!installed.includes('Background Terminal'));
+    assert.ok(!installed.includes('--wait'));
     assert.equal(writeCodexInstructions(scope).written, 0);
     assert.equal(removeCodexInstructions(scope).removed, 1);
     assert.deepEqual(readFileSync(path), original);
@@ -95,29 +95,41 @@ describe('managed Codex AGENTS.md section', () => {
     const path = join(codexDir, 'AGENTS.md');
     const original = '# Personal guidance\nDo not change this line.\n';
     writeFileSync(path, original);
+    const configPath = join(codexDir, 'config.toml');
+    const config = 'model = "keep-me"\n';
+    writeFileSync(configPath, config);
     assert.equal(call(home, 'install', '--codex-skills').status, 0);
     assert.ok(readFileSync(path, 'utf8').includes(CODEX_CLI_RUN_BEGIN));
+    const registered = readFileSync(configPath, 'utf8');
+    assert.ok(registered.startsWith(config));
+    assert.ok(registered.includes('[mcp_servers.cli-run]'));
+    assert.ok(registered.includes(
+      JSON.stringify(join(codexDir, 'skills', 'cli-run', 'scripts', 'mcp-server.mjs'))));
     writeFileSync(path, readFileSync(path, 'utf8').replace('Start every CLI command', 'Old wording every CLI command'));
     assert.equal(call(home, 'reinstall', '--codex-skills').status, 0);
     const refreshed = readFileSync(path, 'utf8');
     assert.ok(refreshed.includes('Start every CLI command'));
-    assert.ok(refreshed.includes('persistent Codex Background Terminal'));
-    assert.ok(refreshed.includes('The PTY is for the launcher terminal only'));
-    assert.ok(refreshed.includes('include `--wait`'));
-    assert.ok(refreshed.includes('Never use a detached-only or ordinary foreground fallback'));
+    assert.ok(refreshed.includes('If the `cli-run` MCP tools are unavailable, stop and ask'));
     assert.ok(refreshed.startsWith(original));
     const listed = call(home, 'list', '--json');
     assert.equal(listed.status, 0);
     const instructionRow = listed.stdout.trim().split('\n').map((line) => JSON.parse(line))
       .find((entry) => entry.kind === 'codex-instructions');
     assert.deepEqual(instructionRow, { name: 'AGENTS.md', kind: 'codex-instructions', state: 'mine' });
+    const configRow = listed.stdout.trim().split('\n').map((line) => JSON.parse(line))
+      .find((entry) => entry.kind === 'codex-mcp-config');
+    assert.deepEqual(configRow, { name: 'config.toml', kind: 'codex-mcp-config', state: 'mine' });
     const baselineMissing = missingCount(home);
     writeFileSync(path, original);
     assert.equal(missingCount(home), baselineMissing + 1);
     assert.equal(call(home, 'install', '--codex-skills').status, 0);
     assert.equal(missingCount(home), baselineMissing);
+    writeFileSync(configPath, config);
+    assert.equal(missingCount(home), baselineMissing + 1);
+    assert.equal(call(home, 'install', '--codex-skills').status, 0);
     assert.equal(call(home, 'uninstall', '--codex-skills').status, 0);
     assert.equal(readFileSync(path, 'utf8'), original);
+    assert.equal(readFileSync(configPath, 'utf8'), config);
   });
 
   it('manages the same global section for local skill selections', (t) => {
@@ -132,6 +144,9 @@ describe('managed Codex AGENTS.md section', () => {
     assert.equal(call(home, 'install', '--codex-skills', '--cwd', project).status, 0);
     assert.ok(readFileSync(path, 'utf8').includes(CODEX_CLI_RUN_BEGIN));
     assert.ok(!existsSync(join(project, '.codex', 'AGENTS.md')));
+    assert.ok(!existsSync(join(codexDir, 'config.toml')));
+    assert.ok(readFileSync(join(project, '.codex', 'config.toml'), 'utf8').includes(
+      JSON.stringify(join(project, '.codex', 'skills', 'cli-run', 'scripts', 'mcp-server.mjs'))));
     assert.equal(call(home, 'reinstall', '--codex-skills', '--cwd', project).status, 0);
     assert.equal(readFileSync(path, 'utf8').split(CODEX_CLI_RUN_BEGIN).length - 1, 1);
     assert.equal(call(home, 'uninstall', '--codex-skills', '--cwd', project).status, 0);
@@ -154,5 +169,14 @@ describe('managed Codex AGENTS.md section', () => {
     assert.equal(blocked.status, 1);
     assert.match(blocked.stderr, /AGENTS\.override\.md masks/);
     assert.ok(!existsSync(join(codexDir, 'skills', 'cli-run')));
+
+    rmSync(join(codexDir, 'AGENTS.override.md'));
+    const foreign = '[mcp_servers.cli-run]\ncommand = "someone-else"\n';
+    writeFileSync(join(codexDir, 'config.toml'), foreign);
+    const clash = call(home, 'install', '--codex-skills');
+    assert.equal(clash.status, 1);
+    assert.match(clash.stderr, /unmanaged cli-run MCP server/);
+    assert.ok(!existsSync(join(codexDir, 'skills', 'cli-run')));
+    assert.equal(readFileSync(join(codexDir, 'config.toml'), 'utf8'), foreign);
   });
 });

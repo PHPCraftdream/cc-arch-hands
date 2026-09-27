@@ -185,19 +185,34 @@ Generated agent names use an effort prefix plus a model suffix. The current Sol 
 | Astra | `la` low · `ma` medium · `ha` high · `xa` xhigh · `xxa` max |
 <!--/gen:table:codex-agents-->
 
-Install the optional Codex skills with `--codex-skills`: `cli-run` runs an
-approved array of CLI commands in a separate Node.js worker and sends a
-`codex queue` message after each completion, without holding the chat open.
-`checkpoint` saves project-scoped session state under `docs/checkpoints/`,
-`resume` restores it, and `ccheckpoint` additionally commits only that file
-locally. Invoke them in Codex as `$checkpoint`, `$ccheckpoint`, and `$resume`.
-Existing foreign skills at the destination are preserved.
-The same flag also adds a marked section to the global `~/.codex/AGENTS.md`
-requiring `$cli-run` for CLI commands. Reinstall refreshes only that section;
-uninstall removes only that section. Other AGENTS.md text is preserved. This
-global change also applies with `--local`/`--cwd`; an active global
-`AGENTS.override.md` masks the main file, so installation refuses until the
-override is resolved.
+Install the optional Codex skills with `--codex-skills`. They are Codex-only
+and are never installed for Claude Code.
+
+- `cli-run` is a stdio MCP server with two tools. `run` starts an approved
+  array of CLI commands in a detached Node.js worker and returns a `runId`
+  immediately. After each job finishes, the worker sends a `codex queue`
+  message with the exit code, the output tail, and the log path to the thread
+  that called `run`. `status` reads a run's saved state.
+- `checkpoint` saves project-scoped session state under `docs/checkpoints/`,
+  `resume` restores it, and `ccheckpoint` additionally commits only that file
+  locally. Invoke them in Codex as `$checkpoint`, `$ccheckpoint`, and
+  `$resume`.
+
+Existing foreign skills at the destination are preserved. The same flag
+manages two marked blocks outside the skill directory:
+
+- **`config.toml`** of the selected Codex scope (`~/.codex/config.toml`, or
+  `<cwd>/.codex/config.toml` with `--local`/`--cwd`) gets a block that
+  registers the MCP server as `[mcp_servers.cli-run]`. Installation refuses
+  if an unmanaged `cli-run` server is already defined there. Restart Codex
+  after installing so it loads the server.
+- **The global `~/.codex/AGENTS.md`** gets a section requiring the `cli-run`
+  tools for CLI commands. This global change also applies with
+  `--local`/`--cwd`. An active global `AGENTS.override.md` masks the main
+  file, so installation refuses until the override is resolved.
+
+Reinstall refreshes only these blocks, and uninstall removes only them. Other
+text in both files is preserved.
 
 ### 4. Skills (11)
 
@@ -554,6 +569,7 @@ cc-arch-hands/
 │   ├── agents.js                # render + install + remove (49 .md bodies)
 │   ├── skills.js                # mirror templates/skills/<n>/ tree, optional subset
 │   ├── codex-skills.js          # optional Codex skill installation
+│   ├── codex-mcp-config.js      # marked [mcp_servers.cli-run] block in Codex config.toml
 │   ├── binstall.js              # copy companion bins into ~/.claude/cah-bin/ (// cah-bin:v1)
 │   └── probe.js                 # enable/disable cah-status-probe via settings.json edits
 ├── templates/
