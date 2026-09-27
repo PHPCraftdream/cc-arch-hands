@@ -21,10 +21,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through the MCP tools. They no longer require a Background Terminal, a PTY,
   or a launcher wait.
 
-### Added
+### Removed
 
-- `cli-run launch --wait` keeps its launcher alive until the worker exits using
-  Node child-process events, without OS-specific process-wait commands.
+- The `cli-run.mjs launch` and `status` command-line interface, together with
+  its `--spec`, `--thread`, `--max-parallel`, and `--delivery` options, is
+  gone because it duplicated the MCP tools. `cli-run.mjs` remains only as the
+  internal worker entry that `run` starts.
+
+### Fixed
+
+- On Windows, completion messages whose output tail contained double quotes
+  (for example JSON) or quoted text with spaces were lost: `codex queue`
+  rejected them with "unexpected argument". `cli-run` ran the npm `codex.ps1`
+  shim through PowerShell 5.1, which re-splits such arguments. It now starts
+  `codex.exe` or the npm package's `codex.js` with Node directly and never
+  goes through a shell.
 
 ## [0.12.1] - 2026-09-25
 

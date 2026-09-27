@@ -1,38 +1,11 @@
-import { readFileSync, statSync } from 'node:fs';
+import { statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 
 export const idPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
-export function option(args, name, fallback = null) {
-  const index = args.indexOf(name);
-  if (index < 0) return fallback;
-  if (!args[index + 1]) throw new Error(`${name} needs a value`);
-  return args[index + 1];
-}
-
-async function readInput(source) {
-  if (!source) throw new Error('launch requires --spec <file|->');
-  if (source !== '-') {
-    if (statSync(source).size > 1_000_000) throw new Error('spec exceeds 1 MB');
-    return readFileSync(source, 'utf8');
-  }
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of process.stdin) {
-    size += chunk.length;
-    if (size > 1_000_000) throw new Error('spec exceeds 1 MB');
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks).toString('utf8');
-}
-
-export async function readCommands(source) {
-  return normalizeCommands(JSON.parse((await readInput(source)).replace(/^\uFEFF/, '')), process.cwd());
-}
-
 export function normalizeCommands(commands, defaultCwd) {
   if (!Array.isArray(commands) || commands.length < 1 || commands.length > 64) {
-    throw new Error('spec must be an array of 1-64 commands');
+    throw new Error('jobs must be an array of 1-64 items');
   }
   const ids = new Set();
   return commands.map((item, index) => {

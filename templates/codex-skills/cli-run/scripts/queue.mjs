@@ -2,20 +2,22 @@ import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { extname, isAbsolute, join } from 'node:path';
 
-function codexCommand() {
-  if (process.env.CLI_RUN_CODEX_CLI) {
-    const path = process.env.CLI_RUN_CODEX_CLI;
+export function codexCommand(env = process.env, platform = process.platform) {
+  if (env.CLI_RUN_CODEX_CLI) {
+    const path = env.CLI_RUN_CODEX_CLI;
     if (!isAbsolute(path) || !existsSync(path)) throw new Error('CLI_RUN_CODEX_CLI must name an existing absolute path');
     return ['.js', '.mjs'].includes(extname(path)) ? [process.execPath, path] : [path];
   }
-  if (process.platform !== 'win32') return ['codex'];
-  for (const dir of (process.env.PATH || '').split(';').filter(Boolean)) {
+  if (platform !== 'win32') return ['codex'];
+  // Never go through the npm codex.ps1/codex.cmd shims: PowerShell 5.1 and cmd.exe
+  // re-split arguments containing quotes, which corrupts the message.
+  for (const dir of (env.PATH ?? env.Path ?? '').split(';').filter(Boolean)) {
     const executable = join(dir, 'codex.exe');
     if (existsSync(executable)) return [executable];
-    const script = join(dir, 'codex.ps1');
-    if (existsSync(script)) return ['powershell.exe', '-NoProfile', '-NonInteractive', '-File', script];
+    const script = join(dir, 'node_modules', '@openai', 'codex', 'bin', 'codex.js');
+    if (existsSync(script)) return [process.execPath, script];
   }
-  throw new Error('codex executable not found on PATH');
+  throw new Error('codex not found on PATH (need codex.exe or the npm @openai/codex package)');
 }
 
 export function queueCompletion(thread, message) {

@@ -68,12 +68,11 @@ async function callTool(name, args, meta) {
     if (!thread) throw new Error('Codex did not supply a thread ID for this call; completion messages cannot be routed');
     const commands = normalizeCommands(args?.jobs, defaultCwd(meta));
     const run = await startRun({ commands, thread, maxParallel: args?.maxParallel ?? 4 });
-    run.child.unref();
     return { runId: run.runId, statusDir: run.statusDir, jobs: run.commands };
   }
   if (name === 'status') return readStatus(String(args?.runId ?? ''));
   const error = new Error(`unknown tool: ${name}`);
-  error.code = -32602;
+  error.rpcCode = -32602;
   throw error;
 }
 
@@ -95,13 +94,13 @@ async function handle(message) {
         const result = await callTool(params?.name, params?.arguments, params?._meta);
         return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
       } catch (error) {
-        if (error.code) throw error;
+        if (error.rpcCode) throw error;
         return { isError: true, content: [{ type: 'text', text: `cli-run: ${error.message}` }] };
       }
     default: {
       if (id === undefined) return undefined;
       const error = new Error(`method not found: ${method}`);
-      error.code = -32601;
+      error.rpcCode = -32601;
       throw error;
     }
   }
@@ -124,7 +123,7 @@ function dispatch(line) {
     (result) => { if (message.id !== undefined) send({ jsonrpc: '2.0', id: message.id, result }); },
     (error) => {
       if (message.id === undefined) return;
-      send({ jsonrpc: '2.0', id: message.id, error: { code: error.code ?? -32603, message: error.message } });
+      send({ jsonrpc: '2.0', id: message.id, error: { code: error.rpcCode ?? -32603, message: error.message } });
     },
   );
 }

@@ -118,10 +118,10 @@ function readOutputTail(path) {
 
 export async function runWorker(dir) {
   const specPath = join(dir, 'spec.json');
-  const { thread, commands, maxParallel, delivery } = JSON.parse(readFileSync(specPath, 'utf8'));
+  const { thread, commands, maxParallel } = JSON.parse(readFileSync(specPath, 'utf8'));
   unlinkSync(specPath);
   writeJson(join(dir, 'status.json'), {
-    startedAt: new Date().toISOString(), total: commands.length, deliveryMode: delivery,
+    startedAt: new Date().toISOString(), total: commands.length,
   });
   let cursor = 0;
   const deliveries = [];
@@ -134,9 +134,7 @@ export async function runWorker(dir) {
       const resultPath = join(dir, `${command.id}.result.json`);
       writeJson(resultPath, result);
 
-      const sent = delivery === 'file'
-        ? Promise.resolve({ ok: true, mode: 'file' })
-        : queueCompletion(thread, completionMessage(basename(dir), result));
+      const sent = queueCompletion(thread, completionMessage(basename(dir), result));
       deliveries.push(sent.then((outcome) => {
         writeJson(join(dir, `${command.id}.delivery.json`), outcome);
       }));

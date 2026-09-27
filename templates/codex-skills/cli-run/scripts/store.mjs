@@ -38,7 +38,7 @@ export function readStatus(runId) {
   const fatalPath = join(dir, 'fatal.json');
   const finishedAt = existsSync(finishedPath)
     ? JSON.parse(readFileSync(finishedPath, 'utf8')).finishedAt : null;
-  const notifications = initial.deliveryMode === 'queue' ? results.map((entry) => entry.delivery).filter(Boolean) : [];
+  const notifications = results.map((entry) => entry.delivery).filter(Boolean);
   return {
     runId: basename(dir), startedAt: initial.startedAt, finishedAt,
     total: initial.total, completed: results.length,
