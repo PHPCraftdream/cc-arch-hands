@@ -66,12 +66,14 @@ function execute(command, dir) {
   });
 }
 
-function completionMessage(runId, result) {
+function completionMessage(runId, result, showOutput) {
   const status = result.error ? `failed to start (${result.error})`
     : result.signal ? `stopped by ${result.signal}` : `exited ${result.exitCode}`;
+  const heading = `cli-run ${runId}: ${result.id} ${status}; command: ${result.commandDisplay}; log: ${result.log}`;
+  if (!showOutput) return `${heading}\n\nOutput not shown (run without showOutput).`;
   const { lines, truncated } = readOutputTail(result.log);
   const tailLabel = `Last ${lines.length} output lines${truncated ? ' (long lines truncated)' : ''}`;
-  return `cli-run ${runId}: ${result.id} ${status}; command: ${result.commandDisplay}; log: ${result.log}\n\n${tailLabel}:\n${lines.length ? lines.join('\n') : '(no output)'}`;
+  return `${heading}\n\n${tailLabel}:\n${lines.length ? lines.join('\n') : '(no output)'}`;
 }
 
 function readOutputTail(path) {
@@ -118,7 +120,7 @@ function readOutputTail(path) {
 
 export async function runWorker(dir) {
   const specPath = join(dir, 'spec.json');
-  const { thread, commands, maxParallel } = JSON.parse(readFileSync(specPath, 'utf8'));
+  const { thread, commands, maxParallel, showOutput } = JSON.parse(readFileSync(specPath, 'utf8'));
   unlinkSync(specPath);
   writeJson(join(dir, 'status.json'), {
     startedAt: new Date().toISOString(), total: commands.length,
@@ -134,7 +136,7 @@ export async function runWorker(dir) {
       const resultPath = join(dir, `${command.id}.result.json`);
       writeJson(resultPath, result);
 
-      const sent = queueCompletion(thread, completionMessage(basename(dir), result));
+      const sent = queueCompletion(thread, completionMessage(basename(dir), result, showOutput === true));
       deliveries.push(sent.then((outcome) => {
         writeJson(join(dir, `${command.id}.delivery.json`), outcome);
       }));

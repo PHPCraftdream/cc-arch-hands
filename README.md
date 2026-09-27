@@ -191,8 +191,10 @@ and are never installed for Claude Code.
 - `cli-run` is a stdio MCP server with two tools. `run` starts an approved
   array of CLI commands in a detached Node.js worker and returns a `runId`
   immediately. After each job finishes, the worker sends a `codex queue`
-  message with the exit code, the output tail, and the log path to the thread
-  that called `run`. `status` reads a run's saved state.
+  message with the exit code, the command, and the log path to the thread
+  that called `run`. The last 10 output lines are included only when `run`
+  is called with `showOutput: true`, because output may contain secrets.
+  `status` reads a run's saved state.
 - `checkpoint` saves project-scoped session state under `docs/checkpoints/`,
   `resume` restores it, and `ccheckpoint` additionally commits only that file
   locally. Invoke them in Codex as `$checkpoint`, `$ccheckpoint`, and

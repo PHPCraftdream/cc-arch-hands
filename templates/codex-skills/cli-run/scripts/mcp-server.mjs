@@ -23,12 +23,13 @@ const TOOLS = [
     name: 'run',
     description: 'Start CLI commands as background jobs and return immediately with a runId. '
       + 'Each finished job is reported to this Codex thread as a "cli-run <runId>: <id> ..." message '
-      + 'with its exit code, the last output lines, and the full log path. Do not wait or poll after launching.',
+      + 'with its exit code, command, and full log path; the output tail is included only with showOutput. Do not wait or poll after launching.',
     inputSchema: {
       type: 'object',
       properties: {
         jobs: { type: 'array', items: JOB_SCHEMA, minItems: 1, maxItems: 64, description: 'Jobs to run; each needs exactly one of argv or command.' },
         maxParallel: { type: 'integer', minimum: 1, maximum: 16, description: 'Concurrent job limit (default 4).' },
+        showOutput: { type: 'boolean', description: 'Include the last 10 output lines in each completion message (default false). Output may contain secrets; set it only when the output itself is needed in the chat.' },
       },
       required: ['jobs'],
       additionalProperties: false,
@@ -67,7 +68,7 @@ async function callTool(name, args, meta) {
     const thread = threadOf(meta);
     if (!thread) throw new Error('Codex did not supply a thread ID for this call; completion messages cannot be routed');
     const commands = normalizeCommands(args?.jobs, defaultCwd(meta));
-    const run = await startRun({ commands, thread, maxParallel: args?.maxParallel ?? 4 });
+    const run = await startRun({ commands, thread, maxParallel: args?.maxParallel ?? 4, showOutput: args?.showOutput ?? false });
     return { runId: run.runId, statusDir: run.statusDir, jobs: run.commands };
   }
   if (name === 'status') return readStatus(String(args?.runId ?? ''));

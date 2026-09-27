@@ -104,7 +104,7 @@ describe('cli-run worker', () => {
     const script = `process.stdout.write(${JSON.stringify(output)}); void "release: 0.12.1"`;
     const { mcp, started } = await runJobs(t, env, [
       { id: 'tail', argv: [process.execPath, '-e', script], cwd: dir },
-    ]);
+    ], { showOutput: true });
     await waitForPath(join(started.statusDir, 'finished.json'), 30_000);
 
     const notification = readFileSync(env.CLI_RUN_TEST_QUEUE_LOG, 'utf8');
@@ -124,7 +124,7 @@ describe('cli-run worker', () => {
     const output = `${'x'.repeat(2500)}tail-marker\n`;
     const { mcp, started } = await runJobs(t, env, [{
       id: 'long-line', argv: [process.execPath, '-e', `process.stdout.write(${JSON.stringify(output)})`], cwd: dir,
-    }]);
+    }], { showOutput: true });
     await waitForPath(join(started.statusDir, 'finished.json'), 30_000);
 
     const notification = readFileSync(env.CLI_RUN_TEST_QUEUE_LOG, 'utf8');
@@ -142,7 +142,7 @@ describe('cli-run worker', () => {
     const env = mcpEnv(dir);
     const { mcp, started } = await runJobs(t, env, [
       { id: 'missing', argv: [join(dir, 'missing-executable')], cwd: dir },
-    ]);
+    ], { showOutput: true });
     await waitForPath(join(started.statusDir, 'finished.json'), 5000);
 
     const state = await statusOf(mcp, started.runId);
@@ -204,6 +204,27 @@ describe('cli-run worker', () => {
     const messages = readFileSync(env.CLI_RUN_TEST_QUEUE_LOG, 'utf8');
     assert.match(messages, /queue\|thread-test\|cli-run .*first exited 0/);
     assert.match(messages, /queue\|thread-test\|cli-run .*second exited 7/);
+    await mcp.close();
+  });
+
+  it('keeps job output out of the chat unless showOutput is set', async (t) => {
+    const dir = sandbox(t, 'cah-cli-run-hidden-');
+    const env = mcpEnv(dir);
+    const secret = 'SECRET-TOKEN-4f9c';
+    // The secret appears only in the output, never in the command line itself.
+    const { mcp, started } = await runJobs(t, env, [
+      { id: 'secret', argv: [process.execPath, '-e', "console.log(['SECRET', 'TOKEN', '4f9c'].join('-'))"], cwd: dir },
+    ]);
+    await waitForPath(join(started.statusDir, 'finished.json'), 30_000);
+
+    const notification = readFileSync(env.CLI_RUN_TEST_QUEUE_LOG, 'utf8');
+    assert.match(notification, new RegExp(`cli-run ${started.runId}: secret exited 0; command: argv `));
+    assert.ok(notification.includes('Output not shown (run without showOutput).'), notification);
+    assert.ok(!notification.includes(secret), notification);
+    assert.ok(!notification.includes('output lines'), notification);
+    const status = await statusOf(mcp, started.runId);
+    assert.ok(!JSON.stringify(status).includes(secret));
+    assert.equal(readFileSync(status.results[0].log, 'utf8').trim(), secret);
     await mcp.close();
   });
 
@@ -319,6 +340,7 @@ describe('cli-run MCP server', () => {
     await refused({ jobs: [{ id: 'ok', argv: [process.execPath, '-e', '0'] }] },
       { ...meta, 'x-codex-turn-metadata': { workspaces: { [dir]: {}, [tmpdir()]: {} } } }, /absolute path/);
     await refused({ jobs: [job], maxParallel: 99 }, meta, /max-parallel/);
+    await refused({ jobs: [job], showOutput: 'yes' }, meta, /showOutput must be a boolean/);
     await refused({ jobs: [job, job] }, meta, /duplicate command id/);
     await refused({ jobs: [] }, meta, /1-64/);
 
@@ -383,7 +405,7 @@ describe('codex queue delivery', () => {
     const line = '{"conclusion":"success","jobs":[{"name":"build JARs"},{"name":"native / a b"}]} it\'s "done" & | < > ^ %PATH%';
     const { mcp, started } = await runJobs(t, env, [
       { id: 'json-output', argv: [process.execPath, '-e', `console.log(${JSON.stringify(line)})`], cwd: dir },
-    ]);
+    ], { showOutput: true });
     await waitForPath(join(started.statusDir, 'finished.json'), 30_000);
 
     const status = await statusOf(mcp, started.runId);

@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a `runId` immediately. Completion messages are routed to the calling
   thread, which is taken from Codex's tool-call metadata. The `status` tool
   reads a run's saved state.
+- Completion messages no longer include job output by default, because it may
+  contain secrets. They carry the exit code, the command, and the log path.
+  The last 10 output lines are added only when `run` is called with
+  `showOutput: true`.
 - The Codex `AGENTS.md` section and the `cli-run` skill now direct commands
   through the MCP tools. They no longer require a Background Terminal, a PTY,
   or a launcher wait.

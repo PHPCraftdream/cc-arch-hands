@@ -6,13 +6,14 @@ import { createRun } from './store.mjs';
 
 const entry = fileURLToPath(new URL('./cli-run.mjs', import.meta.url));
 
-export async function startRun({ commands, thread, maxParallel = 4 }) {
+export async function startRun({ commands, thread, maxParallel = 4, showOutput = false }) {
   if (!thread) throw new Error('a Codex thread ID is required');
   if (!Number.isInteger(maxParallel) || maxParallel < 1 || maxParallel > 16) {
     throw new Error('max-parallel must be 1-16');
   }
+  if (typeof showOutput !== 'boolean') throw new Error('showOutput must be a boolean');
   const runId = randomUUID();
-  const dir = createRun(runId, { thread, commands, maxParallel });
+  const dir = createRun(runId, { thread, commands, maxParallel, showOutput });
   const child = spawn(process.execPath, [entry, 'worker', dir], {
     detached: true,
     windowsHide: true,

@@ -50,6 +50,7 @@ describe('managed Codex AGENTS.md section', () => {
     assert.ok(installed.includes('`cli-run` MCP tool `run`'));
     assert.ok(installed.includes('without interactive stdin or a PTY'));
     assert.ok(installed.includes('do not wait or poll `status` to discover completion'));
+    assert.ok(installed.includes('set `showOutput: true` on `run` only when the output itself is needed'));
     assert.ok(!installed.includes('Background Terminal'));
     assert.ok(!installed.includes('--wait'));
     assert.equal(writeCodexInstructions(scope).written, 0);
