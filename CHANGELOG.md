@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-28
+
+### Changed
+
+- **Breaking alias shift: Claude Sonnet 5.5 is the new top Sonnet.**
+  `sl`/`sm`/`sh`/`sx`/`sxx` now target `claude-sonnet-5-5` (1M context, all
+  five effort levels). Every older Sonnet moves back one slot: `s1*` is now
+  Sonnet 5 (gains `s1x`), `s2*` is Sonnet 4.6, and the new `s3*` tier keeps
+  Sonnet 4.5, so no Sonnet generation is dropped. This adds 5 model
+  definitions (54 in total, 108 command+agent bodies).
+
 ## [0.12.2] - 2026-09-27
 
 ### Changed

@@ -64,6 +64,11 @@ describe('modelLimit', () => {
     assert.equal(modelLimit('claude-sonnet-4-6'), 200_000);
   });
 
+  it('sonnet 5 generation (sonnet-5, sonnet-5-5) → 1_000_000', () => {
+    assert.equal(modelLimit('claude-sonnet-5'), 1_000_000);
+    assert.equal(modelLimit('claude-sonnet-5-5'), 1_000_000);
+  });
+
   it('haiku → 200_000', () => {
     assert.equal(modelLimit('claude-haiku-4-5'), 200_000);
   });

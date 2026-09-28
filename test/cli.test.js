@@ -809,7 +809,7 @@ describe('run install/uninstall --commands', () => {
         const out = captureStdout(() => run(['list', '--json']));
         const rows = out.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
         const commandRows = rows.filter((r) => r.kind === 'command');
-        assert.equal(commandRows.length, 49);
+        assert.equal(commandRows.length, 54);
         assert.ok(commandRows.every((r) => r.state === 'mine'));
 
         assert.equal(run(['uninstall', '--commands']), 0);

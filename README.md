@@ -20,8 +20,8 @@ statusLine commands, or diagnostics, copied into `~/.claude/cah-bin/` at
 install time.
 
 The artifacts:
-- **per-model slash-commands** (<!--gen:count:model-commands-->49<!--/gen-->) under `~/.claude/commands/`,
-- **per-model sub-agents** (<!--gen:count:model-commands-->49<!--/gen-->) under `~/.claude/agents/`,
+- **per-model slash-commands** (<!--gen:count:model-commands-->54<!--/gen-->) under `~/.claude/commands/`,
+- **per-model sub-agents** (<!--gen:count:model-commands-->54<!--/gen-->) under `~/.claude/agents/`,
 - **skills** (11) under `~/.claude/skills/`,
 - **companion bins** under `~/.claude/cah-bin/` (since 0.4.0).
 
@@ -62,7 +62,7 @@ Claude Code's own `used_percentage` formula. Without this, raw
 `input_tokens` after the first turn is ~1 token (everything else is
 served from the prompt cache) and a naive percentage would always read 0%.
 
-### 1. Per-model slash-commands (<!--gen:count:model-commands-->49<!--/gen-->)
+### 1. Per-model slash-commands (<!--gen:count:model-commands-->54<!--/gen-->)
 
 Part of the default install. To manage only the commands, use `--commands`,
 or select them as a class via `--only commands` (also combinable, e.g.
@@ -99,7 +99,7 @@ Whatever you type after the command becomes the prompt for that turn.
 > model instead of the requested one. The `cah-stamp` line `/clock` installs
 > shows the model that actually served each turn.
 
-### 2. Per-model sub-agents (<!--gen:count:model-commands-->49<!--/gen-->)
+### 2. Per-model sub-agents (<!--gen:count:model-commands-->54<!--/gen-->)
 
 The same supported effort matrix as the commands, plus Haiku's no-effort
 aliases — but as **delegated sub-agents** instead of inline commands. Use them to hand a self-contained task to a fresh
@@ -147,9 +147,10 @@ one (`h45`) — it has no N-back tiers.
 | Opus 4.8 (1M) | `claude-opus-4-8` | — | `/o2l` | `/o2m` | `/o2h` | `/o2x` | `/o2xx` |
 | Opus 4.7 (1M) | `claude-opus-4-7` | — | `/o3l` | `/o3m` | `/o3h` | `/o3x` | `/o3xx` |
 | Opus 4.6 (1M) | `claude-opus-4-6` | — | `/o4l` | `/o4m` | `/o4h` | `/o4x` | `/o4xx` |
-| **Sonnet** (top, 1M) | `claude-sonnet-5` | — | `/sl` | `/sm` | `/sh` | `/sx` | `/sxx` |
-| Sonnet 4.6 (200k) | `claude-sonnet-4-6` | — | `/s1l` | `/s1m` | `/s1h` | — | `/s1xx` |
-| Sonnet 4.5 (200k) | `claude-sonnet-4-5` | — | `/s2l` | `/s2m` | `/s2h` | — | — |
+| **Sonnet** (top, 1M) | `claude-sonnet-5-5` | — | `/sl` | `/sm` | `/sh` | `/sx` | `/sxx` |
+| Sonnet 5 (1M) | `claude-sonnet-5` | — | `/s1l` | `/s1m` | `/s1h` | `/s1x` | `/s1xx` |
+| Sonnet 4.6 (200k) | `claude-sonnet-4-6` | — | `/s2l` | `/s2m` | `/s2h` | — | `/s2xx` |
+| Sonnet 4.5 (200k) | `claude-sonnet-4-5` | — | `/s3l` | `/s3m` | `/s3h` | — | — |
 | **Haiku** (top, 200k) | `claude-haiku-4-5` | `/h` | — | — | — | — | — |
 | Haiku 4.5 (200k) | `claude-haiku-4-5` | `/h45` | — | — | — | — | — |
 <!--/gen:table:model-commands-->
@@ -159,7 +160,7 @@ slash-command body; `oh` (no prefix) is the agent invoked by the `Agent`
 tool with `subagent_type: "oh"`. The two live in separate lookup tables
 inside Claude Code, so identical names do not collide.
 
-<!--gen:count:model-commands-->49<!--/gen--> commands, <!--gen:count:model-commands-->49<!--/gen--> agents — one line per row-cell in
+<!--gen:count:model-commands-->54<!--/gen--> commands, <!--gen:count:model-commands-->54<!--/gen--> agents — one line per row-cell in
 [`lib/manifest.js`](lib/manifest.js).
 
 ### 3. Optional Codex custom agents (<!--gen:count:codex-agents-->33<!--/gen-->)
@@ -325,7 +326,7 @@ global one). On each turn the hook reads the session transcript, takes the
 latest assistant message's `usage.input_tokens`, and compares it to the actual
 valid `context_window.context_window_size` from the hook envelope or matching
 status cache when available. If neither is available, it falls back to the
-model limit (1M for Opus/Fable/Sonnet 5, 200K for Sonnet/Haiku), honoring
+model limit (1M for Opus/Fable/Sonnet 5 and 5.5, 200K for older Sonnet/Haiku), honoring
 `CLAUDE_CODE_DISABLE_1M_CONTEXT`. When usage first
 crosses 90% it emits a single `systemMessage` — a plain-ASCII `[hint]` line
 suggesting `/checkpoint` — and records a per-session marker so it never fires
@@ -351,8 +352,8 @@ What `/resume` does:
 
 | Artifact | Count | Destination |
 |---|---|---|
-| Slash-commands | <!--gen:count:model-commands-->49<!--/gen--> | `<scope>/.claude/commands/<name>.md` (only with `--commands`) |
-| Sub-agents | <!--gen:count:model-commands-->49<!--/gen--> | `<scope>/.claude/agents/<name>.md` |
+| Slash-commands | <!--gen:count:model-commands-->54<!--/gen--> | `<scope>/.claude/commands/<name>.md` (only with `--commands`) |
+| Sub-agents | <!--gen:count:model-commands-->54<!--/gen--> | `<scope>/.claude/agents/<name>.md` |
 | Skills | 11 | `<scope>/.claude/skills/<name>/` |
 | Codex custom agents | <!--gen:count:codex-agents-->33<!--/gen--> | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
 | Codex skills | <!--gen:count:codex-skills-->4<!--/gen--> | `<scope>/.codex/skills/<name>/` (only with `--codex-skills`) |
@@ -555,7 +556,7 @@ cc-arch-hands/
 ├── bin/cah-status-probe.js      # diagnostic statusLine bin used by `cah probe statusline`
 ├── lib/
 │   ├── cli.js                   # dispatch, arg parsing (node:util parseArgs), --only resolver
-│   ├── manifest.js              # AllModelCommands (49 definitions), AllCodexAgents (33), AllSkills (11), SkillDeps
+│   ├── manifest.js              # AllModelCommands (54 definitions), AllCodexAgents (33), AllSkills (11), SkillDeps
 │   ├── sentinel.js              # new + legacy markers, ownership classifier
 │   ├── scope.js                 # global vs local target dir resolution
 │   ├── templates.js             # bundled / disk template abstraction
@@ -567,8 +568,8 @@ cc-arch-hands/
 │   ├── marker-capacity-recovery.js # generation-aware transaction retirement/recovery
 │   ├── fs-atomic.js             # atomic publication, identity, quarantine helpers
 │   ├── transcript-stats.js      # shared: stats, formatStatusLine, makeBar, reset formatters
-│   ├── commands.js              # render + install + remove (49 .md bodies)
-│   ├── agents.js                # render + install + remove (49 .md bodies)
+│   ├── commands.js              # render + install + remove (54 .md bodies)
+│   ├── agents.js                # render + install + remove (54 .md bodies)
 │   ├── skills.js                # mirror templates/skills/<n>/ tree, optional subset
 │   ├── codex-skills.js          # optional Codex skill installation
 │   ├── codex-mcp-config.js      # marked [mcp_servers.cli-run] block in Codex config.toml
@@ -596,8 +597,8 @@ cc-arch-hands/
 └── package.json
 ```
 
-The <!--gen:count:model-commands-->49<!--/gen--> model definitions render
-<!--gen:count:model-bodies-->98<!--/gen--> command+agent bodies, which are
+The <!--gen:count:model-commands-->54<!--/gen--> model definitions render
+<!--gen:count:model-bodies-->108<!--/gen--> command+agent bodies, which are
 **rendered parametrically** at install time from `AllModelCommands`, not stored
 as nearly-identical files. Adding a new `{model, effort}` pair = one object in
 `lib/manifest.js`.
