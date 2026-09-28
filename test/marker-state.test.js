@@ -122,12 +122,14 @@ function markerConfig(markerDir, overrides = {}) {
   };
 }
 
-async function waitForPath(path) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (existsSync(path)) return;
+// Readiness files come from freshly spawned Node children: budget for a cold
+// Windows start (seconds), not a fixed attempt count (~1.5s at 15ms timer ticks).
+async function waitForPath(path, deadlineMs = DEFAULT_CHILD_DEADLINE_MS) {
+  const deadline = Date.now() + deadlineMs;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`);
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  throw new Error(`timed out waiting for ${path}`);
 }
 
 // Synchronous readiness wait for filesystem callbacks.
