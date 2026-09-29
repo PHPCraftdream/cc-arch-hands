@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createConnection } from 'node:net';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
@@ -435,7 +435,8 @@ describe('cli-run MCP server', () => {
     const status = await statusOf(mcp, started.uid);
     assert.equal(status.completed, 2);
     assert.equal(status.delivered, 1);
-    assert.equal((await logsOf(mcp, started.uid, { jobId: 'ok' })).logs[0].text.trim(), dir);
+    const reportedCwd = (await logsOf(mcp, started.uid, { jobId: 'ok' })).logs[0].text.trim();
+    assert.equal(realpathSync(reportedCwd), realpathSync(dir));
     await mcp.close();
   });
 
