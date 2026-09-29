@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-09-29
+
+### Changed
+
+- Sol 6.1 (`gpt-6.1-sol`) takes the primary Codex aliases
+  `ls`/`ms`/`hs`/`xs`/`xxs` and adds `us` for ultra. Sol 6 moves to suffix
+  `1`, and Sol 5.6 moves to suffix `2`, preserving their existing effort
+  levels. Luna, Terra, and Astra aliases stay unchanged. The registry now
+  contains 39 Codex agents.
+
 ## [0.13.1] - 2026-09-29
 
 ### Fixed

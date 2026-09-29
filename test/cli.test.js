@@ -675,7 +675,7 @@ describe('run install/uninstall --codex-agents', () => {
     }
   });
 
-  it('writes Codex agents under <HOME>/.codex/agents and removes them', () => {
+  it('installs, refreshes shifted Sol generations, and removes Codex agents', () => {
     const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
     try {
       withHome(home, () => {
@@ -685,10 +685,31 @@ describe('run install/uninstall --codex-agents', () => {
         assert.ok(readFileSync(join(home, '.codex', 'agents', 'xxt.toml'), 'utf8').includes('model = "gpt-5.6-terra"'));
         assert.ok(readFileSync(join(home, '.codex', 'agents', 'xxt.toml'), 'utf8').includes('model_reasoning_effort = "max"'));
         assert.ok(readFileSync(join(home, '.codex', 'agents', 'll.toml'), 'utf8').includes('model = "gpt-6-luna"'));
-        assert.ok(readFileSync(join(home, '.codex', 'agents', 'ls.toml'), 'utf8').includes('model = "gpt-6-sol"'));
+        for (const [model, suffix, levels] of [
+          ['gpt-6.1-sol', '', ['l', 'm', 'h', 'x', 'xx', 'u']],
+          ['gpt-6-sol', '1', ['l', 'm', 'h', 'x', 'xx']],
+          ['gpt-5.6-sol', '2', ['l', 'm', 'h', 'x', 'xx', 'u']],
+        ]) {
+          for (const prefix of levels) {
+            assert.ok(readFileSync(join(home, '.codex', 'agents', `${prefix}s${suffix}.toml`), 'utf8')
+              .includes(`model = "${model}"`));
+          }
+        }
         assert.ok(readFileSync(join(home, '.codex', 'agents', 'ul1.toml'), 'utf8').includes('model = "gpt-5.6-luna"'));
-        assert.ok(readFileSync(join(home, '.codex', 'agents', 'us1.toml'), 'utf8').includes('model = "gpt-5.6-sol"'));
-        assert.ok(readFileSync(join(home, '.codex', 'agents', 'us1.toml'), 'utf8').includes('model_reasoning_effort = "ultra"'));
+        assert.ok(readFileSync(join(home, '.codex', 'agents', 'us.toml'), 'utf8').includes('model_reasoning_effort = "ultra"'));
+        assert.ok(readFileSync(join(home, '.codex', 'agents', 'us2.toml'), 'utf8').includes('model_reasoning_effort = "ultra"'));
+
+        for (const [alias, staleModel] of [['ls', 'gpt-6-sol'], ['ls1', 'gpt-5.6-sol']]) {
+          const path = join(home, '.codex', 'agents', `${alias}.toml`);
+          writeFileSync(path, readFileSync(path, 'utf8').replace(/model = "[^"]+"/, `model = "${staleModel}"`));
+        }
+        writeFileSync(join(home, '.codex', 'agents', 'us1.toml'),
+          readFileSync(join(home, '.codex', 'agents', 'us2.toml'), 'utf8').replace('name = "us2"', 'name = "us1"'));
+        assert.equal(run(['reinstall', '--codex-agents']), 0);
+        assert.ok(readFileSync(join(home, '.codex', 'agents', 'ls.toml'), 'utf8').includes('model = "gpt-6.1-sol"'));
+        assert.ok(readFileSync(join(home, '.codex', 'agents', 'ls1.toml'), 'utf8').includes('model = "gpt-6-sol"'));
+        assert.ok(readFileSync(join(home, '.codex', 'agents', 'ls2.toml'), 'utf8').includes('model = "gpt-5.6-sol"'));
+        assert.ok(!existsSync(join(home, '.codex', 'agents', 'us1.toml')));
 
         const out = captureStdout(() => run(['list', '--json']));
         const rows = out.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
@@ -698,6 +719,9 @@ describe('run install/uninstall --codex-agents', () => {
 
         assert.equal(run(['uninstall', '--codex-agents']), 0);
         assert.ok(!existsSync(join(home, '.codex', 'agents', 'ha.toml')));
+        for (const alias of ['ls', 'us', 'ls1', 'ls2', 'us2']) {
+          assert.ok(!existsSync(join(home, '.codex', 'agents', `${alias}.toml`)));
+        }
       });
     } finally {
       rmSync(home, { recursive: true, force: true });
