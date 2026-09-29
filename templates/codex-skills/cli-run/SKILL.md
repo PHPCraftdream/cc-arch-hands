@@ -1,32 +1,33 @@
 ---
 name: cli-run
-description: Run coding-task CLI commands as background jobs through the cli-run MCP tools and receive each completion as a message in the current Codex thread. Use for inspection, tests, builds, and lint.
+description: Run long-running CLI jobs through MCP with queued completion notifications or inline results for native subagents. Use for test suites, builds, compilation, large copies, and CI watches; not for quick git, search, or file-reading commands.
 ---
 
 # CLI run
 
-Use the `cli-run` MCP server's tools. `cah install --codex-skills` registers that server in Codex's `config.toml`. If the `cli-run` tools are not available in this session, stop and ask; the user may need to restart Codex to load the server.
+Use the `cli-run` MCP server's tools for long-running jobs. If the tools are unavailable when needed, stop and ask.
 
-- `run` takes `jobs`, an array of 1-64 objects, an optional `maxParallel` (1-16, default 4), and an optional `showOutput` (default `false`). Each job has a unique `id` and exactly one of `argv` (preferred, started without a shell) or `command` (a platform-shell string). `cwd` must be an absolute path. It may be omitted only when the session has exactly one workspace root, which then becomes the default. Example: `{"jobs":[{"id":"tests","argv":["node","--test"],"cwd":"D:\\repo"}]}`.
-- `run` returns `runId`, `statusDir`, and the job count as soon as its detached worker has started. The jobs keep running after the call returns.
-- `status` takes a `runId` and returns per-job exit codes, log paths, and notification delivery results.
+Use native file/terminal tools directly for commands expected to finish in seconds: `git status`, `git diff`, `git log`, `rg`, file listings, and source reads. Do not route these through `cli-run`. Use `cli-run` when a command may take appreciably longer, such as a test suite, build, compilation, substantial copy, or `gh run watch`.
+
+- `run` requires a short human-readable `taskName` and `jobs`, an array of 1-64 commands. The server assigns a UID; never invent one. Optional fields are `maxParallel` (1-16, default 4), `showOutput` (default `false`, inline only), and `delivery` (`queue` by default, or `inline`). Each job has a unique `id` and exactly one of `argv` (preferred, started without a shell) or `command` (a platform-shell string). `cwd` must be absolute; omit it only with exactly one workspace root.
+- Use `delivery: "inline"` for long-running jobs in native spawned subagents. The tool call stays open until the jobs finish and returns their exit codes and log paths directly. Set `showOutput: true` only when you need their output. Output is capped at 64 KiB per job and 256 KiB per call; use a narrower command or the saved log if truncated. Inline jobs do not call `codex queue` and do not need a routable thread ID.
+- Default `queue` delivery returns only `taskName` and the assigned `uid` as soon as the worker starts. The tool result already shows both; do not repeat them in a chat message. The jobs continue after the tool call returns.
+- `status` and `logs` take `query`: the exact task name or UID. Repeated names select the most recent run; use UID for an older run. `logs` accepts an optional `jobId` and `tailBytes` (default 8192, maximum 65536 per log).
 
 On Windows, use `command` for `.cmd` or `.bat` wrappers such as `npm`; `argv` starts a program directly and is for executable paths such as `node.exe`.
-
-## Required command routing
-
-During a coding task, run every shell/CLI command through `run`. This includes read-only investigation (`git`, `rg`, file listing), edits performed by command-line tools, and checks such as tests, builds, and lint. Do not start task commands directly in a terminal or `exec` tool: routing them through `cli-run` gives each command a completion notification and a saved log. Prefer `argv`, assign unique job IDs, and group related independent commands into one `run` call when useful. Native file-reading and editing tools are not command-line executions.
 
 Keep the job array minimal and task-directed. Do not run generic version or workspace-inventory probes unless the task needs them. Check the effects of every requested command before launch, and do not add synthetic workload.
 
 ## Completion
 
-A `run` result is an acknowledgment, not command completion. Each finished job is reported to this thread as a `cli-run <runId>: <id> ...` message. The message includes the exit code, the command, and the full-log path. Only when `run` was called with `showOutput: true` does it also include up to the last 10 lines of combined stdout/stderr (long lines are capped). Output can contain secrets, so set `showOutput` only when you need the output itself in the chat; otherwise rely on the exit code and read the log only if the task requires it. After `run` returns, free the chat and let those messages wake you. Do not wait, sleep, or poll `status` to discover completion, and never relaunch jobs from an acknowledged run.
+For default `queue` delivery, the `run` result is an acknowledgment, not command completion. After all jobs finish, one short message reports the task name, UID, and success/failure count. It does not include commands or output. On success, do not call `status` or `logs` or repeat the completion message unless the task requires further work. On failure or when asked for details, inspect by name or UID. Let the completion message wake you; do not wait or poll `status` to discover completion.
 
-Use `status` when asked, or when a completion message is missing or reported a delivery failure. If delivery failed, the result records it; do not claim the message arrived. Delivery needs Node.js and `codex queue --thread ... --message ...`. The thread is taken from Codex's tool-call metadata; never guess it.
+For `inline` delivery, the tool response itself is the completion. Read `results[].output.text` when `showOutput: true`; `results[].output.truncated` indicates that more is in the log. No queued completion message follows. Use this mode for long-running jobs in native spawned subagents: `codex queue` rejects messages to their unloaded threads. Never relaunch jobs from an acknowledged run.
+
+Use `status` when asked, or when a queued completion message is missing or reported a delivery failure. If delivery failed, the result records it; do not claim the message arrived. Queued delivery needs Node.js and `codex queue --thread ... --message ...`. The thread is taken from Codex's tool-call metadata; never guess it.
 
 Jobs get no interactive stdin and no PTY. If a command needs interactive input, stop and ask.
 
 For Rush, put the complete invocation in one `argv` job, set `cwd` to the active repository/worktree, keep a stable `--session`, omit `--codex-thread-id`, and keep `--json` when its result envelope is needed. `cli-run` owns the external completion notification; inspect the saved log after that notification.
 
-Run state and logs live under `$CODEX_HOME/cli-run/runs/` (or `~/.codex/cli-run/runs/`). Command arguments are stored there temporarily and are echoed in completion messages, so avoid putting secrets in commands.
+Task names appear in completion messages; command arguments are stored in run state. Keep secrets out of both.

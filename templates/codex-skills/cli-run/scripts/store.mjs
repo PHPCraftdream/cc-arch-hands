@@ -10,6 +10,27 @@ export function runDirectory(runId) {
   return join(runsRoot, runId);
 }
 
+export function resolveRun(query) {
+  if (typeof query !== 'string' || !query.trim()) throw new Error('task name or UID is required');
+  const value = query.trim();
+  if (idPattern.test(value) && existsSync(join(runsRoot, value, 'status.json'))) return value;
+  if (!existsSync(runsRoot)) throw new Error(`task not found: ${value}`);
+  const matches = readdirSync(runsRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && idPattern.test(entry.name))
+    .flatMap((entry) => {
+      try {
+        const status = JSON.parse(readFileSync(join(runsRoot, entry.name, 'status.json'), 'utf8'));
+        return status.taskName === value ? [{ uid: entry.name, startedAt: status.startedAt }] : [];
+      } catch (error) {
+        if (error.code === 'ENOENT') return [];
+        throw error;
+      }
+    });
+  if (!matches.length) throw new Error(`task not found: ${value}`);
+  matches.sort((a, b) => b.startedAt.localeCompare(a.startedAt) || b.uid.localeCompare(a.uid));
+  return matches[0].uid;
+}
+
 export function createRun(runId, spec) {
   mkdirSync(runsRoot, { recursive: true, mode: 0o700 });
   const dir = runDirectory(runId);
@@ -24,7 +45,8 @@ export function writeJson(path, value) {
   renameSync(temp, path);
 }
 
-export function readStatus(runId) {
+export function readStatus(query) {
+  const runId = resolveRun(query);
   const dir = runDirectory(runId);
   const initial = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf8'));
   const results = readdirSync(dir).filter((name) => name.endsWith('.result.json'))
@@ -39,11 +61,18 @@ export function readStatus(runId) {
   const finishedAt = existsSync(finishedPath)
     ? JSON.parse(readFileSync(finishedPath, 'utf8')).finishedAt : null;
   const notifications = results.map((entry) => entry.delivery).filter(Boolean);
+  const completionPath = join(dir, 'completion.delivery.json');
+  const completionDelivery = existsSync(completionPath)
+    ? JSON.parse(readFileSync(completionPath, 'utf8')) : null;
+  if (completionDelivery) notifications.push(completionDelivery);
   return {
-    runId: basename(dir), startedAt: initial.startedAt, finishedAt,
+    uid: basename(dir), runId: basename(dir), taskName: initial.taskName ?? null,
+    startedAt: initial.startedAt, finishedAt,
+    deliveryMode: initial.deliveryMode ?? 'queue',
     total: initial.total, completed: results.length,
     delivered: notifications.filter((entry) => entry.ok).length,
     failedDeliveries: notifications.filter((entry) => !entry.ok).length,
+    completionDelivery,
     fatal: existsSync(fatalPath) ? JSON.parse(readFileSync(fatalPath, 'utf8')) : null,
     results,
   };

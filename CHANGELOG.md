@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-09-29
+
+### Fixed
+
+- Native Codex subagents can receive long-running job output through the
+  `cli-run` MCP tool's inline delivery mode. It returns bounded output directly
+  instead of queuing to unloaded spawned-agent threads.
+
+### Changed
+
+- Codex guidance now uses direct tools for quick Git, search, and file-reading
+  commands; `cli-run` is reserved for potentially long-running jobs.
+- `cli-run` requires a human-readable task name, returns its generated UID at
+  launch, and posts one concise completion per task instead of one per job.
+  `status` and `logs` accept either UID or exact name (latest run for repeats).
+- Queued launches now return only the task name and UID, without command
+  counts or filesystem paths.
+- MCP tools expose human-readable title metadata (the current Codex UI still
+  shows tool names). Codex guidance no longer repeats the launch acknowledgment
+  or successful completion, and avoids redundant status and log reads after
+  success.
+
 ## [0.13.0] - 2026-09-28
 
 ### Changed

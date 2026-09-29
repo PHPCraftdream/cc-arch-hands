@@ -54,6 +54,9 @@ describe('Codex skill lifecycle', () => {
     for (const name of AllCodexSkills) {
       assert.ok(readFileSync(join(skillDir(dir, name), 'SKILL.md'), 'utf8').includes(SentinelSkill));
     }
+    const cliRunInstructions = readFileSync(join(skillDir(dir), 'SKILL.md'), 'utf8');
+    assert.doesNotMatch(cliRunInstructions, /cah install --codex-skills|run every shell\/CLI command/i);
+    assert.match(cliRunInstructions, /Use native file\/terminal tools directly/);
     assert.ok(readFileSync(join(home, '.codex', 'AGENTS.md'), 'utf8').includes('<!-- cah-cli-run:start -->'));
     assert.ok(existsSync(join(skillDir(dir), 'scripts', 'cli-run.mjs')));
     assert.ok(existsSync(join(skillDir(dir, 'ccheckpoint'), 'scripts', 'commit-checkpoint.mjs')));

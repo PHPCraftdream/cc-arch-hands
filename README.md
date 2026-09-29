@@ -189,13 +189,13 @@ Generated agent names use an effort prefix plus a model suffix. The current Sol 
 Install the optional Codex skills with `--codex-skills`. They are Codex-only
 and are never installed for Claude Code.
 
-- `cli-run` is a stdio MCP server with two tools. `run` starts an approved
-  array of CLI commands in a detached Node.js worker and returns a `runId`
-  immediately. After each job finishes, the worker sends a `codex queue`
-  message with the exit code, the command, and the log path to the thread
-  that called `run`. The last 10 output lines are included only when `run`
-  is called with `showOutput: true`, because output may contain secrets.
-  `status` reads a run's saved state.
+- `cli-run` is a stdio MCP server with three tools. `run` requires a task name
+  and starts an array of CLI commands in a detached Node.js worker. It returns
+  the task name and generated UID immediately. When all jobs finish, one brief
+  `codex queue` message reports the task name, UID, and success/failure count
+  without command output. `status` and `logs` accept the UID or exact task name;
+  repeated names select the most recent run. Native spawned agents can use
+  inline delivery to receive results without `codex queue`.
 - `checkpoint` saves project-scoped session state under `docs/checkpoints/`,
   `resume` restores it, and `ccheckpoint` additionally commits only that file
   locally. Invoke them in Codex as `$checkpoint`, `$ccheckpoint`, and
@@ -209,8 +209,9 @@ manages two marked blocks outside the skill directory:
   registers the MCP server as `[mcp_servers.cli-run]`. Installation refuses
   if an unmanaged `cli-run` server is already defined there. Restart Codex
   after installing so it loads the server.
-- **The global `~/.codex/AGENTS.md`** gets a section requiring the `cli-run`
-  tools for CLI commands. This global change also applies with
+- **The global `~/.codex/AGENTS.md`** gets a section routing potentially
+  long-running CLI commands through `cli-run`; quick Git, search, and file
+  reads run directly. This global change also applies with
   `--local`/`--cwd`. An active global `AGENTS.override.md` masks the main
   file, so installation refuses until the override is resolved.
 

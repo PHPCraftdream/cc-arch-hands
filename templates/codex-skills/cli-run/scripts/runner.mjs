@@ -1,12 +1,8 @@
 import { spawn } from 'node:child_process';
-import { closeSync, fstatSync, openSync, readFileSync, readSync, unlinkSync } from 'node:fs';
+import { closeSync, openSync, readFileSync, unlinkSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { queueCompletion } from './queue.mjs';
 import { writeJson } from './store.mjs';
-
-const OUTPUT_TAIL_LINES = 10;
-const OUTPUT_TAIL_MAX_BYTES = 256 * 1024;
-const OUTPUT_TAIL_MAX_LINE_CHARS = 1000;
 
 function displayArgument(value) {
   return `[${value
@@ -66,67 +62,21 @@ function execute(command, dir) {
   });
 }
 
-function completionMessage(runId, result, showOutput) {
-  const status = result.error ? `failed to start (${result.error})`
-    : result.signal ? `stopped by ${result.signal}` : `exited ${result.exitCode}`;
-  const heading = `cli-run ${runId}: ${result.id} ${status}; command: ${result.commandDisplay}; log: ${result.log}`;
-  if (!showOutput) return `${heading}\n\nOutput not shown (run without showOutput).`;
-  const { lines, truncated } = readOutputTail(result.log);
-  const tailLabel = `Last ${lines.length} output lines${truncated ? ' (long lines truncated)' : ''}`;
-  return `${heading}\n\n${tailLabel}:\n${lines.length ? lines.join('\n') : '(no output)'}`;
-}
-
-function readOutputTail(path) {
-  const fd = openSync(path, 'r');
-  try {
-    const size = fstatSync(fd).size;
-    const length = Math.min(size, OUTPUT_TAIL_MAX_BYTES);
-    const start = size - length;
-    const buffer = Buffer.allocUnsafe(length);
-    let bytesRead = 0;
-    while (bytesRead < length) {
-      const count = readSync(fd, buffer, bytesRead, length - bytesRead, start + bytesRead);
-      if (count === 0) break;
-      bytesRead += count;
-    }
-
-    let text = buffer.subarray(0, bytesRead).toString('utf8');
-    if (start > 0) {
-      const previousByte = Buffer.allocUnsafe(1);
-      readSync(fd, previousByte, 0, 1, start - 1);
-      if (previousByte[0] !== 0x0a && previousByte[0] !== 0x0d) {
-        const firstBreak = text.match(/\r\n|\r|\n/);
-        text = firstBreak
-          ? text.slice(firstBreak.index + firstBreak[0].length)
-          : text.replace(/^\uFFFD/, '');
-      }
-    }
-
-    const allLines = text.split(/\r\n|\r|\n/);
-    if (allLines.at(-1) === '') allLines.pop();
-    let truncated = false;
-    const lines = allLines.slice(-OUTPUT_TAIL_LINES).map((line) => {
-      const characters = Array.from(line);
-      if (characters.length <= OUTPUT_TAIL_MAX_LINE_CHARS) return line;
-      truncated = true;
-      const marker = '...[line truncated] ';
-      return marker + characters.slice(-(OUTPUT_TAIL_MAX_LINE_CHARS - marker.length)).join('');
-    });
-    return { lines, truncated };
-  } finally {
-    closeSync(fd);
-  }
+function completionMessage(uid, taskName, results) {
+  const failed = results.filter((result) => result.error || result.signal || result.exitCode !== 0).length;
+  const outcome = failed ? `finished with ${failed}/${results.length} failed` : `completed (${results.length}/${results.length} succeeded)`;
+  return `cli-run ${uid}: ${taskName} ${outcome}`;
 }
 
 export async function runWorker(dir) {
   const specPath = join(dir, 'spec.json');
-  const { thread, commands, maxParallel, showOutput } = JSON.parse(readFileSync(specPath, 'utf8'));
+  const { taskName, thread, commands, maxParallel, delivery = 'queue' } = JSON.parse(readFileSync(specPath, 'utf8'));
   unlinkSync(specPath);
   writeJson(join(dir, 'status.json'), {
-    startedAt: new Date().toISOString(), total: commands.length,
+    startedAt: new Date().toISOString(), taskName, total: commands.length, deliveryMode: delivery,
   });
   let cursor = 0;
-  const deliveries = [];
+  const results = [];
   process.send?.({ type: 'ready', pid: process.pid });
 
   async function pump() {
@@ -135,15 +85,14 @@ export async function runWorker(dir) {
       const result = await execute(command, dir);
       const resultPath = join(dir, `${command.id}.result.json`);
       writeJson(resultPath, result);
-
-      const sent = queueCompletion(thread, completionMessage(basename(dir), result, showOutput === true));
-      deliveries.push(sent.then((outcome) => {
-        writeJson(join(dir, `${command.id}.delivery.json`), outcome);
-      }));
+      results.push(result);
     }
   }
 
   await Promise.all(Array.from({ length: Math.min(maxParallel, commands.length) }, pump));
-  await Promise.all(deliveries);
+  if (delivery === 'queue') {
+    const outcome = await queueCompletion(thread, completionMessage(basename(dir), taskName, results));
+    writeJson(join(dir, 'completion.delivery.json'), outcome);
+  }
   writeJson(join(dir, 'finished.json'), { finishedAt: new Date().toISOString() });
 }
