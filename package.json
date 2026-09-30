@@ -4,11 +4,11 @@
   "description": "Installer for Claude Code per-model commands, agents and skills",
   "type": "module",
   "bin": {
-    "cah": "./bin/cah.js",
-    "cc-arch-hands": "./bin/cah.js",
-    "cah-checkpoint-hint": "./bin/cah-checkpoint-hint.js",
-    "cah-status": "./bin/cah-status.js",
-    "cah-stamp": "./bin/cah-stamp.js"
+    "cah": "bin/cah.js",
+    "cc-arch-hands": "bin/cah.js",
+    "cah-checkpoint-hint": "bin/cah-checkpoint-hint.js",
+    "cah-status": "bin/cah-status.js",
+    "cah-stamp": "bin/cah-stamp.js"
   },
   "files": [
     "bin/",
