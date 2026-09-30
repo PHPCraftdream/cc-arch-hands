@@ -40,6 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contract intact as OMP options expand.
 - Removed the incidental production interlock call-site counter and its scanner;
   behavior tests for rendezvous aliases and declared stages remain in place.
+- CLI completion now sets `process.exitCode` instead of forcing `process.exit`,
+  allowing stdout/stderr pipes to drain completely before process termination.
+  Large JSON inventories and failure diagnostics are preserved for slow readers.
 
 ## [0.14.0] - 2026-09-29
 

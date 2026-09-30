@@ -7,10 +7,11 @@ try {
     // Guards against a future refactor making a subcommand async: a returned
     // Promise would coerce to NaN and silently exit 0, masking the failure.
     process.stderr.write('cah: internal error: run() did not return a numeric exit code\n');
-    process.exit(1);
+    process.exitCode = 1;
+  } else {
+    process.exitCode = code;
   }
-  process.exit(code);
 } catch (e) {
   process.stderr.write(`cah: unexpected error: ${e && e.message ? e.message : e}\n`);
-  process.exit(1);
+  process.exitCode = 1;
 }
