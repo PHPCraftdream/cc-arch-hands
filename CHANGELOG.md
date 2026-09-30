@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-09-30
+
 ### Added
 
 - Opt-in `--omp-agents` / `--only omp-agents` install, reinstall and uninstall
@@ -29,9 +31,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Unified `--omp` flag for install/reinstall/uninstall of both OMP classes.
   Alone it selects only OMP artifacts; combined with `--only` it adds both
   classes. Named profiles remain selectable with `--omp-profile NAME`.
-- The local OMP build forwards explicit `ultra` literally and surfaces provider
-  refusals without retrying a different effort. Packages use regular tarball
-  installation rather than a link to the source checkout.
 
 ### Fixed
 
@@ -43,6 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI completion now sets `process.exitCode` instead of forcing `process.exit`,
   allowing stdout/stderr pipes to drain completely before process termination.
   Large JSON inventories and failure diagnostics are preserved for slow readers.
+
+### Changed
+
+- Normalized npm executable paths from `./bin/...` to `bin/...`.
 
 ## [0.14.0] - 2026-09-29
 
