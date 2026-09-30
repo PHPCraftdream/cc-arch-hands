@@ -28,6 +28,7 @@ The artifacts:
 Optional artifacts are installed only when requested:
 - **Codex custom agents** (<!--gen:count:codex-agents-->39<!--/gen-->) under `~/.codex/agents/`, via `--codex-agents`.
 - **Codex skills** (<!--gen:count:codex-skills-->4<!--/gen-->) under `~/.codex/skills/`, via `--codex-skills`.
+- **OMP agents** and the agent-tag rule in global `APPEND_SYSTEM.md`, via `--omp-agents`. OMP uses Markdown definitions, not Codex TOML.
 
 > **Since 0.4.0:** `cah install` copies the companion bins into
 > `~/.claude/cah-bin/` and `settings.json` references them by absolute path
@@ -219,6 +220,146 @@ manages two marked blocks outside the skill directory:
 Reinstall refreshes only these blocks, and uninstall removes only them. Other
 text in both files is preserved.
 
+### Install everything for OMP
+
+`--omp` selects both optional OMP classes: model agents and their global tag
+rule, plus every supported workflow command and its runtime helpers. Used
+alone it installs only OMP artifacts, not the default Claude set. Combined
+with `--only`, it adds the OMP classes to that selection.
+
+```bash
+npx cc-arch-hands install --omp
+npx cc-arch-hands reinstall --omp
+npx cc-arch-hands uninstall --omp
+npx cc-arch-hands install --omp --omp-profile work
+```
+
+After updating the package, repeat `install --omp` to refresh all owned OMP
+artifacts. Restart OMP after changes. The ordinary profile is the default;
+named profiles must be selected explicitly. Every registered agent is installed,
+including all four Ultra aliases, without querying OMP capabilities.
+
+### Optional OMP agents
+
+OMP agents are opt-in and reuse the complete Codex model/alias registry.
+`us`, `us2`, `ut` and `ul1` all carry the literal `thinking-level: ultra`,
+even when the installed OMP or the provider does not advertise support.
+Install/reinstall/list/doctor do not invoke OMP to filter those definitions.
+
+The local OMP build forwards explicit Ultra as `reasoning.effort: "ultra"`.
+It does not map it to `max`, `xhigh`, a model-native delegation preset or another
+model. This intentionally differs from current native Codex orchestration
+semantics. Unsupported use may fail; those failures remain visible rather than
+being hidden behind a compatible effort. Automatic/coarse hints do not choose
+Ultra, and explicit lower resource ceilings reject it instead of downgrading it.
+
+The local implementation is based on v18.4.4 and is installed from regular
+package tarballs, not a source-directory link. Upstream feedback is tracked in
+[OMP #13809](https://github.com/can1357/oh-my-pi/issues/13809). Registration of
+an Ultra alias is not a claim that the provider implements that literal tier.
+
+```bash
+npx cc-arch-hands install --omp-agents
+npx cc-arch-hands reinstall --omp-agents
+npx cc-arch-hands uninstall --omp-agents
+```
+
+The ordinary profile uses `~/.omp/agent/agents/<name>.md` and
+`~/.omp/agent/APPEND_SYSTEM.md`. OMP destinations are always global, even with
+`--local` or `--cwd`; those flags still select the Claude/Codex destinations
+when classes are combined. Named profiles are separate; select each explicitly:
+
+```bash
+npx cc-arch-hands install --omp-agents --omp-profile work
+npx cc-arch-hands reinstall --omp-agents --omp-profile work
+npx cc-arch-hands uninstall --omp-agents --omp-profile work
+npx cc-arch-hands list --json --omp-profile work
+npx cc-arch-hands doctor --omp-profile work
+```
+
+`--omp-profile default` selects the ordinary profile. The installer does not
+implicitly follow `OMP_PROFILE` or install into every profile.
+
+Repeated `install` updates owned definitions and prunes obsolete owned files;
+after updating the npm package, run `cah install --omp-agents` again (with the
+same `--omp-profile` if applicable). `reinstall` performs uninstall then install.
+Foreign definitions are preserved and reported, including unmarked definitions
+installed manually. The agent-tag rule is maintained inside
+`<!-- cah-omp-agent-tags:start -->` / `<!-- cah-omp-agent-tags:end -->`; bytes
+outside that block are preserved. Broken or duplicate markers abort before
+reinstall removes definitions. `uninstall` removes only owned definitions and
+that block, not personal instructions. `SYSTEM.md` is never written.
+
+Restart OMP after changes. The rule interprets agent names in ordinary chat
+only as delegation requests when the user explicitly asks to launch them; it
+does not switch the main model. Project agents with matching names take
+precedence. Highlighting and autocomplete are separate OMP UI features.
+`list` reports OMP files; `doctor` includes the optional class once an agent
+or the managed rule is present, with its existing missing/foreign exit codes.
+
+### Optional OMP workflow commands
+
+Install all nine OMP-native workflow commands with `--omp-commands` (or
+`--only omp-commands`). They are separate from Claude skills and model-switch
+commands and are not included in the default install:
+
+| Command | Behavior |
+|---|---|
+| `/checkpoint [name]` | Save session context and the actual OMP `todo` plan under the caller repository's `docs/checkpoints/` |
+| `/ccheckpoint [name]` | Save a checkpoint and commit only that file through the shared Node helper, preserving unrelated staged changes |
+| `/checkpoint-resume [name\|--list]` | Restore/list saved checkpoint context; does not replace OMP's built-in `/resume` session switcher |
+| `/checkpoint-prune [--dry] [selection]` | Preview or delete selected project checkpoints; batch deletion requires confirmation |
+| `/task <request>` | Register an ordered leaf-level todo plan without executing the work |
+| `/triage [--dry]` | Inspect the live todo plan and propose cleanup, with consent before mutations |
+| `/repo-sight [target]` | Evidence-based repository map and prioritized reading list |
+| `/babysit [interval\|--status\|--off]` | Arm, inspect or stop the session-only todo heartbeat |
+| `/babygoal [interval] <request>` | Investigate, register leaf tasks, confirm the heartbeat and begin the first ready task |
+
+```bash
+npx cc-arch-hands install --omp-commands
+npx cc-arch-hands reinstall --omp-commands
+npx cc-arch-hands uninstall --omp-commands
+
+# Agents and workflow commands together:
+npx cc-arch-hands install --only omp-agents,omp-commands
+
+# Named profiles must be selected explicitly:
+npx cc-arch-hands install --omp-commands --omp-profile work
+```
+
+Commands live in `~/.omp/agent/commands/<name>.md`, the heartbeat extension in
+`~/.omp/agent/extensions/cah-babysit.js`, and the checkpoint commit helper in
+`~/.omp/agent/cah/commit-checkpoint.mjs`. `--omp-profile NAME` changes the root
+to `~/.omp/profiles/NAME/agent/`; Claude scope flags do not change OMP targets.
+Restart OMP after installation or updating. Re-run `install` after updating the
+package to refresh owned commands/runtime; `reinstall` is uninstall then install.
+Runtime dependencies are published before commands. Foreign commands are
+preserved and reported; a foreign runtime at either managed helper path blocks
+install/reinstall rather than exposing commands with an unknown runtime.
+Missing custom templates are also rejected before reinstall removes anything.
+`--templates DIR` requires `omp-commands/<name>/command.md`,
+`omp-commands/runtime/babysit.js` and the existing
+`codex-skills/ccheckpoint/scripts/commit-checkpoint.mjs` under that directory.
+`list` and `doctor` track commands and runtime dependencies independently of
+the optional OMP agent class. Uninstall preserves personal files and agents.
+
+OMP has `todo`, not Claude `TaskCreate`/`TaskList` or `CronCreate`. These command
+bodies use OMP's verbatim task contents, phase order, blockers and single-active
+task semantics. They do not automatically launch agents or change the main model.
+`babysit` uses the installed `cah_babysit` extension tool and a real managed timer:
+default `15m`, positive integer `s`/`m`/`h` intervals from one second to seven days.
+Repeated arming does not create duplicates; use `--off` before changing intervals.
+Ticks wake only idle sessions with actionable todo work, skip active turns and
+queued messages, and do not unblock external waits. Completion stops the timer;
+an all-blocked plan remains waiting without model calls.
+
+The heartbeat is session-only, expires after seven days, and stops on session
+switching, branch navigation or shutdown. It cannot revive a closed OMP process
+or promise recovery from provider connectivity failures. Checkpoint restoration
+does not automatically re-arm it. `/clock` and `/checkpoint-watch` are not
+installed for OMP: their current statusLine/hook implementations are Claude-only.
+
+
 ### 4. Skills (11)
 
 Reusable capability packs Claude Code loads on demand. Each is invoked as
@@ -359,6 +500,8 @@ What `/resume` does:
 | Skills | 11 | `<scope>/.claude/skills/<name>/` |
 | Codex custom agents | <!--gen:count:codex-agents-->39<!--/gen--> | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
 | Codex skills | <!--gen:count:codex-skills-->4<!--/gen--> | `<scope>/.codex/skills/<name>/` (only with `--codex-skills`) |
+| OMP agents and tag rule | Full registry + rule | `~/.omp/agent/agents/<name>.md` and `~/.omp/agent/APPEND_SYSTEM.md` (only with `--omp-agents`; `--omp-profile NAME` selects `~/.omp/profiles/NAME/agent/`) |
+| OMP workflow commands | 9 commands + 2 runtime files | `~/.omp/agent/commands/`, `extensions/cah-babysit.js` and `cah/commit-checkpoint.mjs` (only with `--omp-commands`; supports `--omp-profile NAME`) |
 
 `<scope>` is `~/` by default (global install). Use `--local` or `--cwd`
 to target a specific project directory instead.
@@ -421,12 +564,17 @@ npx cc-arch-hands install --cwd /path/to/project   # local at a specific path; b
 npx cc-arch-hands install --commands               # install only the per-model slash-commands
 npx cc-arch-hands install --codex-agents           # optional: install only Codex agents into ~/.codex/agents
 npx cc-arch-hands install --codex-skills           # optional: install Codex skills into ~/.codex/skills
+npx cc-arch-hands install --omp-agents             # optional: global OMP agents + agent-tag rule
+npx cc-arch-hands install --omp-commands           # optional: all OMP workflow commands + runtime
+npx cc-arch-hands install --omp                    # optional: all supported OMP agents, rule, commands and runtime
 
 # --only takes install classes, individual skill names, or any mix.
 npx cc-arch-hands install --only skills                       # all 11 skills
 npx cc-arch-hands install --only commands                     # all per-model slash-commands
 npx cc-arch-hands install --only codex-agents                 # all Codex agents into ~/.codex/agents (opt-in)
 npx cc-arch-hands install --only codex-skills                 # Codex skills into ~/.codex/skills (opt-in)
+npx cc-arch-hands install --only omp-agents                   # OMP agents + APPEND_SYSTEM.md rule (opt-in)
+npx cc-arch-hands install --only omp-commands                 # nine OMP workflow commands + runtime (opt-in)
 npx cc-arch-hands install --only bins                         # companion bins (cah-status, cah-stamp,
                                                     #   cah-checkpoint-hint, cah-status-probe,
                                                     #   + shared lib leaves: transcript-stats.js,

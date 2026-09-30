@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in `--omp-agents` / `--only omp-agents` install, reinstall and uninstall
+  support for OMP Markdown agents and a managed agent-tag rule in global
+  `APPEND_SYSTEM.md`. Repeated install updates owned definitions and prunes
+  obsolete ones without overwriting foreign agents or personal instructions.
+- `--omp-profile NAME` selects a named OMP profile for lifecycle operations,
+  list and doctor. OMP targets remain global regardless of Claude scope flags.
+- All OMP aliases retain exact model and reasoning selections, including literal
+  `ultra` for `us`, `us2`, `ut` and `ul1`. Installation does not filter them by
+  runtime capabilities or substitute another effort.
+- Opt-in `--omp-commands` lifecycle support for nine OMP-native workflow commands:
+  checkpoint, ccheckpoint, checkpoint-resume, checkpoint-prune, task, triage,
+  repo-sight, babysit and babygoal. The distinct checkpoint-resume name preserves
+  OMP's built-in resume command. Commands use native todo semantics, not Claude tools.
+- A session-only OMP babysit extension with bounded intervals, duplicate suppression,
+  idle-only wakes, blocked-work protection and completion/session-change cleanup.
+  The checkpoint commit runtime reuses the existing isolated-index Node helper.
+  List/doctor cover command dependencies; foreign files are preserved.
+- Unified `--omp` flag for install/reinstall/uninstall of both OMP classes.
+  Alone it selects only OMP artifacts; combined with `--only` it adds both
+  classes. Named profiles remain selectable with `--omp-profile NAME`.
+- The local OMP build forwards explicit `ultra` literally and surfaces provider
+  refusals without retrying a different effort. Packages use regular tarball
+  installation rather than a link to the source checkout.
+
+### Fixed
+
+- Listing/doctor no longer invokes OMP or creates a profile to inspect capabilities.
+- Extracted CLI usage text into its own module to keep the production source-size
+  contract intact as OMP options expand.
+- Removed the incidental production interlock call-site counter and its scanner;
+  behavior tests for rendezvous aliases and declared stages remain in place.
+
 ## [0.14.0] - 2026-09-29
 
 ### Changed
