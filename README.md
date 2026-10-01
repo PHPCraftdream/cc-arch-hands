@@ -220,6 +220,53 @@ manages two marked blocks outside the skill directory:
 Reinstall refreshes only these blocks, and uninstall removes only them. Other
 text in both files is preserved.
 
+#### cli-run: temporary completion workaround
+
+`cli-run` is a **temporary workaround for Codex's background-command completion
+and wakeup gaps**, not an upstream Codex fix. It applies only to commands
+submitted through its MCP `run` tool; it does not patch native `exec_command`,
+`write_stdin`, subagent delivery, or terminal UI state.
+
+With `delivery: "queue"`, the detached worker waits without model-driven polling,
+persists results, and sends one brief `codex queue` completion message to the
+calling thread after all jobs finish. Successful delivery can wake an idle
+parent so it can inspect the result and continue. With `delivery: "inline"`,
+results return in the still-open MCP call instead; this is not an asynchronous
+wakeup.
+
+The following upstream reports describe the gaps and related symptoms.
+“Workaround” means coverage for jobs launched through `cli-run`, not that the
+upstream issue is fixed or should be closed.
+
+| Codex issue | Reported problem | cli-run coverage |
+|---|---|---|
+| [#42908](https://github.com/openai/codex/issues/42908) | Desktop parent does not resume after a background exec session completes. | Queue-delivery workaround for our jobs. [Our Windows reproduction and workaround](https://github.com/openai/codex/issues/42908#issuecomment-5808801833). |
+| [#32188](https://github.com/openai/codex/issues/32188) | Missing event-driven wakeup when a background exec session completes. | Queue-delivery workaround; no native `ExecCommandEnd` / `on_exit` integration. |
+| [#33542](https://github.com/openai/codex/issues/33542) | Background task callbacks should resume the original thread without polling. | Queue-delivery workaround for task completion. |
+| [#33712](https://github.com/openai/codex/issues/33712) | Background terminal exit while idle never starts a follow-up turn. | Same completion workaround; [consolidated into #32188](https://github.com/openai/codex/issues/33712#issuecomment-4998088037), not closed because a native fix landed. |
+| [#22003](https://github.com/openai/codex/issues/22003) | Inject background-command output into an active session without polling. | Partial: completion message and persisted logs, not automatic stdout/stderr streaming into the conversation. |
+| [#29865](https://github.com/openai/codex/issues/29865) | Wake Codex when a background command emits new output. | Partial: wakes on task completion, not each output update; [closed as a duplicate of #22003](https://github.com/openai/codex/issues/29865#issuecomment-4791371300). |
+| [#15723](https://github.com/openai/codex/issues/15723) | Background subprocesses and subagents do not wake the calling agent. | CLI-process workaround only; native subagent completion delivery is unchanged. |
+| [#13733](https://github.com/openai/codex/issues/13733) | Empty `write_stdin` polls trigger full model turns and waste tokens. | Avoids polling our jobs; does not change polling of other processes. |
+| [#45974](https://github.com/openai/codex/issues/45974) | Repeated high-effort polling of long jobs exhausts usage limits. | Avoids polling our jobs; does not suppress unrelated goal/subagent continuation loops. |
+| [#14314](https://github.com/openai/codex/issues/14314) | Agent keeps waiting for a background terminal after its command finishes. | Uses a separate worker/result path; does not fix native terminal waiting. |
+| [#22957](https://github.com/openai/codex/issues/22957) | Codex hangs on “Waited for background terminal”. | Uses a separate worker/result path; does not fix native terminal waiting. |
+| [#12033](https://github.com/openai/codex/issues/12033) | Waiting indicator remains after background terminals terminate. | Not covered: native terminal UI state is unchanged. |
+| [#23603](https://github.com/openai/codex/issues/23603) | Requests command-completion feedback instead of continuous polling. | Provides external task-completion feedback, not a native Codex hook or timeout/self-check mechanism. |
+| [#45081](https://github.com/openai/codex/issues/45081) | Requests user-facing terminal completion notifications and active-terminal indicators across chats. | Not covered: our agent-thread message is not a desktop notification or UI indicator. |
+
+Limits: queue delivery depends on `codex queue` reaching the target thread;
+unloaded threads, access restrictions, or delivery errors can prevent wakeup.
+The notification is a queued message, not a typed terminal/tool completion
+event. `status` and `logs` expose saved results when delivery fails; they are
+not a reason to poll running jobs. Output remains in logs unless requested.
+
+`run` still needs Codex approval or explicit user trust. MCP jobs do not inherit
+Codex's per-turn filesystem sandbox; granting trust does not repair
+`apply_patch` or native Git permissions. See the installed `$cli-run` skill's
+Permissions section before enabling `tools.run.approval_mode = "approve"`.
+
+
 ### Install everything for OMP
 
 `--omp` selects both optional OMP classes: model agents and their global tag
