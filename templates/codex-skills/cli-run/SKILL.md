@@ -18,6 +18,29 @@ On Windows, use `command` for `.cmd` or `.bat` wrappers such as `npm`; `argv` st
 
 Keep the job array minimal and task-directed. Do not run generic version or workspace-inventory probes unless the task needs them. Check the effects of every requested command before launch, and do not add synthetic workload.
 
+## Permissions
+
+`run` can execute arbitrary programs, modify files, and access the network. MCP
+processes and their jobs do not inherit Codex's per-turn filesystem sandbox.
+`status` and `logs` are read-only; logs can contain secrets.
+
+`MCP tool call requires approval, but approval policy is never` means Codex
+rejected the call before this server launched a job. No run was acknowledged;
+there is no job to wait for. Do not bypass the rejection with another runner.
+
+Ask the user to choose interactive approval (`on-request`) or explicit trust.
+For explicit trust, the user can add this line inside the managed
+`[mcp_servers.cli-run]` table in Codex `config.toml`, before the end marker:
+
+```toml
+tools.run.approval_mode = "approve"
+```
+
+This trusts arbitrary `run` commands, not only tests. Installation does not add
+this permission automatically; reinstall preserves an explicit policy line.
+Restart Codex after changing it. This does not change `apply_patch` permissions
+or make a read-only `.git` writable.
+
 ## Completion
 
 For default `queue` delivery, the `run` result is an acknowledgment, not command completion. After all jobs finish, one short message reports the task name, UID, and success/failure count. It does not include commands or output. On success, do not call `status` or `logs` or repeat the completion message unless the task requires further work. On failure or when asked for details, inspect by name or UID. Let the completion message wake you; do not wait or poll `status` to discover completion.

@@ -1,5 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -60,6 +62,37 @@ describe('managed Codex config.toml cli-run MCP entry', () => {
     assert.ok(updated.includes('command = "node"'));
     assert.ok(updated.startsWith('a = 1\n\n'));
     assert.ok(updated.endsWith('\n\n[tui]\ntheme = "x"\n'));
+  });
+
+  for (const mode of ['auto', 'prompt', 'writes', 'approve']) {
+    it(`preserves explicit run approval policy ${mode} while repairing the server`, (t) => {
+      const { scope, path } = sandbox(t);
+      const policy = `tools.run.approval_mode = "${mode}" # personal policy`;
+      writeFileSync(path, [
+        CODEX_MCP_BEGIN, '[mcp_servers.cli-run]', 'command = "old"', policy, CODEX_MCP_END, '',
+      ].join('\r\n'));
+      writeCodexMcpConfig(scope);
+      const updated = readFileSync(path, 'utf8');
+      assert.equal(updated.split('\r\n').filter((line) => line === policy).length, 1);
+      assert.equal(writeCodexMcpConfig(scope).written, 0);
+      assert.equal(readFileSync(path, 'utf8'), updated);
+      const home = scope.cwd;
+      const reinstall = spawnSync(process.execPath, [
+        fileURLToPath(new URL('../bin/cah.js', import.meta.url)), 'reinstall', '--codex-skills',
+      ], { env: { ...process.env, HOME: home, USERPROFILE: home }, encoding: 'utf8' });
+      assert.equal(reinstall.status, 0, reinstall.stderr);
+      assert.equal(readFileSync(path, 'utf8').split('\r\n').filter((line) => line === policy).length, 1);
+    });
+  }
+
+  it('does not turn a nested table property into run authorization', (t) => {
+    const { scope, path } = sandbox(t);
+    writeFileSync(path, [
+      CODEX_MCP_BEGIN, '[mcp_servers.cli-run]', 'command = "old"',
+      '[mcp_servers.cli-run.env]', 'tools.run.approval_mode = "approve"', CODEX_MCP_END, '',
+    ].join('\n'));
+    writeCodexMcpConfig(scope);
+    assert.doesNotMatch(readFileSync(path, 'utf8'), /tools\.run\.approval_mode/);
   });
 
   for (const foreign of [

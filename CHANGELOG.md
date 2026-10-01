@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-10-01
+
+### Fixed
+
+- `cli-run` now advertises honest MCP annotations: `status`/`logs` are read-only,
+  while `run` remains a potentially destructive, open-world operation.
+- Codex skill reinstall preserves an explicitly configured
+  `tools.run.approval_mode` in the managed MCP server table. New installations
+  do not grant trust automatically. The skill documents approval rejection,
+  explicit trust, and the separate Codex filesystem/Git permission boundary.
+
 ## [0.15.0] - 2026-09-30
 
 ### Added
