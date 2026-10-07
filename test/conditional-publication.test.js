@@ -9,10 +9,10 @@ import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { captureRegularFileSnapshot, writeFileAtomic } from '../lib/fs-atomic.js';
 import { publishWithFence, recoverPublicationFence } from '../lib/fs-atomic-publication.js';
-import { runWorker } from '../test-support/process-batches.js';
+import { runWorker, DEFAULT_CHILD_DEADLINE_MS } from '../test-support/process-batches.js';
 
 function waitForPath(path) {
-  const deadline = Date.now() + 10_000;
+  const deadline = Date.now() + DEFAULT_CHILD_DEADLINE_MS;
   return new Promise((resolve, reject) => {
     const poll = () => {
       if (existsSync(path)) return resolve();

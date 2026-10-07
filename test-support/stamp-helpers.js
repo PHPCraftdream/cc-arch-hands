@@ -153,7 +153,7 @@ export function updateMarkerDir(home) {
   return join(home, '.claude', 'cah-bin', 'cache', 'update-markers');
 }
 
-export async function waitForPath(path, timeoutMs = 5000) {
+export async function waitForPath(path, timeoutMs = DEFAULT_CHILD_DEADLINE_MS) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (existsSync(path)) return;

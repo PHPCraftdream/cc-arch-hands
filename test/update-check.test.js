@@ -19,11 +19,11 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { isNewerVersion, getLatestVersion, CURRENT_VERSION } from '../lib/update-check.js';
 import { isOlderThan, mtimeMsForAge, sameDeviceIdentity, sameFileIdentity, writeFileAtomic } from '../lib/fsutil.js';
-import { runWorker } from '../test-support/process-batches.js';
+import { runWorker, DEFAULT_CHILD_DEADLINE_MS } from '../test-support/process-batches.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-function waitForPath(path, timeoutMs = 5000) {
+function waitForPath(path, timeoutMs = DEFAULT_CHILD_DEADLINE_MS) {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve, reject) => {
     const poll = () => {

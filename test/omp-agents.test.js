@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DEFAULT_CLI_TIMEOUT_MS } from '../test-support/process-batches.js';
 import { OmpAgents, SentinelOmpAgent } from '../lib/omp-scope.js';
 import { OMP_AGENT_TAGS_BEGIN, OMP_AGENT_TAGS_END } from '../lib/omp-instructions.js';
 
@@ -16,7 +17,7 @@ function sandbox(t) {
 }
 function call(home, ...args) {
   return spawnSync(process.execPath, [cli, ...args], {
-    env: { ...process.env, HOME: home, USERPROFILE: home }, encoding: 'utf8', timeout: 30_000,
+    env: { ...process.env, HOME: home, USERPROFILE: home }, encoding: 'utf8', timeout: DEFAULT_CLI_TIMEOUT_MS,
   });
 }
 function ok(home, ...args) {

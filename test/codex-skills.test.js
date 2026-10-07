@@ -5,6 +5,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DEFAULT_CLI_TIMEOUT_MS } from '../test-support/process-batches.js';
 import { parseOnly } from '../lib/cli.js';
 import { Scope } from '../lib/scope.js';
 import { writeCodexSkills, removeCodexSkills } from '../lib/codex-skills.js';
@@ -32,7 +33,7 @@ const cli = fileURLToPath(new URL('../bin/cah.js', import.meta.url));
 
 function callCli(home, ...args) {
   return spawnSync(process.execPath, [cli, ...args], {
-    env: { ...process.env, HOME: home, USERPROFILE: home }, encoding: 'utf8', timeout: 30_000,
+    env: { ...process.env, HOME: home, USERPROFILE: home }, encoding: 'utf8', timeout: DEFAULT_CLI_TIMEOUT_MS,
   });
 }
 

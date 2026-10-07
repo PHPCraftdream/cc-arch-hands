@@ -2,13 +2,13 @@ import { existsSync, mkdtempSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { runWorker } from './process-batches.js';
+import { runWorker, DEFAULT_CHILD_DEADLINE_MS } from './process-batches.js';
 
 export function isolatedDir() {
   return mkdtempSync(join(tmpdir(), 'cah-ts-'));
 }
 
-export function waitForPath(path, timeoutMs = 5000) {
+export function waitForPath(path, timeoutMs = DEFAULT_CHILD_DEADLINE_MS) {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve, reject) => {
     const poll = () => {

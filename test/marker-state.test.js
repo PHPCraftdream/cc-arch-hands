@@ -133,7 +133,7 @@ async function waitForPath(path, deadlineMs = DEFAULT_CHILD_DEADLINE_MS) {
 }
 
 // Synchronous readiness wait for filesystem callbacks.
-function waitForPathSync(path, deadlineMs = 5000) {
+function waitForPathSync(path, deadlineMs = DEFAULT_CHILD_DEADLINE_MS) {
   const deadline = Date.now() + deadlineMs;
   while (!existsSync(path)) {
     if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`);

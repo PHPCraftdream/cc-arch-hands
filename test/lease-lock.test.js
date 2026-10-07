@@ -6,6 +6,7 @@ import { basename, join } from 'node:path';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { acquireLease, LEASE_MAX_MS, leaseOwned, releaseLease, RELEASE_TOTAL_WAIT_MS, renewLease } from '../lib/lease-lock.js';
+import { DEFAULT_CHILD_DEADLINE_MS } from '../test-support/process-batches.js';
 import { leaseExpired, FUTURE_SKEW_TOLERANCE_MS } from '../lib/lease-clock.js';
 
 const fixtures = new Set();
@@ -22,7 +23,7 @@ function spinWait(ms) {
 
 // Synchronous busy-poll for a ready-file signal, replacing a guess at how
 // long a child process needs to start (same pattern as marker-state.test.js).
-function waitForPathSync(path, deadlineMs = 10_000) {
+function waitForPathSync(path, deadlineMs = DEFAULT_CHILD_DEADLINE_MS) {
   const deadline = Date.now() + deadlineMs;
   while (!existsSync(path)) {
     if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`);

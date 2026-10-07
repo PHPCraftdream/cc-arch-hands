@@ -1,12 +1,16 @@
 // Keep process races broad while bounding OS child-process fan-out.  The
 // helpers in this file are test infrastructure only; the deadlines are here
 // so a broken fixture cannot leave a test process (or a batch) alive forever.
-export const DEFAULT_CHILD_DEADLINE_MS = 15_000;
+// A cold Node start on the Windows dev host has been observed to take 30-40 s
+// after idle, so deadlines budget for that, not for a warm 1 s start.
+export const DEFAULT_CHILD_DEADLINE_MS = 60_000;
+// Bound for synchronous CLI spawns in installer tests.
+export const DEFAULT_CLI_TIMEOUT_MS = 120_000;
 // Bin publication workers perform a full dependency capture before their
 // interlock becomes observable. Keep that bound separate from lightweight
 // companion children so a loaded Windows host does not kill a valid race
 // fixture before it reaches its synchronization point.
-export const DEFAULT_WORKER_DEADLINE_MS = 60_000;
+export const DEFAULT_WORKER_DEADLINE_MS = 120_000;
 export const TERMINATION_GRACE_MS = 250;
 export const DEFAULT_BATCH_TASK_DEADLINE_MS = DEFAULT_CHILD_DEADLINE_MS + 2_000;
 

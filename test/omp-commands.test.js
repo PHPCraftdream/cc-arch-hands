@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DEFAULT_CLI_TIMEOUT_MS } from '../test-support/process-batches.js';
 import { OmpCommands, OmpCommandRuntimeFiles, SetForOmpCommand } from '../lib/omp-commands.js';
 
 const cli = fileURLToPath(new URL('../bin/cah.js', import.meta.url));
@@ -15,7 +16,7 @@ function sandbox(t) {
 }
 function call(home, ...args) {
   return spawnSync(process.execPath, [cli, ...args], {
-    env: { ...process.env, HOME: home, USERPROFILE: home }, encoding: 'utf8', timeout: 30_000,
+    env: { ...process.env, HOME: home, USERPROFILE: home }, encoding: 'utf8', timeout: DEFAULT_CLI_TIMEOUT_MS,
   });
 }
 function ok(home, ...args) {
@@ -30,7 +31,7 @@ function missing(home) {
   return Number(call(home, 'doctor').stdout.match(/missing: (\d+)/)[1]);
 }
 function git(cwd, ...args) {
-  const result = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: 30_000,
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: DEFAULT_CLI_TIMEOUT_MS,
     env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: 'NUL',
       GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.invalid',
       GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.invalid' } });
@@ -117,7 +118,7 @@ describe('OMP command installer', () => {
     ok(home, 'install', '--omp-commands');
     const helper = join(home, '.omp', 'agent', 'cah', 'commit-checkpoint.mjs');
     const result = spawnSync(process.execPath, [helper, '--name', 'snapshot.md'], {
-      cwd: repo, encoding: 'utf8', timeout: 30_000,
+      cwd: repo, encoding: 'utf8', timeout: DEFAULT_CLI_TIMEOUT_MS,
       env: { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.invalid',
         GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.invalid' },
     });

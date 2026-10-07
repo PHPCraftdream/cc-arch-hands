@@ -2,7 +2,7 @@ import { mkdtempSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
-import { runWorker } from './process-batches.js';
+import { runWorker, DEFAULT_CHILD_DEADLINE_MS } from './process-batches.js';
 
 export const FABLE_ORACLE = [
   ['fl', 'claude-fable-5-1', 'low'],
@@ -25,7 +25,7 @@ export function waitForWorker(worker) {
   return runWorker(worker, { label: 'atomic-write worker', requireMessage: false }).then(() => undefined);
 }
 
-export function waitForPath(path, timeoutMs = 5000) {
+export function waitForPath(path, timeoutMs = DEFAULT_CHILD_DEADLINE_MS) {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve, reject) => {
     const poll = () => {

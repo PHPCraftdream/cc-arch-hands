@@ -41,7 +41,7 @@ import {
 } from '../lib/probe.js';
 import { regularFileIdentity, sameFileIdentity } from '../lib/fsutil.js';
 import { recoverPublicationFence } from '../lib/fs-atomic-publication.js';
-import { runWorker } from '../test-support/process-batches.js';
+import { runWorker, DEFAULT_CHILD_DEADLINE_MS } from '../test-support/process-batches.js';
 
 function harness() {
   const root = mkdtempSync(join(tmpdir(), 'cah-probe-'));
@@ -54,7 +54,7 @@ function harness() {
 }
 
 async function waitForPath(path) {
-  const deadline = Date.now() + 10_000;
+  const deadline = Date.now() + DEFAULT_CHILD_DEADLINE_MS;
   while (!existsSync(path)) {
     if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`);
     await new Promise((resolve) => setTimeout(resolve, 5));

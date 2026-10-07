@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const helper = fileURLToPath(new URL('../templates/codex-skills/ccheckpoint/scripts/commit-checkpoint.mjs', import.meta.url));
@@ -25,8 +25,8 @@ function repo(t) {
   return dir;
 }
 
-function commit(cwd, name) {
-  const call = spawnSync(process.execPath, [helper, '--name', name], { cwd, encoding: 'utf8' });
+function commit(cwd, name, env = process.env) {
+  const call = spawnSync(process.execPath, [helper, '--name', name], { cwd, env, encoding: 'utf8' });
   return { exit: call.status, data: JSON.parse(call.stdout), stderr: call.stderr };
 }
 
@@ -65,7 +65,10 @@ describe('Codex ccheckpoint commit helper', () => {
     assert.equal(commit(dir, '../escape.md').data.status, 'failed');
     const outside = mkdtempSync(join(tmpdir(), 'cah-codex-checkpoint-outside-'));
     t.after(() => rmSync(outside, { recursive: true, force: true }));
-    assert.equal(commit(outside, 'session.md').data.status, 'skipped');
+    const env = { ...process.env, GIT_CEILING_DIRECTORIES: dirname(outside) };
+    const discovery = spawnSync('git', ['rev-parse', '--show-toplevel'], { cwd: outside, env, encoding: 'utf8' });
+    assert.notEqual(discovery.status, 0, 'outside fixture must not discover an ancestor repository');
+    assert.equal(commit(outside, 'session.md', env).data.status, 'skipped');
   });
 
   it('commits from a linked worktree and keeps its index clean', (t) => {

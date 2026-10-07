@@ -114,7 +114,7 @@ function cacheDir(home) {
   return join(home, '.claude', 'cah-bin', 'cache', 'hint-markers');
 }
 
-async function waitForPath(path, timeoutMs = 5000) {
+async function waitForPath(path, timeoutMs = DEFAULT_CHILD_DEADLINE_MS) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (existsSync(path)) return;
