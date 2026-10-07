@@ -407,6 +407,72 @@ does not automatically re-arm it. `/clock` and `/checkpoint-watch` are not
 installed for OMP: their current statusLine/hook implementations are Claude-only.
 
 
+### Optional OpenCode artifacts
+
+`--opencode` groups three opt-in classes for OpenCode v1.18.34. Used alone it
+installs only OpenCode artifacts; combined with `--only` it adds all three
+classes. Nothing is queried at install time: OpenCode, the provider connection
+and model availability are never checked.
+
+- **`--opencode-agents`** — all 39 subagents from the Codex model/alias
+  registry (see the Codex-agents table above). Each `<name>.md` lands in
+  `<root>/agents/` with `mode: subagent`, `model: openai/<manifest model>`
+  and a literal `options.reasoningEffort` (including `max` and `ultra`; no
+  `variant` is written, nothing is remapped). A managed delegation rule lives
+  in a `<!-- cah-opencode-agent-tags:start -->`/`:end -->` section of
+  `<root>/AGENTS.md` — for `--local`/`--cwd` the **project-root**
+  `AGENTS.md`, because `.opencode/AGENTS.md` is not loaded globally. The rule
+  says: an agent name in a request means "delegate to that subagent", a mere
+  mention is not a launch, the parent model is never switched, `ultra` stays
+  literal. Foreign bytes around the section are preserved; uninstall removes
+  an `AGENTS.md` that held only our section.
+- **`--opencode-commands`** — nine workflow slash commands (checkpoint,
+  ccheckpoint, checkpoint-resume, checkpoint-prune, babysit, babygoal, task,
+  triage, repo-sight) under `<root>/commands/<name>.md`, plus runtime files:
+  the babysit scheduler and the isolated-index checkpoint commit helper in
+  `<root>/cah-opencode/`, and the plugin `<root>/plugins/cah-babysit.js`.
+- **`--opencode-skills`** — the same nine workflows as skills under
+  `<root>/skills/<name>/SKILL.md`. The slash command wins slash UX; the skill
+  stays reachable through the `skill` tool. Installing this class auto-adds
+  `opencode-commands`, because babysit and babygoal need the plugin.
+
+The plugin registers two tools. OpenCode has no `todoread`, so the workflows
+read the plan with **`cah_todos`** (a read-only view of `session.todo`) and
+write it with the native `todowrite`. **`cah_babysit`** (`arm`/`status`/`off`)
+is a session-only heartbeat: one timer per session, 1 s–7 d intervals, 7-day
+expiry, armed only with unfinished todos in a main (not child) session. It
+wakes only an idle session, never queues a second wake while one is unresolved
+and reuses the last user message's agent and model (it stops visibly if they
+are missing). It stops on completion, session deletion, an assistant error or
+abort (including Esc), and after 30 minutes without a resolved wake. A stop
+raises a TUI toast and is reported by `status` as `stopped`. It cannot revive
+a closed OpenCode process or retract a prompt OpenCode already accepted.
+
+Scope: the global root is `$OPENCODE_CONFIG_DIR`, else
+`$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`; `--local`/`--cwd`
+target `<path>/.opencode` instead (`--local` requires it to exist; there is no
+`.claude` guard for OpenCode-only selections). Restart OpenCode after
+installation: agents and plugins are not hot-reloaded. Unsupported model or
+effort values may fail upstream. `list --json --opencode` and
+`doctor --opencode` check only OpenCode files, so an OpenCode-only install can
+be healthy; this is file health, not provider availability.
+
+```bash
+npx cc-arch-hands install --opencode            # all OpenCode artifacts
+npx cc-arch-hands install --opencode-agents     # 39 subagents + AGENTS.md tag rule
+npx cc-arch-hands install --opencode-skills     # nine skills (auto-adds opencode-commands)
+npx cc-arch-hands install --opencode-commands   # nine commands + plugin runtime
+npx cc-arch-hands list --json --opencode        # or per-class: --opencode-agents / -commands / -skills
+npx cc-arch-hands doctor --opencode
+```
+
+Checked against a real OpenCode 1.18.34 (`debug agent`, `debug skill`,
+`debug config` and direct `cah_todos`/`cah_babysit` calls): agent
+registration with model and effort, discovery of all skills and commands, and
+plugin loading. No inference ran, so provider support for a given effort and a
+model-driven babysit wake are untested.
+
+
 ### 4. Skills (11)
 
 Reusable capability packs Claude Code loads on demand. Each is invoked as
@@ -549,6 +615,9 @@ What `/resume` does:
 | Codex skills | <!--gen:count:codex-skills-->4<!--/gen--> | `<scope>/.codex/skills/<name>/` (only with `--codex-skills`) |
 | OMP agents and tag rule | Full registry + rule | `~/.omp/agent/agents/<name>.md` and `~/.omp/agent/APPEND_SYSTEM.md` (only with `--omp-agents`; `--omp-profile NAME` selects `~/.omp/profiles/NAME/agent/`) |
 | OMP workflow commands | 9 commands + 2 runtime files | `~/.omp/agent/commands/`, `extensions/cah-babysit.js` and `cah/commit-checkpoint.mjs` (only with `--omp-commands`; supports `--omp-profile NAME`) |
+| OpenCode subagents + tag rule | 39 | `<cfg>/agents/<name>.md` and a marked section in `<cfg>/AGENTS.md` (only with `--opencode-agents`; `<cfg>` = `$OPENCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`) |
+| OpenCode skills | 9 | `<cfg>/skills/<name>/SKILL.md` (only with `--opencode-skills`) |
+| OpenCode commands + runtime | 9 commands + 3 runtime files | `<cfg>/commands/<name>.md`, `<cfg>/cah-opencode/` (scheduler + helper) and `<cfg>/plugins/cah-babysit.js` (only with `--opencode-commands`) |
 
 `<scope>` is `~/` by default (global install). Use `--local` or `--cwd`
 to target a specific project directory instead.
@@ -614,6 +683,10 @@ npx cc-arch-hands install --codex-skills           # optional: install Codex ski
 npx cc-arch-hands install --omp-agents             # optional: global OMP agents + agent-tag rule
 npx cc-arch-hands install --omp-commands           # optional: all OMP workflow commands + runtime
 npx cc-arch-hands install --omp                    # optional: all supported OMP agents, rule, commands and runtime
+npx cc-arch-hands install --opencode-agents        # optional: 39 OpenCode subagents + AGENTS.md tag rule
+npx cc-arch-hands install --opencode-skills        # optional: nine OpenCode skills (auto-adds the plugin runtime class)
+npx cc-arch-hands install --opencode-commands      # optional: nine OpenCode commands + babysit plugin runtime
+npx cc-arch-hands install --opencode               # optional: all OpenCode artifacts
 
 # --only takes install classes, individual skill names, or any mix.
 npx cc-arch-hands install --only skills                       # all 11 skills
@@ -666,6 +739,9 @@ npx cc-arch-hands uninstall --commands                        # remove only the 
 npx cc-arch-hands uninstall --codex-agents                    # remove only Codex agents
 npx cc-arch-hands uninstall --codex-skills                    # remove only Codex skills
 npx cc-arch-hands uninstall --only clock                      # remove only the clock skill, keep bins
+npx cc-arch-hands uninstall --opencode                        # remove all OpenCode artifacts
+npx cc-arch-hands list --json --opencode                      # only OpenCode kinds (agents, rule, commands, skills, runtime)
+npx cc-arch-hands doctor --opencode                           # health gate over OpenCode artifacts only
 
 npx cc-arch-hands list                             # tabular: NAME | KIND | STATE
 npx cc-arch-hands list --json                      # NDJSON for scripting

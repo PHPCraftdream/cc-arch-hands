@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Opt-in OpenCode (v1.18.34) support: `--opencode-agents`, `--opencode-commands`,
+  `--opencode-skills` and the grouped `--opencode`, also accepted by `list` and
+  `doctor` to inspect only OpenCode files. `--local`/`--cwd` target
+  `<path>/.opencode` without a `.claude` guard; the global root honors
+  `OPENCODE_CONFIG_DIR`, then `XDG_CONFIG_HOME/opencode`, then
+  `~/.config/opencode`. Restart OpenCode after installing.
+- OpenCode agents: all 39 Codex-registry aliases as `mode: subagent` files in
+  `agents/` with `model: openai/<model>` and a literal
+  `options.reasoningEffort` (`max`/`ultra` included, no capability filtering
+  or remapping), plus a managed exact-name delegation rule in a marked section
+  of `AGENTS.md` (the project-root file for local installs; uninstall removes a
+  file that held only that section).
+- OpenCode workflows: nine slash commands in `commands/` and nine skills in
+  `skills/` (checkpoint, ccheckpoint, checkpoint-resume, checkpoint-prune,
+  babysit, babygoal, task, triage, repo-sight) using OpenCode's canonical todo
+  statuses and the native `todowrite`; a parity test keeps each command and its
+  skill the same text. `opencode-skills` auto-adds `opencode-commands`.
+- OpenCode runtime in `cah-opencode/` and `plugins/cah-babysit.js`: the
+  `cah_todos` tool (OpenCode has no `todoread`) and the session-only
+  `cah_babysit` heartbeat with idle-only wakes, one in-flight wake per session,
+  fail-closed stops that raise a TUI toast and show up as `stopped` in
+  `status`, and the isolated-index checkpoint commit helper. Foreign runtime
+  files block install; owned orphans are pruned.
+
 ## [0.15.1] - 2026-10-01
 
 ### Fixed
