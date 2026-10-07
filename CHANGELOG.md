@@ -7,31 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-07
+
 ### Added
 
-- Opt-in OpenCode (v1.18.34) support: `--opencode-agents`, `--opencode-commands`,
-  `--opencode-skills` and the grouped `--opencode`, also accepted by `list` and
-  `doctor` to inspect only OpenCode files. `--local`/`--cwd` target
-  `<path>/.opencode` without a `.claude` guard; the global root honors
-  `OPENCODE_CONFIG_DIR`, then `XDG_CONFIG_HOME/opencode`, then
-  `~/.config/opencode`. Restart OpenCode after installing.
-- OpenCode agents: all 39 Codex-registry aliases as `mode: subagent` files in
-  `agents/` with `model: openai/<model>` and a literal
-  `options.reasoningEffort` (`max`/`ultra` included, no capability filtering
-  or remapping), plus a managed exact-name delegation rule in a marked section
-  of `AGENTS.md` (the project-root file for local installs; uninstall removes a
-  file that held only that section).
-- OpenCode workflows: nine slash commands in `commands/` and nine skills in
-  `skills/` (checkpoint, ccheckpoint, checkpoint-resume, checkpoint-prune,
-  babysit, babygoal, task, triage, repo-sight) using OpenCode's canonical todo
-  statuses and the native `todowrite`; a parity test keeps each command and its
-  skill the same text. `opencode-skills` auto-adds `opencode-commands`.
-- OpenCode runtime in `cah-opencode/` and `plugins/cah-babysit.js`: the
-  `cah_todos` tool (OpenCode has no `todoread`) and the session-only
-  `cah_babysit` heartbeat with idle-only wakes, one in-flight wake per session,
-  fail-closed stops that raise a TUI toast and show up as `stopped` in
-  `status`, and the isolated-index checkpoint commit helper. Foreign runtime
-  files block install; owned orphans are pruned.
+- **Claude Haiku 5.5** (`claude-haiku-5-5`, 1M context, all five effort levels,
+  needs Claude Code v2.1.293 or later): commands and agents `hl`, `hm`, `hh`, `hx`,
+  `hxx`. Haiku 4.5 moves back one slot as `h1l`, `h1m`, `h1h`, `h1x`, `h1xx`
+  (Claude Code applies no effort to Haiku 4.5, so those five run it identically).
+  The status line now counts `claude-haiku-5-5` against a 1M context window.
+  Haiku now uses the same releases-behind numbering as Opus, Fable and Sonnet.
+- **Optional OpenCode integration** (written against OpenCode 1.18.34). Three
+  opt-in classes plus a grouped flag: `--opencode-agents`, `--opencode-commands`,
+  `--opencode-skills` and `--opencode`. Nothing is queried at install time:
+  OpenCode, the provider connection and model availability are never checked.
+  `cah list` and `cah doctor` accept the same flags to inspect only OpenCode files,
+  so an OpenCode-only install can be healthy. Restart OpenCode after installing.
+  - Scope: the global root is `$OPENCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/opencode`,
+    else `~/.config/opencode`. `--local`/`--cwd` target `<path>/.opencode` (`--local`
+    requires it to exist) with no `.claude` guard.
+  - Agents (`agents/`): all 39 Codex-registry aliases as `mode: subagent` files with
+    `model: openai/<model>` and a literal `options.reasoningEffort` (`max` and `ultra`
+    included; no capability filtering and no effort remapping). A managed exact-name
+    delegation rule lives in a marked section of `AGENTS.md` (the project-root file
+    for local installs): an agent name in a request means delegate to that subagent,
+    a mere mention is not a launch, the parent model is never switched. Foreign bytes
+    are preserved, and uninstall removes an `AGENTS.md` that held only that section.
+  - Workflows (`commands/` and `skills/`): the nine workflows checkpoint, ccheckpoint,
+    checkpoint-resume, checkpoint-prune, babysit, babygoal, task, triage and repo-sight,
+    as slash commands and same-named skills, using OpenCode's canonical todo statuses
+    and the native `todowrite`. A parity test keeps each command and its skill the same
+    text. `opencode-skills` auto-adds `opencode-commands`; the runtime is published
+    before the skills that need it and removed after them.
+  - Runtime (`cah-opencode/` and `plugins/cah-babysit.js`): the `cah_todos` tool (a
+    read-only view of the session todos, because OpenCode has no `todoread`) and the
+    session-only `cah_babysit` heartbeat (`arm`, `status`, `off`): one timer per session,
+    1 second to 7 day intervals, armed only with unfinished todos in a main session,
+    wakes only an idle session and never queues a second wake while one is unresolved.
+    It stops on completion, session deletion, an assistant error or abort, or 30 minutes
+    without a resolved wake; every stop raises a TUI toast and shows up as `stopped` in
+    `status`. It cannot revive a closed OpenCode process. The isolated-index checkpoint
+    commit helper ships alongside. Foreign runtime files block install; owned orphans
+    are pruned.
+  - Checked against a real OpenCode 1.18.34 (`debug agent`, `debug skill`, `debug config`
+    and direct tool calls): agent registration with model and effort, discovery of every
+    skill and command, plugin loading, and `cah_todos`/`cah_babysit`. No inference ran, so
+    provider support for a given effort and a model-driven babysit wake are untested.
+
+### Changed
+
+- Templates are pinned to LF in `.gitattributes`, so a Windows checkout with
+  `core.autocrlf` no longer installs CRLF bodies followed by an LF sentinel line.
+- The README model table drops its "no effort" column, which no alias uses any more.
+
+### Removed
+
+- **Breaking:** the Haiku aliases `h` and `h45` (commands and agents). Use `hm` for
+  the top Haiku and `h1m` for Haiku 4.5; reinstalling prunes the old owned files.
 
 ## [0.15.1] - 2026-10-01
 
