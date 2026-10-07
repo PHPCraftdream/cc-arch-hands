@@ -15,6 +15,8 @@ const PLUGIN_SRC = join(worktree, 'templates', 'opencode-runtime', 'plugin', 'ca
 function sandbox(t) {
   const root = mkdtempSync(join(tmpdir(), 'cah-opencode-plugin-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
+  // Node < 20.19 does not sniff ESM syntax in a .js file (OpenCode's Bun does).
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ type: 'module' }));
   mkdirSync(join(root, 'cah-opencode'), { recursive: true });
   mkdirSync(join(root, 'plugins'), { recursive: true });
   copyFileSync(SCHEDULER_SRC, join(root, 'cah-opencode', 'cah-babysit-scheduler.js'));
