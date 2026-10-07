@@ -3,3 +3,7 @@
 # under git core.autocrlf on Windows.
 bin/*.js text eol=lf
 lib/*.js text eol=lf
+
+# Templates are copied into user directories with a sentinel appended; keep them
+# LF so a CRLF checkout (core.autocrlf on Windows) never yields mixed endings.
+templates/** text eol=lf
