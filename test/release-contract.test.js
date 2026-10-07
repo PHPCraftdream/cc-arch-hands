@@ -529,11 +529,14 @@ describe('release and generated-doc contracts', () => {
     }
   });
 
-  it('README describes no-effort Haiku and shared-bin uninstall explicitly', () => {
+  it('README documents the Haiku 5.5 / 4.5 commands, the retired aliases and shared-bin uninstall', () => {
     const readme = read('README.md');
-    assert.match(readme, /\/h\s+Haiku \(top\), no effort control/);
-    assert.match(readme, /`\/h45`/);
+    assert.match(readme, /\/hm\s+Haiku 5\.5 \(top\), medium effort/);
+    assert.match(readme, /\/h1x\s+Haiku 4\.5/);
+    assert.match(readme, /\| \*\*Haiku\*\* \(top, 1M\) \| `claude-haiku-5-5` \| `\/hl` \| `\/hm` \| `\/hh` \| `\/hx` \| `\/hxx` \|/);
+    assert.match(readme, /\| Haiku 4\.5 \(200k\) \| `claude-haiku-4-5` \| `\/h1l` \| `\/h1m` \| `\/h1h` \| `\/h1x` \| `\/h1xx` \|/);
+    assert.doesNotMatch(readme, /\| `\/h45` \|/, 'the retired h45 alias is gone from the tables');
+    assert.doesNotMatch(readme, /\| `\/h` \|/, 'the retired bare h alias is gone from the tables');
     assert.match(readme, /uninstall --only bins.*shared bins globally/);
-    assert.doesNotMatch(readme, /`\/hl`.*low effort/);
   });
 });

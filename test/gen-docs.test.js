@@ -51,13 +51,13 @@ describe('gen-docs --check', () => {
   });
 
   it('keeps the current narrative counts tied to the fixed registry oracle', () => {
-    assert.equal(AllModelCommands.length, 54);
-    assert.equal(AllModelCommands.length * 2, 108);
+    assert.equal(AllModelCommands.length, 62);
+    assert.equal(AllModelCommands.length * 2, 124);
     assert.equal(AllCodexAgents.length, 39);
     assert.deepEqual(AllCodexSkills, ['cli-run', 'checkpoint', 'ccheckpoint', 'resume']);
 
-    assert.match(README, /<!--gen:count:model-commands-->54<!--\/gen-->/);
-    assert.match(README, /<!--gen:count:model-bodies-->108<!--\/gen--> command\+agent bodies/);
+    assert.match(README, /<!--gen:count:model-commands-->62<!--\/gen-->/);
+    assert.match(README, /<!--gen:count:model-bodies-->124<!--\/gen--> command\+agent bodies/);
     assert.match(README, /<!--gen:count:codex-agents-->39<!--\/gen-->/);
     assert.match(README, /<!--gen:count:codex-skills-->4<!--\/gen-->/);
     assert.match(
@@ -65,7 +65,7 @@ describe('gen-docs --check', () => {
       /AllCodexAgents \(39\)/,
       'README layout annotation must use the manifest Codex-agent count',
     );
-    assert.match(CLAUDE, /54 current Claude model definitions[\s\S]*108 installed bodies total/);
+    assert.match(CLAUDE, /62 current Claude model definitions[\s\S]*124 installed bodies total/);
     assert.match(CLAUDE, /current `AllCodexAgents` registry contains 39 optional Codex agents/);
 
     for (const stale of [

@@ -251,31 +251,57 @@ describe('removeModelCommands', { concurrency: false }, () => {
   });
 });
 
-describe('Haiku no-effort aliases', { concurrency: false }, () => {
-  it('keeps only the stable no-effort aliases and does not alter Codex hl', () => {
-    assert.deepEqual(
-      AllModelCommands.filter((entry) => entry.model.includes('haiku')).map((entry) => [entry.name, entry.effort]),
-      [['h', null], ['h45', null]],
-    );
+const NL = String.fromCharCode(10);
+
+describe('Haiku aliases', { concurrency: false }, () => {
+  it('maps the top and N-back Haiku sets and keeps Codex hl untouched', () => {
+    const haiku = AllModelCommands.filter((entry) => entry.model.includes('haiku'));
+    assert.deepEqual(haiku.map((entry) => [entry.name, entry.model, entry.effort]), [
+      ['hl', 'claude-haiku-5-5', 'low'],
+      ['hm', 'claude-haiku-5-5', 'medium'],
+      ['hh', 'claude-haiku-5-5', 'high'],
+      ['hx', 'claude-haiku-5-5', 'xhigh'],
+      ['hxx', 'claude-haiku-5-5', 'max'],
+      ['h1l', 'claude-haiku-4-5', 'low'],
+      ['h1m', 'claude-haiku-4-5', 'medium'],
+      ['h1h', 'claude-haiku-4-5', 'high'],
+      ['h1x', 'claude-haiku-4-5', 'xhigh'],
+      ['h1xx', 'claude-haiku-4-5', 'max'],
+    ]);
+    // The Codex registry has its own hl/hl1; the Claude set must not alter it.
     assert.equal(AllCodexAgents.find((entry) => entry.name === 'hl').model, 'gpt-6-luna');
     assert.equal(AllCodexAgents.find((entry) => entry.name === 'hl1').model, 'gpt-5.6-luna');
-    for (const legacy of ['hl', 'hm', 'hh', 'h45l', 'h45m', 'h45h']) {
-      assert.equal(AllModelCommands.some((entry) => entry.name === legacy), false, `${legacy} is a misleading legacy alias`);
+    for (const legacy of ['h', 'h45', 'h45l', 'h45m', 'h45h']) {
+      assert.equal(AllModelCommands.some((entry) => entry.name === legacy), false, `${legacy} is a retired Haiku alias`);
     }
   });
 
-  it('omits effort frontmatter for no-effort Haiku files', () => {
+  it('renders effort frontmatter for every Haiku variant', () => {
     const dir = tmpDir();
     const scope = new Scope({ cwd: dir });
     writeModelCommands(null, scope);
     writeModelAgents(null, scope);
-    const command = readFileSync(join(dir, '.claude', 'commands', 'h.md'), 'utf8');
-    const agent = readFileSync(join(dir, '.claude', 'agents', 'h.md'), 'utf8');
-    assert.match(command, /description: claude-haiku-4-5\nmodel: claude-haiku-4-5\n---/);
-    assert.doesNotMatch(command, /effort:/);
-    assert.match(agent, /description: claude-haiku-4-5 \(Haiku \(top, 200k\)\)/);
-    assert.match(agent, /model: claude-haiku-4-5\n---/);
-    assert.doesNotMatch(agent, /effort:/);
+    const read = (kind, name) => readFileSync(join(dir, '.claude', kind, `${name}.md`), 'utf8');
+    const has = (kind, name, ...frontmatter) => read(kind, name).includes(frontmatter.join(NL) + NL + '---');
+    assert.ok(has('commands', 'hm', 'model: claude-haiku-5-5', 'effort: medium'));
+    assert.ok(read('agents', 'hxx').includes('description: claude-haiku-5-5 effort=max (Haiku (top, 1M) – max)'));
+    assert.ok(has('agents', 'hxx', 'model: claude-haiku-5-5', 'effort: max'));
+    assert.ok(has('commands', 'h1x', 'model: claude-haiku-4-5', 'effort: xhigh'));
+  });
+
+  it('prunes previously installed owned h and h45 files and keeps foreign ones', () => {
+    const dir = tmpDir();
+    const scope = new Scope({ cwd: dir });
+    const commands = join(dir, '.claude', 'commands');
+    mkdirSync(commands, { recursive: true });
+    writeFileSync(join(commands, 'h.md'), `old body${NL}${SentinelModelCommand}${NL}`);
+    writeFileSync(join(commands, 'h45.md'), `old body${NL}${SentinelModelCommand}${NL}`);
+    writeFileSync(join(commands, 'h2.md'), 'foreign command' + NL);
+    const result = writeModelCommands(null, scope);
+    assert.equal(existsSync(join(commands, 'h.md')), false);
+    assert.equal(existsSync(join(commands, 'h45.md')), false);
+    assert.equal(readFileSync(join(commands, 'h2.md'), 'utf8'), 'foreign command' + NL);
+    assert.equal(result.pruned, 2);
   });
 });
 

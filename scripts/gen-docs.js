@@ -62,12 +62,16 @@ function groupByLabel(entries) {
 
 function renderModelCommandsTable(entries) {
   const groups = groupByLabel(entries);
-  const header = '| Model | model id | no effort | low | medium | high | xhigh | max |\n|---|---|---|---|---|---|---|---|';
+  // The "no effort" column only exists while some alias has no effort suffix.
+  const withNoEffort = entries.some((e) => e.effort == null);
+  const columns = ['Model', 'model id', ...(withNoEffort ? ['no effort'] : []), ...CLAUDE_EFFORTS];
+  const header = `| ${columns.join(' | ')} |\n|${columns.map(() => '---').join('|')}|`;
   const rows = groups.map((g) => {
     const byEffort = Object.fromEntries(g.entries.filter((e) => e.effort != null).map((e) => [e.effort, e.name]));
     const noEffort = g.entries.find((e) => e.effort == null);
     const cells = CLAUDE_EFFORTS.map((eff) => (byEffort[eff] ? `\`/${byEffort[eff]}\`` : '—'));
-    return `| ${boldIfTop(g.label)} | \`${g.model}\` | ${noEffort ? `\`/${noEffort.name}\`` : '—'} | ${cells.join(' | ')} |`;
+    const none = withNoEffort ? [noEffort ? `\`/${noEffort.name}\`` : '—'] : [];
+    return `| ${boldIfTop(g.label)} | \`${g.model}\` | ${[...none, ...cells].join(' | ')} |`;
   });
   return [header, ...rows].join('\n');
 }

@@ -69,8 +69,9 @@ describe('modelLimit', () => {
     assert.equal(modelLimit('claude-sonnet-5-5'), 1_000_000);
   });
 
-  it('haiku → 200_000', () => {
+  it('haiku 4.5 → 200_000, haiku 5.5 → 1_000_000', () => {
     assert.equal(modelLimit('claude-haiku-4-5'), 200_000);
+    assert.equal(modelLimit('claude-haiku-5-5'), 1_000_000);
   });
 
   it('case-insensitive: OPUS → 1_000_000', () => {
