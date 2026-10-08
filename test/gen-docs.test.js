@@ -40,6 +40,8 @@ function sorted(values) {
   return [...values].sort();
 }
 
+const identity = ({ name, model, effort, display }) => ({ name, model, effort, display });
+
 describe('gen-docs --check', () => {
   it('README.md is in sync with lib/manifest.js', () => {
     const res = spawnSync(process.execPath, [SCRIPT, '--check'], { encoding: 'utf8' });
@@ -53,20 +55,20 @@ describe('gen-docs --check', () => {
   it('keeps the current narrative counts tied to the fixed registry oracle', () => {
     assert.equal(AllModelCommands.length, 62);
     assert.equal(AllModelCommands.length * 2, 124);
-    assert.equal(AllCodexAgents.length, 39);
+    assert.equal(AllCodexAgents.length, 40);
     assert.deepEqual(AllCodexSkills, ['cli-run', 'checkpoint', 'ccheckpoint', 'resume']);
 
     assert.match(README, /<!--gen:count:model-commands-->62<!--\/gen-->/);
     assert.match(README, /<!--gen:count:model-bodies-->124<!--\/gen--> command\+agent bodies/);
-    assert.match(README, /<!--gen:count:codex-agents-->39<!--\/gen-->/);
+    assert.match(README, /<!--gen:count:codex-agents-->40<!--\/gen-->/);
     assert.match(README, /<!--gen:count:codex-skills-->4<!--\/gen-->/);
     assert.match(
       README,
-      /AllCodexAgents \(39\)/,
+      /AllCodexAgents \(40\)/,
       'README layout annotation must use the manifest Codex-agent count',
     );
     assert.match(CLAUDE, /62 current Claude model definitions[\s\S]*124 installed bodies total/);
-    assert.match(CLAUDE, /current `AllCodexAgents` registry contains 39 optional Codex agents/);
+    assert.match(CLAUDE, /current `AllCodexAgents` registry contains 40 optional Codex agents/);
 
     for (const stale of [
       'three companion',
@@ -155,17 +157,18 @@ describe('gen-docs --check', () => {
     );
   });
 
-  it('defines exactly five collision-free Astra Codex agents', () => {
-    assert.equal(AllCodexAgents.length, 39);
+  it('defines exactly six collision-free Astra Codex agents', () => {
+    assert.equal(AllCodexAgents.length, 40);
     const astra = AllCodexAgents.filter((agent) => agent.model === 'gpt-6-astra');
     assert.deepEqual(
-      astra,
+      astra.map(identity),
       [
         { name: 'la', model: 'gpt-6-astra', effort: 'low', display: 'Astra - low' },
         { name: 'ma', model: 'gpt-6-astra', effort: 'medium', display: 'Astra - medium' },
         { name: 'ha', model: 'gpt-6-astra', effort: 'high', display: 'Astra - high' },
         { name: 'xa', model: 'gpt-6-astra', effort: 'xhigh', display: 'Astra - Extra High' },
         { name: 'xxa', model: 'gpt-6-astra', effort: 'max', display: 'Astra - max' },
+        { name: 'ua', model: 'gpt-6-astra', effort: 'ultra', display: 'Astra - ultra' },
       ],
     );
 
@@ -178,22 +181,23 @@ describe('gen-docs --check', () => {
     }
     assert.deepEqual([...familyCounts.entries()], [
       ['gpt-6.1-sol', 6],
-      ['gpt-6-sol', 5],
+      ['gpt-6-sol', 6],
       ['gpt-5.6-sol', 6],
       ['gpt-6-luna', 5],
       ['gpt-5.6-terra', 6],
-      ['gpt-5.6-luna', 6],
-      ['gpt-6-astra', 5],
+      ['gpt-5.6-luna', 5],
+      ['gpt-6-astra', 6],
     ]);
   });
 
   it('shifts every Sol generation and preserves the Luna aliases', () => {
     for (const [model, aliases, ultra] of [
       ['gpt-6.1-sol', ['ls', 'ms', 'hs', 'xs', 'xxs', 'us'], true],
-      ['gpt-6-sol', ['ls1', 'ms1', 'hs1', 'xs1', 'xxs1'], false],
+      ['gpt-6-sol', ['ls1', 'ms1', 'hs1', 'xs1', 'xxs1', 'us1'], true],
       ['gpt-5.6-sol', ['ls2', 'ms2', 'hs2', 'xs2', 'xxs2', 'us2'], true],
       ['gpt-6-luna', ['ll', 'ml', 'hl', 'xl', 'xxl'], false],
-      ['gpt-5.6-luna', ['ll1', 'ml1', 'hl1', 'xl1', 'xxl1', 'ul1'], true],
+      ['gpt-5.6-luna', ['ll1', 'ml1', 'hl1', 'xl1', 'xxl1'], false],
+      ['gpt-6-astra', ['la', 'ma', 'ha', 'xa', 'xxa', 'ua'], true],
     ]) {
       const agents = AllCodexAgents.filter((agent) => agent.model === model);
       assert.deepEqual(agents.map((agent) => agent.name), aliases);
@@ -201,13 +205,13 @@ describe('gen-docs --check', () => {
         ['low', 'medium', 'high', 'xhigh', 'max', ...(ultra ? ['ultra'] : [])]);
     }
     assert.match(README, /\| Sol 6\.1 \| `ls` low[^\n]*`us` ultra \|/);
-    assert.match(README, /\| Sol 6 \| `ls1` low[^\n]*`xxs1` max \|/);
+    assert.match(README, /\| Sol 6 \| `ls1` low[^\n]*`us1` ultra \|/);
     assert.match(README, /\| Sol 5\.6 \| `ls2` low[^\n]*`us2` ultra \|/);
   });
 
   it('uses official xhigh for every Extra High Codex tier and excludes obsolete GPT models', () => {
     assert.deepEqual(
-      AllCodexAgents.filter((agent) => ['xt', 'xl', 'xs', 'xl1', 'xs1', 'xs2', 'xa'].includes(agent.name)),
+      AllCodexAgents.filter((agent) => ['xt', 'xl', 'xs', 'xl1', 'xs1', 'xs2', 'xa'].includes(agent.name)).map(identity),
       [
         { name: 'xs', model: 'gpt-6.1-sol', effort: 'xhigh', display: 'Sol 6.1 - Extra High' },
         { name: 'xs1', model: 'gpt-6-sol', effort: 'xhigh', display: 'Sol 6 - Extra High' },
@@ -220,7 +224,7 @@ describe('gen-docs --check', () => {
     );
     assert.deepEqual(
       AllCodexAgents.filter((agent) => agent.model === 'gpt-6-astra').map((agent) => agent.name),
-      ['la', 'ma', 'ha', 'xa', 'xxa'],
+      ['la', 'ma', 'ha', 'xa', 'xxa', 'ua'],
     );
     assert.ok(AllCodexAgents.every((agent) => !['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini'].includes(agent.model)));
   });
@@ -232,18 +236,16 @@ describe('gen-docs --check', () => {
 
     assert.match(
       README,
-      /Astra \(`a`\) uses five \(`l\/m\/h\/x\/xx`\)\.[\s\S]*`gpt-6-astra`/,
+      /Astra \(`a`\) uses six \(`l\/m\/h\/x\/xx\/u`\)\.[\s\S]*`gpt-6-astra`/,
       'README prose must list only the supported Astra effort levels and exact model id',
     );
-    assert.doesNotMatch(README, /Astra[^\n]*ultra/);
     assert.match(currentRelease, /`gpt-6-astra` with `low`, `medium`, `high`, `xhigh`, and `max`/);
     assert.doesNotMatch(currentRelease, /`extra`/);
 
     assert.match(
       README,
-      /\| Astra \| `la` low[^\n]*`ma` medium[^\n]*`ha` high[^\n]*`xa` xhigh[^\n]*`xxa` max \|/,
-      'generated Codex table must keep the five supported Astra aliases aligned',
+      /\| Astra \| `la` low[^\n]*`ma` medium[^\n]*`ha` high[^\n]*`xa` xhigh[^\n]*`xxa` max[^\n]*`ua` ultra \|/,
+      'generated Codex table must keep the six supported Astra aliases aligned',
     );
-    assert.doesNotMatch(README, /\| Astra \|[^\n]*`ua`/);
   });
 });

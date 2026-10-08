@@ -33,7 +33,7 @@ function ok(home, ...args) {
 }
 
 describe('OpenCode agent installer', () => {
-  it('writes all 39 agents with openai models, literal efforts, no variant key', (t) => {
+  it('writes all 40 agents with openai models, literal efforts, no variant key', (t) => {
     const home = sandbox(t);
     ok(home, 'install', '--opencode-agents');
     const dir = join(home, '.config', 'opencode', 'agents');
@@ -48,7 +48,7 @@ describe('OpenCode agent installer', () => {
       assert.match(content, /^mode: subagent$/m);
       assert.ok(content.includes(SentinelOpencodeAgent), `sentinel in ${agent.name}`);
     }
-    for (const name of ['us', 'us2', 'ut', 'ul1']) {
+    for (const name of ['us', 'us1', 'us2', 'ut', 'ua']) {
       assert.match(readFileSync(join(dir, `${name}.md`), 'utf8'), /^  reasoningEffort: ultra$/m);
     }
     assert.match(readFileSync(join(dir, 'xxa.md'), 'utf8'), /openai\/gpt-6-astra/);

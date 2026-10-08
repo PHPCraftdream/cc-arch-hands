@@ -40,7 +40,7 @@ describe('OMP installer', () => {
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
     }
-    for (const name of ['us', 'us2', 'ut', 'ul1']) {
+    for (const name of ['us', 'us1', 'us2', 'ut', 'ua']) {
       assert.match(readFileSync(join(home, '.omp', 'agent', 'agents', `${name}.md`), 'utf8'),
         /^thinking-level: ultra$/m);
     }
@@ -59,7 +59,7 @@ describe('OMP installer', () => {
       assert.match(content, new RegExp(`model: openai-codex/${agent.model}\\n`));
       assert.match(content, new RegExp(`thinking-level: ${agent.effort}\\n`));
     }
-    for (const name of ['us', 'us2', 'ut', 'ul1']) {
+    for (const name of ['us', 'us1', 'us2', 'ut', 'ua']) {
       assert.match(readFileSync(join(root, 'agents', `${name}.md`), 'utf8'), /^thinking-level: ultra$/m);
     }
     assert.equal(existsSync(join(home, '.claude')), false);

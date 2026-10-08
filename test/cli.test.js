@@ -687,7 +687,7 @@ describe('run install/uninstall --codex-agents', () => {
         assert.ok(readFileSync(join(home, '.codex', 'agents', 'll.toml'), 'utf8').includes('model = "gpt-6-luna"'));
         for (const [model, suffix, levels] of [
           ['gpt-6.1-sol', '', ['l', 'm', 'h', 'x', 'xx', 'u']],
-          ['gpt-6-sol', '1', ['l', 'm', 'h', 'x', 'xx']],
+          ['gpt-6-sol', '1', ['l', 'm', 'h', 'x', 'xx', 'u']],
           ['gpt-5.6-sol', '2', ['l', 'm', 'h', 'x', 'xx', 'u']],
         ]) {
           for (const prefix of levels) {
@@ -695,7 +695,8 @@ describe('run install/uninstall --codex-agents', () => {
               .includes(`model = "${model}"`));
           }
         }
-        assert.ok(readFileSync(join(home, '.codex', 'agents', 'ul1.toml'), 'utf8').includes('model = "gpt-5.6-luna"'));
+        assert.ok(readFileSync(join(home, '.codex', 'agents', 'ua.toml'), 'utf8').includes('model = "gpt-6-astra"'));
+        assert.ok(!existsSync(join(home, '.codex', 'agents', 'ul1.toml')));
         assert.ok(readFileSync(join(home, '.codex', 'agents', 'us.toml'), 'utf8').includes('model_reasoning_effort = "ultra"'));
         assert.ok(readFileSync(join(home, '.codex', 'agents', 'us2.toml'), 'utf8').includes('model_reasoning_effort = "ultra"'));
 
@@ -703,13 +704,13 @@ describe('run install/uninstall --codex-agents', () => {
           const path = join(home, '.codex', 'agents', `${alias}.toml`);
           writeFileSync(path, readFileSync(path, 'utf8').replace(/model = "[^"]+"/, `model = "${staleModel}"`));
         }
-        writeFileSync(join(home, '.codex', 'agents', 'us1.toml'),
-          readFileSync(join(home, '.codex', 'agents', 'us2.toml'), 'utf8').replace('name = "us2"', 'name = "us1"'));
+        writeFileSync(join(home, '.codex', 'agents', 'ul1.toml'),
+          readFileSync(join(home, '.codex', 'agents', 'us2.toml'), 'utf8').replace('name = "us2"', 'name = "ul1"'));
         assert.equal(run(['reinstall', '--codex-agents']), 0);
         assert.ok(readFileSync(join(home, '.codex', 'agents', 'ls.toml'), 'utf8').includes('model = "gpt-6.1-sol"'));
         assert.ok(readFileSync(join(home, '.codex', 'agents', 'ls1.toml'), 'utf8').includes('model = "gpt-6-sol"'));
         assert.ok(readFileSync(join(home, '.codex', 'agents', 'ls2.toml'), 'utf8').includes('model = "gpt-5.6-sol"'));
-        assert.ok(!existsSync(join(home, '.codex', 'agents', 'us1.toml')));
+        assert.ok(!existsSync(join(home, '.codex', 'agents', 'ul1.toml')));
 
         const out = captureStdout(() => run(['list', '--json']));
         const rows = out.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
@@ -750,7 +751,7 @@ describe('run install/uninstall --codex-agents', () => {
     const legacyNames = [
       'l55', 'm55', 'h55', 'x55', 'l54', 'm54', 'h54', 'x54',
       'l54m', 'm54m', 'h54m', 'x54m',
-      'ua',
+      'ul1',
     ];
     const agentsDir = join(home, '.codex', 'agents');
     const foreignPath = join(agentsDir, 'foreign-legacy.toml');

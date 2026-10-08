@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Every Claude alias record now carries `contextWindow` and every Codex agent record
+  carries `contextWindow` and `maxContextWindow` (tokens), so consumers no longer parse
+  `(1M)` out of `display`.
+- `cah models --json` prints the manifest as one JSON line (`schemaVersion` 1): Claude and
+  Codex aliases with their windows, plus each Codex model's accepted efforts. Consumers
+  such as Rush can read it instead of executing `lib/manifest.js`.
+- `npm run sync:codex` (and `sync:codex:check`) rewrites the generated
+  `lib/codex-model-specs.js` from `codex debug models` and exits 1 when the manifest and
+  Codex disagree about efforts. `npm test` compares the manifest with the installed Codex
+  and skips that check when Codex is absent.
+- Codex agents `us1` (Sol 6 ultra) and `ua` (Astra ultra): Codex accepts `ultra` on
+  `gpt-6-sol` and `gpt-6-astra`. The registry now holds 40 agents, also for OMP and OpenCode.
+
+### Removed
+
+- Codex agent `ul1` (`gpt-5.6-luna` at `ultra`): Codex does not accept `ultra` on
+  `gpt-5.6-luna`. Reinstalling prunes an owned `ul1` file (Codex, OMP and OpenCode); use `ll1`..`xxl1`, or `us2` or
+  `ut` when `ultra` is needed.
+
 ## [0.16.0] - 2026-10-07
 
 ### Added

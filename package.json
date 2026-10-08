@@ -21,7 +21,9 @@
   "scripts": {
     "test": "node --test --test-concurrency=1",
     "gen:docs": "node scripts/gen-docs.js",
-    "gen:docs:check": "node scripts/gen-docs.js --check"
+    "gen:docs:check": "node scripts/gen-docs.js --check",
+    "sync:codex": "node scripts/sync-codex-models.js",
+    "sync:codex:check": "node scripts/sync-codex-models.js --check"
   },
   "engines": {
     "node": ">=18.19.0"

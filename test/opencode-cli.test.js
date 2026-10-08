@@ -34,7 +34,7 @@ function rows(home, env = {}, ...args) {
     .split('\n').filter(Boolean).map(JSON.parse);
 }
 
-const OC_ROW_TOTAL = 39 + 1 + 9 + 3 + 9;
+const OC_ROW_TOTAL = 40 + 1 + 9 + 3 + 9;
 
 describe('OpenCode CLI integration', () => {
   it('--opencode selects all three classes without installing Claude defaults', (t) => {
@@ -113,7 +113,7 @@ describe('OpenCode CLI integration', () => {
 
   it('explicit per-class doctor selections count missing and foreign leaves independently', (t) => {
     for (const [flag, total, rel] of [
-      ['--opencode-agents', 40, 'agents/hs.md'],
+      ['--opencode-agents', 41, 'agents/hs.md'],
       ['--opencode-commands', 12, 'commands/task.md'],
       ['--opencode-skills', 9, 'skills/task/SKILL.md'],
     ]) {
@@ -255,7 +255,7 @@ describe('OpenCode CLI integration', () => {
   it('reports version counts for the OpenCode classes', (t) => {
     const home = sandbox(t);
     const version = ok(home, {}, 'version').stdout;
-    assert.match(version, /opencode-agents=39/);
+    assert.match(version, /opencode-agents=40/);
     assert.match(version, /opencode-skills=9/);
     assert.match(version, /opencode-commands=9/);
   });

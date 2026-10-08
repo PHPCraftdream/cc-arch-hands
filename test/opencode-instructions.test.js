@@ -110,7 +110,7 @@ describe('OpenCode instructions', () => {
     assert.equal(readFileSync(join(project, 'AGENTS.md'), 'utf8').includes(OPENCODE_AGENT_TAGS_BEGIN), true);
     const parsed = ok(home, 'list', '--json', '--opencode', '--local', '--cwd', project)
       .stdout.trim().split('\n').filter(Boolean).map(JSON.parse);
-    assert.equal(parsed.filter((r) => r.kind === 'opencode-agent' && r.state === 'mine').length, 39);
+    assert.equal(parsed.filter((r) => r.kind === 'opencode-agent' && r.state === 'mine').length, 40);
     // strict-local inspection resolves only .opencode — never Claude dirs
     const doctor = call(home, 'doctor', '--opencode', '--local', '--cwd', project);
     assert.equal(doctor.status, 1, 'commands/skills missing in an agents-only install');

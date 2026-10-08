@@ -4,7 +4,7 @@
 
 ## Статус реализации
 
-Установщик реализован: все 39 `AllCodexAgents`, девять workflow-команд и девять native skills в plural-каталогах `agents/`, `commands/`, `skills/`, правило точного делегирования в `AGENTS.md` и babysit plugin/runtime. Модели задаются как `openai/<model>`, effort — буквальным `options.reasoningEffort`, без `variant` и capability filtering.
+Установщик реализован: все 40 `AllCodexAgents`, девять workflow-команд и девять native skills в plural-каталогах `agents/`, `commands/`, `skills/`, правило точного делегирования в `AGENTS.md` и babysit plugin/runtime. Модели задаются как `openai/<model>`, effort — буквальным `options.reasoningEffort`, без `variant` и capability filtering.
 
 Ревью 2026-10-07 нашло и закрыло: в OpenCode 1.18.34 нет инструмента `todoread` (строки нет в бинарнике, в списке tools агента только `todowrite`), поэтому plugin получил инструмент `cah_todos` поверх `session.todo`, а шаблоны и tick prompt читают план через него; остановка babysit теперь видна (toast и `stopped` в `status`); `ccheckpoint` самодостаточна, skills без буквального `$ARGUMENTS`, тест держит тексты команды и skill одинаковыми; runtime публикуется раньше skills; `AGENTS.md`, созданный только нашим разделом, удаляется при uninstall.
 
@@ -23,8 +23,8 @@
 | Интеграция | Артефакты | Реализация | Особенности |
 |---|---|---|---|
 | Claude Code | 54 модельные команды, 54 агента, 11 skills, companion bins | `commands.js`, `agents.js`, `skills.js`, `binstall.js` | Markdown с `model`/`effort`; `.claude`; skills могут требовать Claude tools/hooks |
-| Codex | 39 TOML-агентов, 4 skills | `codex-agents.js`, `codex-skills.js` | `.codex`; skills используют общий tree installer; cli-run также управляет блоками в глобальном AGENTS.md и scope config.toml |
-| OMP | 39 Markdown-агентов, 9 workflow-команд, runtime helpers | `omp-scope.js`, `omp-agents.js`, `omp-commands.js` | Глобальные профили `.omp`; собственные `thinking-level`, todo и extension API |
+| Codex | 40 TOML-агентов, 4 skills | `codex-agents.js`, `codex-skills.js` | `.codex`; skills используют общий tree installer; cli-run также управляет блоками в глобальном AGENTS.md и scope config.toml |
+| OMP | 40 Markdown-агентов, 9 workflow-команд, runtime helpers | `omp-scope.js`, `omp-agents.js`, `omp-commands.js` | Глобальные профили `.omp`; собственные `thinking-level`, todo и extension API |
 
 Общий контракт:
 

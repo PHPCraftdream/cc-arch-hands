@@ -93,27 +93,32 @@ describe('writeCodexAgents', { concurrency: false }, () => {
     assert.equal(readFileSync(orphanForeign, 'utf8'), 'not yours');
   });
 
-  it('does not install unsupported Astra ultra and prunes a stale owned ua alias', () => {
+  it('installs the supported Sol 6 and Astra ultra agents and prunes a stale owned ul1 alias', () => {
     const dir = tmpDir();
     const scope = new Scope({ cwd: dir });
     const agentsDir = join(dir, '.codex', 'agents');
     mkdirSync(agentsDir, { recursive: true });
-    const stale = join(agentsDir, 'ua.toml');
+    const stale = join(agentsDir, 'ul1.toml');
     writeFileSync(stale,
-      `${SentinelCodexAgent}\nname = "ua"\nmodel = "gpt-6-astra"\n` +
+      `${SentinelCodexAgent}\nname = "ul1"\nmodel = "gpt-5.6-luna"\n` +
       'model_reasoning_effort = "ultra"\n');
 
     const result = writeCodexAgents(null, scope);
     assert.equal(result.pruned, 1);
     assert.throws(() => statSync(stale), { code: 'ENOENT' });
     assert.equal(
-      readdirSync(agentsDir).some((name) => name === 'ua.toml'),
+      readdirSync(agentsDir).some((name) => name === 'ul1.toml'),
       false,
-      'unsupported Astra ua must stay absent after install',
+      'Luna 5.6 does not accept ultra: ul1 must stay absent after install',
     );
+    for (const [name, model] of [['us1', 'gpt-6-sol'], ['ua', 'gpt-6-astra']]) {
+      const body = readFileSync(join(agentsDir, `${name}.toml`), 'utf8');
+      assert.ok(body.includes(`model = "${model}"`), `${name} model`);
+      assert.ok(body.includes('model_reasoning_effort = "ultra"'), `${name} effort`);
+    }
     assert.deepEqual(
       AllCodexAgents.filter((agent) => agent.model === 'gpt-6-astra').map((agent) => agent.name),
-      ['la', 'ma', 'ha', 'xa', 'xxa'],
+      ['la', 'ma', 'ha', 'xa', 'xxa', 'ua'],
     );
   });
 });

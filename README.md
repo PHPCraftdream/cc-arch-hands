@@ -26,7 +26,7 @@ The artifacts:
 - **companion bins** under `~/.claude/cah-bin/` (since 0.4.0).
 
 Optional artifacts are installed only when requested:
-- **Codex custom agents** (<!--gen:count:codex-agents-->39<!--/gen-->) under `~/.codex/agents/`, via `--codex-agents`.
+- **Codex custom agents** (<!--gen:count:codex-agents-->40<!--/gen-->) under `~/.codex/agents/`, via `--codex-agents`.
 - **Codex skills** (<!--gen:count:codex-skills-->4<!--/gen-->) under `~/.codex/skills/`, via `--codex-skills`.
 - **OMP agents** and the agent-tag rule in global `APPEND_SYSTEM.md`, via `--omp-agents`. OMP uses Markdown definitions, not Codex TOML.
 
@@ -165,7 +165,7 @@ inside Claude Code, so identical names do not collide.
 <!--gen:count:model-commands-->62<!--/gen--> commands, <!--gen:count:model-commands-->62<!--/gen--> agents — one line per row-cell in
 [`lib/manifest.js`](lib/manifest.js).
 
-### 3. Optional Codex custom agents (<!--gen:count:codex-agents-->39<!--/gen-->)
+### 3. Optional Codex custom agents (<!--gen:count:codex-agents-->40<!--/gen-->)
 
 Codex agents are not part of the default install. Install them explicitly with `--codex-agents`, or select them as a class via `--only codex-agents` (also combinable, e.g. `--only skills,codex-agents`):
 
@@ -175,19 +175,21 @@ npx cc-arch-hands reinstall --codex-agents
 npx cc-arch-hands uninstall --codex-agents
 ```
 
-Generated agent names use an effort prefix plus a model suffix. Current Sol 6.1 (`s`, model ID `gpt-6.1-sol`) uses `l/m/h/x/xx/u` for `low/medium/high/xhigh/max/ultra`. Older Sol releases shift back one slot: Sol 6 uses suffix `1` (`ls1`, etc.) with its existing five levels, and Sol 5.6 uses suffix `2` (`ls2`, etc.) with six levels. Luna (`l`, model ID `gpt-6-luna`) keeps five levels and its 5.6 predecessor keeps suffix `1` with six levels. Terra (`t`) uses all six levels; Astra (`a`) uses five (`l/m/h/x/xx`). Their model IDs are `gpt-5.6-terra` and `gpt-6-astra`. These aliases write TOML custom-agent files for Codex under `~/.codex/agents/`.
+Generated agent names use an effort prefix plus a model suffix. Current Sol 6.1 (`s`, model ID `gpt-6.1-sol`) uses `l/m/h/x/xx/u` for `low/medium/high/xhigh/max/ultra`. Older Sol releases shift back one slot: Sol 6 uses suffix `1` (`ls1`, etc.) with six levels, and Sol 5.6 uses suffix `2` (`ls2`, etc.) with six levels. Luna (`l`, model ID `gpt-6-luna`) has five levels and its 5.6 predecessor keeps suffix `1` with the same five (neither Luna accepts `ultra`). Terra (`t`) uses all six levels; Astra (`a`) uses six (`l/m/h/x/xx/u`). Their model IDs are `gpt-5.6-terra` and `gpt-6-astra`. These aliases write TOML custom-agent files for Codex under `~/.codex/agents/`.
 
 <!--gen:table:codex-agents (run `npm run gen:docs` after editing lib/manifest.js) -->
 | Model | Agents by effort |
 |---|---|
 | Sol 6.1 | `ls` low · `ms` medium · `hs` high · `xs` xhigh · `xxs` max · `us` ultra |
-| Sol 6 | `ls1` low · `ms1` medium · `hs1` high · `xs1` xhigh · `xxs1` max |
+| Sol 6 | `ls1` low · `ms1` medium · `hs1` high · `xs1` xhigh · `xxs1` max · `us1` ultra |
 | Sol 5.6 | `ls2` low · `ms2` medium · `hs2` high · `xs2` xhigh · `xxs2` max · `us2` ultra |
 | Luna | `ll` low · `ml` medium · `hl` high · `xl` xhigh · `xxl` max |
 | Terra | `lt` low · `mt` medium · `ht` high · `xt` xhigh · `xxt` max · `ut` ultra |
-| Luna 5.6 | `ll1` low · `ml1` medium · `hl1` high · `xl1` xhigh · `xxl1` max · `ul1` ultra |
-| Astra | `la` low · `ma` medium · `ha` high · `xa` xhigh · `xxa` max |
+| Luna 5.6 | `ll1` low · `ml1` medium · `hl1` high · `xl1` xhigh · `xxl1` max |
+| Astra | `la` low · `ma` medium · `ha` high · `xa` xhigh · `xxa` max · `ua` ultra |
 <!--/gen:table:codex-agents-->
+
+Every alias also records the model's `contextWindow` and `maxContextWindow` (tokens), and each model's accepted efforts are kept alongside them in `lib/codex-model-specs.js`, so `ultra` exists only where Codex accepts it (Sol, Terra and Astra, not either Luna). Read the same data without executing the manifest through `cah models --json`.
 
 Install the optional Codex skills with `--codex-skills`. They are Codex-only
 and are never installed for Claude Code.
@@ -285,12 +287,12 @@ npx cc-arch-hands install --omp --omp-profile work
 After updating the package, repeat `install --omp` to refresh all owned OMP
 artifacts. Restart OMP after changes. The ordinary profile is the default;
 named profiles must be selected explicitly. Every registered agent is installed,
-including all four Ultra aliases, without querying OMP capabilities.
+including all six Ultra aliases, without querying OMP capabilities.
 
 ### Optional OMP agents
 
 OMP agents are opt-in and reuse the complete Codex model/alias registry.
-`us`, `us2`, `ut` and `ul1` all carry the literal `thinking-level: ultra`,
+`us`, `us1`, `us2`, `ut` and `ua` all carry the literal `thinking-level: ultra`,
 even when the installed OMP or the provider does not advertise support.
 Install/reinstall/list/doctor do not invoke OMP to filter those definitions.
 
@@ -415,7 +417,7 @@ installs only OpenCode artifacts; combined with `--only` it adds all three
 classes. Nothing is queried at install time: OpenCode, the provider connection
 and model availability are never checked.
 
-- **`--opencode-agents`** — all 39 subagents from the Codex model/alias
+- **`--opencode-agents`** — all 40 subagents from the Codex model/alias
   registry (see the Codex-agents table above). Each `<name>.md` lands in
   `<root>/agents/` with `mode: subagent`, `model: openai/<manifest model>`
   and a literal `options.reasoningEffort` (including `max` and `ultra`; no
@@ -460,7 +462,7 @@ be healthy; this is file health, not provider availability.
 
 ```bash
 npx cc-arch-hands install --opencode            # all OpenCode artifacts
-npx cc-arch-hands install --opencode-agents     # 39 subagents + AGENTS.md tag rule
+npx cc-arch-hands install --opencode-agents     # 40 subagents + AGENTS.md tag rule
 npx cc-arch-hands install --opencode-skills     # nine skills (auto-adds opencode-commands)
 npx cc-arch-hands install --opencode-commands   # nine commands + plugin runtime
 npx cc-arch-hands list --json --opencode        # or per-class: --opencode-agents / -commands / -skills
@@ -612,11 +614,11 @@ What `/resume` does:
 | Slash-commands | <!--gen:count:model-commands-->62<!--/gen--> | `<scope>/.claude/commands/<name>.md` (only with `--commands`) |
 | Sub-agents | <!--gen:count:model-commands-->62<!--/gen--> | `<scope>/.claude/agents/<name>.md` |
 | Skills | 11 | `<scope>/.claude/skills/<name>/` |
-| Codex custom agents | <!--gen:count:codex-agents-->39<!--/gen--> | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
+| Codex custom agents | <!--gen:count:codex-agents-->40<!--/gen--> | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
 | Codex skills | <!--gen:count:codex-skills-->4<!--/gen--> | `<scope>/.codex/skills/<name>/` (only with `--codex-skills`) |
 | OMP agents and tag rule | Full registry + rule | `~/.omp/agent/agents/<name>.md` and `~/.omp/agent/APPEND_SYSTEM.md` (only with `--omp-agents`; `--omp-profile NAME` selects `~/.omp/profiles/NAME/agent/`) |
 | OMP workflow commands | 9 commands + 2 runtime files | `~/.omp/agent/commands/`, `extensions/cah-babysit.js` and `cah/commit-checkpoint.mjs` (only with `--omp-commands`; supports `--omp-profile NAME`) |
-| OpenCode subagents + tag rule | 39 | `<cfg>/agents/<name>.md` and a marked section in `<cfg>/AGENTS.md` (only with `--opencode-agents`; `<cfg>` = `$OPENCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`) |
+| OpenCode subagents + tag rule | 40 | `<cfg>/agents/<name>.md` and a marked section in `<cfg>/AGENTS.md` (only with `--opencode-agents`; `<cfg>` = `$OPENCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`) |
 | OpenCode skills | 9 | `<cfg>/skills/<name>/SKILL.md` (only with `--opencode-skills`) |
 | OpenCode commands + runtime | 9 commands + 3 runtime files | `<cfg>/commands/<name>.md`, `<cfg>/cah-opencode/` (scheduler + helper) and `<cfg>/plugins/cah-babysit.js` (only with `--opencode-commands`) |
 
@@ -684,7 +686,7 @@ npx cc-arch-hands install --codex-skills           # optional: install Codex ski
 npx cc-arch-hands install --omp-agents             # optional: global OMP agents + agent-tag rule
 npx cc-arch-hands install --omp-commands           # optional: all OMP workflow commands + runtime
 npx cc-arch-hands install --omp                    # optional: all supported OMP agents, rule, commands and runtime
-npx cc-arch-hands install --opencode-agents        # optional: 39 OpenCode subagents + AGENTS.md tag rule
+npx cc-arch-hands install --opencode-agents        # optional: 40 OpenCode subagents + AGENTS.md tag rule
 npx cc-arch-hands install --opencode-skills        # optional: nine OpenCode skills (auto-adds the plugin runtime class)
 npx cc-arch-hands install --opencode-commands      # optional: nine OpenCode commands + babysit plugin runtime
 npx cc-arch-hands install --opencode               # optional: all OpenCode artifacts
@@ -748,6 +750,7 @@ npx cc-arch-hands list                             # tabular: NAME | KIND | STAT
 npx cc-arch-hands list --json                      # NDJSON for scripting
 npx cc-arch-hands doctor                           # condensed health verdict
 npx cc-arch-hands version                          # version + counts
+npx cc-arch-hands models --json                    # manifest as one JSON line: Claude and Codex aliases, context windows, Codex efforts
 
 npx cc-arch-hands probe statusline start           # diagnostic: capture raw statusLine envelope
 npx cc-arch-hands probe statusline stop            # restore + print captured envelope
@@ -830,7 +833,9 @@ cc-arch-hands/
 ├── bin/cah-status-probe.js      # diagnostic statusLine bin used by `cah probe statusline`
 ├── lib/
 │   ├── cli.js                   # dispatch, arg parsing (node:util parseArgs), --only resolver
-│   ├── manifest.js              # AllModelCommands (62 definitions), AllCodexAgents (39), AllSkills (11), SkillDeps
+│   ├── manifest.js              # AllModelCommands (62 definitions), AllCodexAgents (40), AllSkills (11), SkillDeps
+│   ├── codex-model-specs.js     # generated by `npm run sync:codex`: Codex context windows + accepted efforts
+│   ├── cli-info.js              # `cah version` and `cah models --json`
 │   ├── sentinel.js              # new + legacy markers, ownership classifier
 │   ├── scope.js                 # global vs local target dir resolution
 │   ├── templates.js             # bundled / disk template abstraction
@@ -889,7 +894,13 @@ node bin/cah.js install --templates ./templates --only skills --cwd /tmp/sandbox
 
 # Run the test suite:
 npm test
+
+# Before a release, regenerate what derives from the manifest:
+npm run gen:docs      # README tables and counts
+npm run sync:codex    # lib/codex-model-specs.js from `codex debug models` (needs Codex installed)
 ```
+
+`sync:codex` rewrites the Codex context windows and accepted efforts, then exits 1 if an agent in `lib/manifest.js` uses an effort the model rejects or a model accepts an effort no agent covers. Alias names are not invented: add or remove that entry by hand. `npm run sync:codex:check` only compares. `npm test` runs the same comparison when Codex is installed and skips it otherwise.
 
 ## License
 
