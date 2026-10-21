@@ -25,7 +25,7 @@ function runHint(stdin, home, extraEnv = {}) {
     timeout: DEFAULT_CHILD_DEADLINE_MS,
     killSignal: 'SIGKILL',
     env: {
-      ...process.env, CAH_TEST_ONLY: '0', ...extraEnv,
+      ...process.env, CAH_TEST_ONLY: '0', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '', ...extraEnv,
       CAH_HINT_HOME: home, HOME: home, USERPROFILE: home,
     },
   });
@@ -51,7 +51,7 @@ async function runHintAsync(
   try {
     child = spawn(process.execPath, [RUNNER, 'hint'], {
       env: {
-        ...process.env, CAH_TEST_ONLY: '0', ...extraEnv,
+        ...process.env, CAH_TEST_ONLY: '0', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '', ...extraEnv,
         CAH_HINT_HOME: home, HOME: home, USERPROFILE: home,
       },
       stdio: ['pipe', 'pipe', 'ignore'],
@@ -159,6 +159,18 @@ const EXPECTED =
   '{"continue":true,"systemMessage":"[hint] Context at 90%. Run /checkpoint to save state before auto-compact."}\n';
 
 describe('cah-checkpoint-hint bin', () => {
+  it('uses 90% of the effective compact window rather than the larger model window', () => {
+    for (const [tokens, expected] of [[829799, ''], [829800, EXPECTED]]) {
+      const home = isolatedHome();
+      const tp = writeTranscript(home, 'claude-opus-5-5', tokens);
+      const result = runHint(JSON.stringify({ session_id: `compact-window-${tokens}`, transcript_path: tp,
+        context_window: { context_window_size: 1000000 },
+      }), home, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '922000' });
+      assert.equal(result.status, 0);
+      assert.equal(result.stdout, expected);
+    }
+  });
+
   it('stop_hook_active=true → silent, exit 0', () => {
     const home = isolatedHome();
     const { stdout, status } = runHint(

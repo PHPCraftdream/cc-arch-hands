@@ -20,7 +20,10 @@ import { homedir } from 'node:os';
 import {
   formatStatusLine,
   validContextWindowSize,
+  effectiveContextWindowSize,
   persistRateLimitsCache,
+  statusContextUsage,
+  readLastMeasuredContext,
 } from '../lib/transcript-stats.js';
 import { CURRENT_VERSION, getLatestVersion, isNewerVersion } from '../lib/update-check.js';
 
@@ -67,11 +70,19 @@ function buildLine(data) {
   try {
     const cw = data && data.context_window;
     if (cw && typeof cw === 'object') {
-      usedTokens = cw.total_input_tokens ?? null;
-      limit = cw.context_window_size ?? null;
+      usedTokens = statusContextUsage(cw);
+      limit = effectiveContextWindowSize(cw.context_window_size);
     }
   } catch {
     // ignore
+  }
+
+  if (usedTokens === null && limit !== null && data?.context_window?.current_usage
+      && typeof data.transcript_path === 'string' && typeof data.model?.id === 'string') {
+    const previous = readLastMeasuredContext(data.transcript_path, data.model.id);
+    if (previous?.modelId === data.model.id && previous.usedTokens > 0) {
+      usedTokens = previous.usedTokens;
+    }
   }
 
   let fiveHour = null;

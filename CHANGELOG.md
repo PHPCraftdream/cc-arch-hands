@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Панель, chat-stamp и checkpoint hint учитывают `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, не превышая окно модели: например, показывают `922k` вместо `1M` и считают процент от того же лимита. Невалидные значения игнорируются; исходное окно в session cache не перезаписывается уменьшенным лимитом.
+- Transcript fallback учитывает последнее измерение `message` / `fallback_message` из `usage.iterations` вместо суммарного расхода и объединяет разделённые model/usage только внутри одного `requestId`.
+- При нулевом/отсутствующем total context usage панель использует измеренные компоненты текущего usage с учётом кэша. Для нулевого streaming-placeholder может сохранить последнее измерение той же модели из стандартного transcript; не пересекает compaction и не делает fallback при `current_usage: null`. Служебные подписи не выводятся; если измерения нет, блок контекста временно скрывается вместо ложного `0%`.
+
 ## [0.16.1] - 2026-10-08
 
 ### Added

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { readRateLimitsCache, rateLimitsContextPath } from '../lib/transcript-stats.js';
 
@@ -30,6 +30,7 @@ function run(stdinData, env) {
     encoding: 'utf8',
     env: {
       ...process.env,
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: '',
       ...(env || {}),
       CAH_RATE_LIMITS_CACHE: cacheOverride,
       CAH_UPDATE_CHECK_CACHE: updateCacheOverride,
@@ -65,6 +66,23 @@ describe('cah-status bin', () => {
     assert.equal(status, 0);
     assert.match(stdout, /^Opus 4\.8 · \[[█▏▎▍▌▋▊▉░]{10}\] 67% \(670k\/1M\)$/);
     assert.ok(!/^\d{2}:\d{2}/.test(stdout), 'must NOT start with HH:MM — clock was dropped to dodge Windows cold-start race');
+  });
+
+  it('caps the displayed window at the inherited compact window without rewriting the raw cache', () => {
+    const { stdout, cachePath } = run(makePayload({ context_window: {
+      context_window_size: 1000000, total_input_tokens: 831000,
+    } }), { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '922000' });
+    assert.match(stdout, /90\.13% \(831k\/922k\)$/);
+    assert.equal(readRateLimitsCache(cachePath, Date.now(), 'test-session').contextWindowSize, 1000000);
+  });
+
+  it('does not enlarge a smaller envelope window or accept an invalid compact window', () => {
+    const small = run(makePayload({ context_window: {
+      context_window_size: 200000, total_input_tokens: 100000,
+    } }), { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '922000' });
+    assert.match(small.stdout, /50% \(100k\/200k\)$/);
+    const invalid = run(makePayload(), { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '922000tokens' });
+    assert.match(invalid.stdout, /67% \(670k\/1M\)$/);
   });
 
   it('Sonnet 200K → correct format without clock', () => {
@@ -153,6 +171,67 @@ describe('cah-status bin', () => {
     assert.equal(cached.fiveHour.used, 23);
     assert.equal(cached.sevenDay.used, 67);
     assert.equal(typeof cached.capturedAt, 'number');
+  });
+
+  it('recovers cache-aware current usage when the total is a zero placeholder', () => {
+    const { stdout } = run(makePayload({ context_window: {
+      total_input_tokens: 0, context_window_size: 200000,
+      current_usage: { input_tokens: 100, cache_read_input_tokens: 19900 },
+    } }));
+    assert.match(stdout, /10% \(20k\/200k\)/);
+  });
+
+  it('omits unavailable context at startup or compaction instead of a false zero', () => {
+    const { stdout } = run(makePayload({ context_window: {
+      total_input_tokens: 0, context_window_size: 200000, current_usage: null,
+    } }));
+    assert.equal(stdout, 'Opus 4.8');
+  });
+
+  it('renders a normal bar for transcript fallback and stops at compaction or a model switch', (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-status-context-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const path = join(dir, 'transcript.jsonl');
+    const measured = { type: 'assistant', message: { role: 'assistant', model: 'claude-opus-4-8',
+      usage: { input_tokens: 50000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } };
+    writeFileSync(path, JSON.stringify(measured) + '\n');
+    const payload = makePayload({ transcript_path: path, context_window: {
+      total_input_tokens: 0, context_window_size: 200000,
+      current_usage: { input_tokens: 0, output_tokens: 0 },
+    } });
+    assert.match(run(payload).stdout, /^Opus 4\.8 · \[[█▏▎▍▌▋▊▉░]{10}\] 25% \(50k\/200k\)$/);
+    assert.equal(run({ ...payload, model: { id: 'claude-sonnet-4-6', display_name: 'Sonnet 4.6' } }).stdout,
+      'Sonnet 4.6');
+    assert.equal(run({ ...payload, context_window: { ...payload.context_window, current_usage: null } }).stdout,
+      'Opus 4.8');
+    writeFileSync(path, JSON.stringify(measured) + '\n'
+      + JSON.stringify({ type: 'system', subtype: 'compact_boundary' }) + '\n');
+    assert.equal(run(payload).stdout, 'Opus 4.8');
+  });
+
+  it('renders split request usage from the last message iteration, not aggregate totals', (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-status-iterations-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const path = join(dir, 'transcript.jsonl');
+    const iteration = (input_tokens, type = 'message') => ({ type, input_tokens,
+      output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 });
+    const records = [
+      { type: 'assistant', requestId: 'req-split', message: { role: 'assistant', model: 'claude-opus-4-8' } },
+      { type: 'assistant', requestId: 'req-split', message: { role: 'assistant', usage: {
+        input_tokens: 180000, iterations: [iteration(80000), iteration(100000), iteration(5000, 'compaction')],
+      } } },
+    ];
+    writeFileSync(path, records.map((record) => JSON.stringify(record)).join('\n') + '\n');
+    const { stdout } = run(makePayload({ transcript_path: path, context_window: {
+      total_input_tokens: 0, context_window_size: 200000,
+      current_usage: { input_tokens: 0, output_tokens: 0 },
+    } }));
+    assert.match(stdout, /^Opus 4\.8 · \[[█▏▎▍▌▋▊▉░]{10}\] 50% \(100k\/200k\)$/);
+  });
+
+  it('ignores prompt cache statistics in the status line', () => {
+    const { stdout } = run(makePayload({ prompt_cache: { hit_ratio: 0.85 } }));
+    assert.match(stdout, /^Opus 4\.8 · \[[█▏▎▍▌▋▊▉░]{10}\] 67% \(670k\/1M\)$/);
   });
 
   it('no rate_limits → no 5h/wk parts but caches the valid context window', () => {
