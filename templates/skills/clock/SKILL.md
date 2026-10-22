@@ -13,9 +13,10 @@ Install (or remove, or inspect) three Claude Code settings entries:
    `<model> · X% (Nk/Mk) · 5h N% (→HH:MM) · wk N% (→wd HH:MM)`. The 5h/wk
    parts only appear after the first API response of the session, and are
    omitted entirely on accounts where Claude Code does not deliver
-   `rate_limits` in the statusLine envelope. If one quota window is briefly
-   absent, its last percentage is reused for up to 5 minutes only while its
-   recorded reset time is still in the future; older/expired observations are
+   `rate_limits` in the statusLine envelope. If `five_hour` is briefly absent
+   in a Claude session, its last percentage from that same session is reused for
+   up to 5 minutes only while its reset is still in the future. Codex models and
+   other sessions never inherit that 5h meter; older/expired observations are
    omitted. Refreshes every **60 seconds** (`refreshInterval: 60`) AND on each
    assistant turn boundary, so the bar
    stays live even during long, quiet stretches. The 60s default sits well
