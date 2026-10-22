@@ -67,6 +67,78 @@ describe('empty atomic-removal reservations', () => {
   });
 });
 
+describe('non-waiting cache publication', () => {
+  it('publishes normally when the fence is free', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-cache-free-fence-'));
+    try {
+      const dest = join(dir, 'cache.json');
+      writeFileSync(dest, 'old\n');
+      writeFileAtomic(dest, 'new\n', {
+        expectedDestination: captureRegularFileSnapshot(dest).expectedDestination,
+        waitForFence: false,
+      });
+      assert.equal(readFileSync(dest, 'utf8'), 'new\n');
+      assert.equal(existsSync(`${dest}.cah-owned-publish`), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not retry a transient mkdir failure in non-waiting mode', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-cache-transient-fence-'));
+    const keys = ['CAH_TEST_ONLY', 'CAH_TEST_ONLY_PUBLICATION_FENCE_MKDIR_TRANSIENT_FAILURES'];
+    const saved = keys.map((key) => process.env[key]);
+    try {
+      const dest = join(dir, 'cache.json');
+      writeFileSync(dest, 'old\n');
+      process.env[keys[0]] = '1';
+      process.env[keys[1]] = '1';
+      let waited = false;
+      assert.throws(() => writeFileAtomic(dest, 'new\n', {
+        expectedDestination: captureRegularFileSnapshot(dest).expectedDestination,
+        waitForFence: false,
+        testInterlock: (phase) => {
+          if (phase === 'publication-fence-wait') waited = true;
+        },
+      }), { code: 'EPERM' });
+      assert.equal(waited, false);
+      assert.equal(readFileSync(dest, 'utf8'), 'old\n');
+    } finally {
+      keys.forEach((key, i) => {
+        if (saved[i] === undefined) delete process.env[key];
+        else process.env[key] = saved[i];
+      });
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses an unsupported proof without waiting or changing recovery data', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-cache-busy-fence-'));
+    try {
+      const dest = join(dir, 'rate-limits.json');
+      const fence = `${dest}.cah-owned-publish`;
+      const proof = JSON.stringify({ version: 2, ownerPid: process.pid });
+      writeFileSync(dest, 'old\n');
+      mkdirSync(fence);
+      writeFileSync(join(fence, 'publication.json'), proof);
+      const snapshot = captureRegularFileSnapshot(dest);
+      let waited = false;
+      assert.throws(() => writeFileAtomic(dest, 'new\n', {
+        expectedDestination: snapshot.expectedDestination,
+        waitForFence: false,
+        testInterlock: (phase) => {
+          if (phase === 'publication-fence-wait') waited = true;
+        },
+      }), { code: 'EEXIST' });
+      assert.equal(waited, false);
+      assert.equal(readFileSync(dest, 'utf8'), 'old\n');
+      assert.equal(readFileSync(join(fence, 'publication.json'), 'utf8'), proof);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('empty proof-less publication fences', () => {
   it('maintenance defers a fresh empty publication fence and reclaims it once stale', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cah-empty-publish-fence-'));

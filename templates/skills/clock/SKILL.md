@@ -1,6 +1,6 @@
 ---
 name: clock
-description: "Install a Claude Code statusLine that shows model + context-window usage AND, for Pro/Max subscribers, the 5-hour and weekly quota use with reset times (`<model> · X% (Nk/Mk) · 5h N% (→HH:MM) · wk N% (→wd HH:MM)`). Also installs a chat-stamp hook (`cah-stamp`) on BOTH Stop AND PostToolUse, so an `HH:MM · model · X% · 5h N% · wk N%` audit line appears after every tool call — not only at end of turn. The statusLine refreshes every 60 seconds (`refreshInterval: 60000`) AND on every turn boundary; the 60s default sits well above Windows Node cold-start (1–3s), so the bar stays live without races. Default global (~/.claude/settings.json); pass `--here` for project-local."
+description: "Install a Claude Code statusLine that shows model + context-window usage AND, for Pro/Max subscribers, the 5-hour and weekly quota use with reset times (`<model> · X% (Nk/Mk) · 5h N% (→HH:MM) · wk N% (→wd HH:MM)`). Also installs a chat-stamp hook (`cah-stamp`) on BOTH Stop AND PostToolUse, so an `HH:MM · model · X% · 5h N% · wk N%` audit line appears after every tool call — not only at end of turn. The statusLine refreshes every 60 seconds (`refreshInterval: 60`) AND on every turn boundary; the 60s default sits well above Windows Node cold-start (1–3s), so the bar stays live without races. Default global (~/.claude/settings.json); pass `--here` for project-local."
 ---
 
 # clock
@@ -14,7 +14,7 @@ Install (or remove, or inspect) three Claude Code settings entries:
    parts only appear after the first API response of the session, and are
    omitted entirely on accounts where Claude Code does not deliver
    `rate_limits` in the statusLine envelope. Refreshes every **60 seconds**
-   (`refreshInterval: 60000`) AND on each assistant turn boundary, so the bar
+   (`refreshInterval: 60`) AND on each assistant turn boundary, so the bar
    stays live even during long, quiet stretches. The 60s default sits well
    above Windows Node cold-start (1–3s), so the harness never cancels an
    in-flight script — avoid sub-second tickers, those cause the bar to
@@ -115,19 +115,19 @@ tell the user to run `cah install` first, then continue.
   "type": "command",
   "command": "node \"<HOME>/.claude/cah-bin/bin/cah-status.js\"",
   "padding": 0,
-  "refreshInterval": 60000,
+  "refreshInterval": 60,
   "cah-sentinel": "cah-status:v1",
   "cah-name": "clock"
 }
 ```
 
-Note on `refreshInterval`: 60 000 ms (60 s) by default. Keeps the bar visibly
-live during long, quiet stretches without racing Windows Node cold-start
-(1–3 s). **Do not drop below 5 s** — sub-second tickers cause the harness to
-cancel in-flight scripts and the bar intermittently disappears. If the user
-exports `CAH_STATUSLINE_REFRESH_MS=<n>` in their shell, honour it as an integer
-millisecond value instead of the 60 000 default (but still write whatever value
-ends up chosen into `refreshInterval` so it persists across sessions).
+`refreshInterval` задаётся в **секундах**, значение по умолчанию — `60`.
+Это поддерживает обновления в простое без частых запусков Node на Windows.
+Для совместимости `CAH_STATUSLINE_REFRESH_MS=<n>` по-прежнему принимает
+миллисекунды: если строка состоит только из цифр и задаёт положительное
+безопасное целое число, записать `Math.max(5, Math.ceil(n / 1000))` секунд.
+Иначе использовать `60`. Не записывать миллисекунды непосредственно в
+`refreshInterval` и не выбирать интервал меньше 5 секунд.
 
 **Stop hook entry** (ownership sentinel: `cah-sentinel: "cah-hook:v1"`, `cah-name: "clock"`),
 appended to `hooks.Stop` as a new matcher object:
@@ -173,15 +173,17 @@ through long turns instead of jumping in one step. The matcher `""` means "all t
 3. Read and `JSON.parse` the file. If the file exists but is **invalid JSON**:
    report the problem and STOP. Never overwrite a file you could not parse.
 4. **statusLine check**: Inspect `data.statusLine`. Resolve the desired
-   `refreshInterval` first: read `process.env.CAH_STATUSLINE_REFRESH_MS`; if it
-   parses as a positive integer, use that, otherwise use `60000`.
+   `refreshInterval` в секундах: читать `process.env.CAH_STATUSLINE_REFRESH_MS`
+   по правилам выше, переводить валидные миллисекунды через
+   `Math.max(5, Math.ceil(n / 1000))`; иначе использовать `60`.
    - If it exists AND has `cah-sentinel === "cah-status:v1"` AND
      `cah-name === "clock"`:
      - Compare current `command` and `refreshInterval` against the freshly
        computed values. If **both** already match → report
        "statusLine: already enabled" and continue.
      - Otherwise it is an **older** entry (pre-0.4.0 bare `cah-status`, a path
-       under a different home, or a pre-0.4.4 entry with no `refreshInterval`):
+       under a different home, an entry with no `refreshInterval`, or an entry
+       with the erroneous millisecond value `60000`):
        rewrite `command` AND `refreshInterval` to the computed values, keep the
        sentinel fields, and report "statusLine: migrated".
    - If it exists WITHOUT our sentinel → treat as foreign, refuse to overwrite,

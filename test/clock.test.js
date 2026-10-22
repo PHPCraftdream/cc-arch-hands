@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdtempSync, readFileSync, existsSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, existsSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { readRateLimitsCache, rateLimitsContextPath } from '../lib/transcript-stats.js';
 
@@ -61,6 +61,57 @@ function makePayload(overrides = {}) {
 }
 
 describe('cah-status bin', () => {
+  it('renders live context and quotas despite an unsupported cache publication fence', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-status-busy-cache-'));
+    try {
+      const cache = join(dir, 'rate-limits.json');
+      const fence = `${cache}.cah-owned-publish`;
+      const proof = JSON.stringify({ version: 2, ownerPid: process.pid });
+      writeFileSync(cache, '{}\n');
+      mkdirSync(fence);
+      writeFileSync(join(fence, 'publication.json'), proof);
+      const { stdout, status } = run(makePayload({ rate_limits: {
+        five_hour: { used_percentage: 15 },
+        seven_day: { used_percentage: 88 },
+      } }), { CAH_RATE_LIMITS_CACHE: cache });
+      assert.equal(status, 0);
+      assert.match(stdout, /67% \(670k\/1M\)/);
+      assert.match(stdout, /5h .*15%/);
+      assert.match(stdout, /wk .*88%/);
+      assert.equal(readFileSync(cache, 'utf8'), '{}\n');
+      assert.equal(readFileSync(join(fence, 'publication.json'), 'utf8'), proof);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps rendering when only the session context cache is blocked', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-status-busy-context-'));
+    try {
+      const cache = join(dir, 'rate-limits.json');
+      const context = rateLimitsContextPath(cache, 'test-session');
+      const fence = `${context}.cah-owned-publish`;
+      mkdirSync(dirname(context), { recursive: true });
+      writeFileSync(context, '{}\n');
+      mkdirSync(fence);
+      const proof = JSON.stringify({ version: 2, ownerPid: process.pid });
+      writeFileSync(join(fence, 'publication.json'), proof);
+      const { stdout, status } = run(makePayload({ rate_limits: {
+        five_hour: { used_percentage: 0 },
+        seven_day: { used_percentage: 88 },
+      } }), { CAH_RATE_LIMITS_CACHE: cache });
+      assert.equal(status, 0);
+      assert.match(stdout, /67% \(670k\/1M\)/);
+      assert.match(stdout, /5h .*0%/);
+      assert.match(stdout, /wk .*88%/);
+      assert.equal(JSON.parse(readFileSync(cache, 'utf8')).sevenDay.used, 88);
+      assert.equal(readFileSync(context, 'utf8'), '{}\n');
+      assert.equal(readFileSync(join(fence, 'publication.json'), 'utf8'), proof);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('full payload → "<model> · X% (Nk/Mk)" with no clock', () => {
     const { stdout, status } = run(makePayload());
     assert.equal(status, 0);
