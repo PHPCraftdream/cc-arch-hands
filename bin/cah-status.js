@@ -78,8 +78,9 @@ function buildLine(data) {
     // ignore
   }
 
-  if (usedTokens === null && limit !== null && data?.context_window?.current_usage
-      && typeof data.transcript_path === 'string' && typeof data.model?.id === 'string') {
+  if (usedTokens === null && limit !== null
+      && typeof data?.transcript_path === 'string' && typeof data.model?.id === 'string'
+      && data.model.id.length > 0) {
     const previous = readLastMeasuredContext(data.transcript_path, data.model.id);
     if (previous?.modelId === data.model.id && previous.usedTokens > 0) {
       usedTokens = previous.usedTokens;

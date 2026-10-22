@@ -356,12 +356,60 @@ describe('cah-status bin', () => {
     assert.match(run(payload).stdout, /^Opus 4\.8 · \[[█▏▎▍▌▋▊▉░]{10}\] 25% \(50k\/200k\)$/);
     assert.equal(run({ ...payload, model: { id: 'claude-sonnet-4-6', display_name: 'Sonnet 4.6' } }).stdout,
       'Sonnet 4.6');
-    assert.equal(run({ ...payload, context_window: { ...payload.context_window, current_usage: null } }).stdout,
-      'Opus 4.8');
+    assert.match(run({ ...payload, context_window: { ...payload.context_window, current_usage: null } }).stdout,
+      /25% \(50k\/200k\)$/);
     writeFileSync(path, JSON.stringify(measured) + '\n'
       + JSON.stringify({ type: 'system', subtype: 'compact_boundary' }) + '\n');
     assert.equal(run(payload).stdout, 'Opus 4.8');
   });
+
+  for (const [label, usage] of [
+    ['null', { current_usage: null }],
+    ['missing', {}],
+    ['zero', { current_usage: { input_tokens: 0, output_tokens: 0 } }],
+  ]) {
+    it(`recovers Codex context with ${label} usage without crossing model or compaction boundaries`, (t) => {
+      const dir = mkdtempSync(join(tmpdir(), 'cah-status-codex-context-'));
+      t.after(() => rmSync(dir, { recursive: true, force: true }));
+      const path = join(dir, 'transcript.jsonl');
+      const model = 'gpt-6-luna';
+      const measured = { type: 'assistant', message: { role: 'assistant', model,
+        usage: { input_tokens: 1000, cache_read_input_tokens: 49000 } } };
+      const compact = { type: 'system', subtype: 'compact_boundary' };
+      const payload = makePayload({ model: { id: model, display_name: 'Codex' },
+        transcript_path: path, context_window: {
+          total_input_tokens: 0, context_window_size: 200000, ...usage,
+        } });
+      const env = { CAH_RATE_LIMITS_CACHE: join(dir, 'rates.json') };
+      const writeRecords = (...records) => writeFileSync(path,
+        records.map((record) => JSON.stringify(record)).join('\n') + '\n');
+
+      writeRecords(measured);
+      assert.match(run(payload, env).stdout, /25% \(50k\/200k\)$/);
+      assert.doesNotMatch(run(payload, env).stdout, /5h /);
+      assert.equal(run({ ...payload, model: { id: 'another-model', display_name: 'Other' } }, env).stdout,
+        'Other');
+      assert.equal(run({ ...payload, model: { id: '', display_name: 'Unknown' } }, env).stdout,
+        'Unknown');
+      for (const context_window of [null, { total_input_tokens: 0, ...usage },
+        { context_window_size: 0, ...usage }]) {
+        assert.equal(run({ ...payload, context_window }, env).stdout, 'Codex');
+      }
+
+      writeRecords(measured, { type: 'assistant', message: { role: 'assistant',
+        model: 'another-model', usage: { input_tokens: 0 } } });
+      assert.equal(run(payload, env).stdout, 'Codex');
+      writeRecords(measured, { type: 'assistant', message: { role: 'assistant',
+        usage: { input_tokens: 0 } } });
+      assert.equal(run(payload, env).stdout, 'Codex');
+      writeRecords(measured, compact);
+      assert.equal(run(payload, env).stdout, 'Codex');
+      writeRecords(measured, compact, measured);
+      assert.match(run(payload, env).stdout, /25% \(50k\/200k\)$/);
+      writeRecords({ ...measured, message: { ...measured.message, usage: { input_tokens: 0 } } });
+      assert.equal(run(payload, env).stdout, 'Codex');
+    });
+  }
 
   it('renders split request usage from the last message iteration, not aggregate totals', (t) => {
     const dir = mkdtempSync(join(tmpdir(), 'cah-status-iterations-'));
