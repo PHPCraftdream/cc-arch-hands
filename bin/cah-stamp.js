@@ -8,7 +8,7 @@ import { homedir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import {
   readTranscriptStats, contextWindowLimit, validContextWindowSize, formatStatusLine,
-  currentHhMmSs, readRateLimitsCache,
+  currentHhMmSs, readRateLimitsCache, effectiveContextWindowSize,
 } from '../lib/transcript-stats.js';
 import { CURRENT_VERSION, getLatestVersion, isNewerVersion } from '../lib/update-check.js';
 import { captureRegularFileSnapshot, isOlderThan, writeFileAtomic } from '../lib/fsutil.js';
@@ -369,7 +369,8 @@ export function main(testHooks = {}) {
     try { cached = readRateLimitsCache(RATE_LIMITS_CACHE, Date.now(), payload.session_id, testHooks); } catch { /* best effort */ }
     let envelopeLimit = null;
     try { envelopeLimit = validContextWindowSize(payload.context_window?.context_window_size); } catch { /* ignore */ }
-    const limit = stats?.modelId ? contextWindowLimit(stats.modelId, envelopeLimit || cached?.contextWindowSize) : null;
+    const limit = stats?.modelId
+      ? effectiveContextWindowSize(contextWindowLimit(stats.modelId, envelopeLimit || cached?.contextWindowSize)) : null;
     const line = formatStatusLine({ time: currentHhMmSs(), displayName: stats?.modelId || null,
       usedTokens: stats?.usedTokens !== null && stats?.modelId ? stats.usedTokens : null,
       limit: stats?.usedTokens !== null && stats?.modelId ? limit : null,

@@ -40,6 +40,7 @@ export function stampInvocationEnv(env = {}) {
     env: {
       ...process.env,
       CAH_TEST_ONLY: '0',
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: '',
       ...env,
       HOME: hintHome,
       USERPROFILE: hintHome,

@@ -5,7 +5,7 @@ import { readFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
-import { readTranscriptStats, contextWindowLimit, readRateLimitsCache, validContextWindowSize } from '../lib/transcript-stats.js';
+import { readTranscriptStats, contextWindowLimit, readRateLimitsCache, validContextWindowSize, effectiveContextWindowSize } from '../lib/transcript-stats.js';
 import {
   sessionHash, markerNamespace, migrateMarkerState, pruneMarkers, claimMarker,
   markerClaimOwned, releaseMarkerClaim, publishMarker, finishMarkerTransaction,
@@ -85,8 +85,8 @@ export function main(testHooks = {}) {
     const cached = readRateLimitsCache(RATE_LIMITS_CACHE, Date.now(), sessionId, testHooks);
     cachedLimit = cached?.contextWindowSize;
   } catch { /* best effort */ }
-  const limit = stats.modelId === null
-    ? envelopeLimit || cachedLimit : contextWindowLimit(stats.modelId, envelopeLimit || cachedLimit);
+  const limit = effectiveContextWindowSize(stats.modelId === null
+    ? envelopeLimit || cachedLimit : contextWindowLimit(stats.modelId, envelopeLimit || cachedLimit));
   if (!validContextWindowSize(limit) || stats.usedTokens / limit < THRESHOLD) return;
 
   const claim = claimMarker({ ...options, sessionId, nowMs: Date.now() });

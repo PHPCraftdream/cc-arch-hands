@@ -22,6 +22,12 @@ Install (or remove, or inspect) three Claude Code settings entries:
    the chat audit-trail Stop/PostToolUse hook (`cah-stamp`) carries the
    timestamp instead.
 
+   Для нулевого streaming-placeholder сохраняется последнее положительное измерение той же модели из стандартного transcript, без служебных подписей; compaction boundary не пересекается. При `current_usage: null` или отсутствии подходящего измерения блок контекста временно не показывается, без ложного `0%`; название модели и доступные квоты остаются.
+
+   Окно контекста для панели и chat-stamp — `min(окно Claude Code, CLAUDE_CODE_AUTO_COMPACT_WINDOW)`, если переменная содержит целое число от 100000 до 1000000. Без валидной переменной штатное окно не меняется. Например, при переменной `922000` показывается `922k`, не `1M`. Это не точный порог compaction: резерв ответа и настройки могут вызвать сжатие раньше. Аналогичный лимит применяется к checkpoint hint.
+
+   Источник показателей — стандартные данные Claude Code: statusLine envelope и transcript. Панель не обращается к proxy и не требует специальных переменных или endpoints. Если `rate_limits` отсутствует (например, при custom gateway), квоты не показываются: их нельзя вычислить из context usage.
+
 2. A **chat-stamp hook** (`cah-stamp`) installed on **BOTH** `Stop` AND
    `PostToolUse`. It emits an `HH:MM · model · X% · 5h N% · wk N%` line as a
    `systemMessage` into the chat scrollback, both after every tool call AND at

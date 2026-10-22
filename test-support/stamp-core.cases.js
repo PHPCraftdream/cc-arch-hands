@@ -139,6 +139,22 @@ export function registerStampCoreCases() {
     assert.ok(!parsed.systemMessage.includes('['), `stamp should not contain bars: ${parsed.systemMessage}`);
   });
 
+  it('caps envelope and cached windows at the inherited compact window', () => {
+    for (const fromCache of [false, true]) {
+      const dir = isolatedDir();
+      const tp = writeTranscript(dir, 'claude-opus-5-5', 831000);
+      const cachePath = join(dir, 'rate-limits.json');
+      if (fromCache) writeFileSync(cachePath, JSON.stringify({
+        version: 2, capturedAt: Date.now(), contextWindowSize: 1000000,
+      }));
+      const result = runStamp({ session_id: `compact-window-${fromCache}`, transcript_path: tp,
+        ...(!fromCache ? { context_window: { context_window_size: 1000000 } } : {}),
+      }, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '922000', CAH_RATE_LIMITS_CACHE: cachePath });
+      assert.equal(result.status, 0);
+      assert.match(JSON.parse(result.stdout.trim()).systemMessage, /90\.13% \(831k\/922k\)$/);
+    }
+  });
+
   it('Sonnet variant → correct systemMessage with 200k limit', () => {
     const dir = isolatedDir();
     const tp = writeTranscript(dir, 'claude-sonnet-4-6', 100_000);
