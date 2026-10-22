@@ -274,27 +274,28 @@ describe('readRateLimitsCache', () => {
     assert.ok(readdirSync(namespace).length <= 64);
   });
 
-  it('expires a rate slot that disappears while preserving session context', () => {
+  it('retains an omitted rate slot without refreshing its observation time', () => {
     const dir = isolatedDir();
     const path = join(dir, 'rate-limits.json');
     const first = 1_700_000_000_000;
     const refreshed = first + 60_000;
+    const fiveHourReset = new Date(first + 2 * 60 * 60 * 1000).toISOString();
+    const weeklyReset = new Date(first + 6 * 24 * 60 * 60 * 1000).toISOString();
 
     persistRateLimitsCache(
       path,
-      { used: 10, resetsAt: null },
-      { used: 50, resetsAt: null },
+      { used: 10, resetsAt: fiveHourReset },
+      { used: 50, resetsAt: weeklyReset },
       null,
       1_000_000,
       'session-a',
       first,
     );
-    // The next status envelope still reports five_hour but no longer has a
-    // seven_day slot. The missing slot must not be inherited at the refreshed
-    // timestamp.
+    // A newer 5h observation must not make the omitted weekly observation look
+    // new; it is retained only while its own capture timestamp is fresh.
     persistRateLimitsCache(
       path,
-      { used: 20, resetsAt: null },
+      { used: 20, resetsAt: fiveHourReset },
       null,
       null,
       1_000_000,
@@ -303,17 +304,21 @@ describe('readRateLimitsCache', () => {
     );
 
     assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), {
-      version: 2,
-      fiveHour: { used: 20, resetsAt: null },
-      sevenDay: null,
+      version: 3,
+      fiveHour: { used: 20, resetsAt: fiveHourReset },
+      fiveHourCapturedAt: refreshed,
+      sevenDay: { used: 50, resetsAt: weeklyReset },
+      sevenDayCapturedAt: first,
       capturedAt: refreshed,
     });
     assert.deepEqual(readRateLimitsCache(path, refreshed, 'session-a'), {
-      fiveHour: { used: 20, resetsAt: null },
-      sevenDay: null,
+      fiveHour: { used: 20, resetsAt: fiveHourReset },
+      sevenDay: { used: 50, resetsAt: weeklyReset },
       effort: null,
       contextWindowSize: 1_000_000,
     });
+    assert.equal(readRateLimitsCache(path, first + 60 * 60 * 1000 + 1, 'session-a')
+      .sevenDay, null);
   });
 
   it('does not prune a fresh sidecar successor after the stale-file check', async () => {

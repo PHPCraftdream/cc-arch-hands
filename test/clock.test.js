@@ -202,6 +202,65 @@ describe('cah-status bin', () => {
     assert.ok(!stdout.includes('67.4'), 'should not include decimal percentage');
   });
 
+  it('keeps a recent 5h meter through a temporary envelope omission', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-status-5h-fallback-'));
+    try {
+      const cachePath = join(dir, 'rate-limits.json');
+      const capturedAt = Date.now();
+      const reset = new Date(capturedAt + 20 * 60 * 1000).toISOString();
+      writeFileSync(cachePath, JSON.stringify({
+        version: 3,
+        fiveHour: { used: 15, resetsAt: reset },
+        fiveHourCapturedAt: capturedAt,
+        sevenDay: null,
+        sevenDayCapturedAt: null,
+        capturedAt,
+      }));
+
+      const { stdout, status } = run(makePayload({ rate_limits: {
+        five_hour: null,
+        seven_day: { used_percentage: 88, resets_at: new Date(capturedAt + 5 * 86400_000).toISOString() },
+      } }), { CAH_RATE_LIMITS_CACHE: cachePath });
+      assert.equal(status, 0);
+      assert.match(stdout, /5h .*15%/);
+      assert.match(stdout, /wk .*88%/);
+      const cached = JSON.parse(readFileSync(cachePath, 'utf8'));
+      assert.equal(cached.fiveHour.used, 15);
+      assert.equal(cached.fiveHourCapturedAt, capturedAt, 'weekly refresh must not refresh 5h age');
+      assert.ok(cached.sevenDayCapturedAt > capturedAt);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not reuse an expired 5h reset or a stale cached percentage', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-status-5h-expired-'));
+    try {
+      const cachePath = join(dir, 'rate-limits.json');
+      const now = Date.now();
+      const weekly = { used_percentage: 88, resets_at: new Date(now + 5 * 86400_000).toISOString() };
+      const payload = makePayload({ rate_limits: { five_hour: null, seven_day: weekly } });
+      const base = {
+        version: 3,
+        fiveHour: { used: 15, resetsAt: new Date(now - 1000).toISOString() },
+        fiveHourCapturedAt: now,
+        sevenDay: null,
+        sevenDayCapturedAt: null,
+        capturedAt: now,
+      };
+      writeFileSync(cachePath, JSON.stringify(base));
+      assert.doesNotMatch(run(payload, { CAH_RATE_LIMITS_CACHE: cachePath }).stdout, /5h /);
+
+      base.fiveHour.resetsAt = new Date(now + 20 * 60 * 1000).toISOString();
+      base.fiveHourCapturedAt = now - 5 * 60 * 1000 - 1;
+      base.capturedAt = now;
+      writeFileSync(cachePath, JSON.stringify(base));
+      assert.doesNotMatch(run(payload, { CAH_RATE_LIMITS_CACHE: cachePath }).stdout, /5h /);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('rate_limits present → appends 5h / wk parts and writes the cache file', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cah-status-rl-'));
     const cachePath = join(dir, 'rate-limits.json');
