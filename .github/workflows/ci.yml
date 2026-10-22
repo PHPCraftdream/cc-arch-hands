@@ -15,9 +15,8 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        # 18.19.0 is the declared minimum in package.json engines; 22 and 24
-        # are the current LTS lines (18 and 20 are EOL but still supported).
-        node-version: [18.19.0, 20, 22, 24]
+        # Keep CI on the declared runtime minimum across supported operating systems.
+        node-version: [24]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7

@@ -5,8 +5,8 @@ on:
     types: [published]
 
 jobs:
-  # The reusable full matrix (3 OSes x Node 18.19.0/20/22/24) runs against the
-  # tag being published; a failure on any supported environment blocks the
+  # The reusable matrix (3 OSes x Node 24) runs against the tag being
+  # published; a failure on any supported environment blocks the
   # publish job below.
   test:
     uses: ./.github/workflows/ci.yml
