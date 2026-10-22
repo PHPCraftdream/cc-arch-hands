@@ -24,6 +24,7 @@ import {
   persistRateLimitsCache,
   statusContextUsage,
   readLastMeasuredContext,
+  readStatusLineRateFallback,
 } from '../lib/transcript-stats.js';
 import { CURRENT_VERSION, getLatestVersion, isNewerVersion } from '../lib/update-check.js';
 
@@ -85,12 +86,12 @@ function buildLine(data) {
     }
   }
 
-  let fiveHour = null;
+  let fiveHourObserved = null;
   let sevenDay = null;
   try {
     const rl = data && data.rate_limits;
     if (rl && typeof rl === 'object') {
-      fiveHour = extractRateSlot(rl.five_hour);
+      fiveHourObserved = extractRateSlot(rl.five_hour);
       sevenDay = extractRateSlot(rl.seven_day);
     }
   } catch {
@@ -119,7 +120,7 @@ function buildLine(data) {
   try {
     persistRateLimitsCache(
       RATE_LIMITS_CACHE,
-      fiveHour,
+      fiveHourObserved,
       sevenDay,
       effort,
       contextWindowSize,
@@ -127,6 +128,15 @@ function buildLine(data) {
     );
   } catch {
     // Fail-silent: cache failures must never break the status bar.
+  }
+
+  let fiveHour = fiveHourObserved;
+  if (!fiveHour || !Number.isFinite(fiveHour.used) || fiveHour.used < 0 || fiveHour.used > 100) {
+    try {
+      fiveHour = readStatusLineRateFallback(RATE_LIMITS_CACHE, 'fiveHour') || fiveHour;
+    } catch {
+      // Cached quota is a best-effort fallback only.
+    }
   }
 
   // Reuse the shared formatter with time omitted (it's tolerant of null time).
