@@ -247,8 +247,11 @@ export function registerStampCoreCases() {
     const inFourHours = new Date(now + 4 * 60 * 60 * 1000).toISOString();
     const inSixDays = new Date(now + 6 * 24 * 60 * 60 * 1000).toISOString();
     writeFileSync(cachePath, JSON.stringify({
+      version: 4,
       fiveHour: { used: 23, resetsAt: inFourHours },
+      fiveHourSessionHash: createHash('sha256').update('string:s', 'utf8').digest('hex'),
       sevenDay: { used: 67, resetsAt: inSixDays },
+      sevenDaySessionHash: createHash('sha256').update('string:s', 'utf8').digest('hex'),
       capturedAt: now,
     }));
     const { stdout, status } = runStamp(
