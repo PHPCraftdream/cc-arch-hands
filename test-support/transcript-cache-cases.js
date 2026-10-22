@@ -93,7 +93,7 @@ describe('readRateLimitsCache', () => {
     assert.equal(got.effort, 'max');
   });
 
-  it('returns global rates while rejecting another session context', () => {
+  it('rejects legacy quotas for named sessions and another session context', () => {
     const dir = isolatedDir();
     const path = join(dir, 'rl.json');
     const t = 1_700_000_000_000;
@@ -106,7 +106,9 @@ describe('readRateLimitsCache', () => {
     assert.equal(readRateLimitsCache(path, t, 'session-a').contextWindowSize, 1_000_000);
     const other = readRateLimitsCache(path, t, 'session-b');
     assert.equal(other.contextWindowSize, null);
-    assert.equal(other.fiveHour.used, 10);
+    assert.equal(other.fiveHour, null);
+    assert.equal(readRateLimitsCache(path, t, 'session-a').fiveHour, null);
+    assert.equal(readRateLimitsCache(path, t).fiveHour.used, 10);
   });
 
   it('publishes the cache without following a legacy predictable temp symlink', (t) => {
@@ -207,7 +209,10 @@ describe('readRateLimitsCache', () => {
     const b = readRateLimitsCache(path, t + 1, sessionB);
     assert.equal(a.contextWindowSize, 1_000_000);
     assert.equal(b.contextWindowSize, 200_000);
-    assert.equal(b.fiveHour.used, 10);
+    assert.equal(a.fiveHour.used, 10);
+    assert.equal(a.sevenDay.used, 50);
+    assert.equal(b.fiveHour, null);
+    assert.equal(b.sevenDay, null);
     assert.match(rateLimitsContextPath(path, sessionA), /[\\/]rate-context[\\/][a-f0-9]{64}\.json$/);
     assert.notEqual(rateLimitsContextPath(path, sessionA), rateLimitsContextPath(path, sessionB));
     assert.doesNotMatch(rateLimitsContextPath(path, sessionA), /\.\.\/|a{20}/);
@@ -303,7 +308,7 @@ describe('readRateLimitsCache', () => {
       refreshed,
     );
 
-    const sessionHash = createHash().update('string:session-a', 'utf8').digest('hex');
+    const sessionHash = createHash('sha256').update('string:session-a', 'utf8').digest('hex');
     assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), {
       version: 4,
       fiveHour: { used: 20, resetsAt: fiveHourReset },
