@@ -303,12 +303,15 @@ describe('readRateLimitsCache', () => {
       refreshed,
     );
 
+    const sessionHash = createHash().update('string:session-a', 'utf8').digest('hex');
     assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), {
-      version: 3,
+      version: 4,
       fiveHour: { used: 20, resetsAt: fiveHourReset },
       fiveHourCapturedAt: refreshed,
+      fiveHourSessionHash: sessionHash,
       sevenDay: { used: 50, resetsAt: weeklyReset },
       sevenDayCapturedAt: first,
+      sevenDaySessionHash: sessionHash,
       capturedAt: refreshed,
     });
     assert.deepEqual(readRateLimitsCache(path, refreshed, 'session-a'), {

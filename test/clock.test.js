@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdirSync, mkdtempSync, readFileSync, existsSync, writeFileSync, rmSync } from 'node:fs';
@@ -42,6 +43,10 @@ function run(stdinData, env) {
     cachePath: cacheOverride,
     updateCachePath: updateCacheOverride,
   };
+}
+
+function sessionHash(sessionId) {
+  return createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
 }
 
 function makePayload(overrides = {}) {
@@ -209,11 +214,13 @@ describe('cah-status bin', () => {
       const capturedAt = Date.now();
       const reset = new Date(capturedAt + 20 * 60 * 1000).toISOString();
       writeFileSync(cachePath, JSON.stringify({
-        version: 3,
+        version: 4,
         fiveHour: { used: 15, resetsAt: reset },
         fiveHourCapturedAt: capturedAt,
+        fiveHourSessionHash: sessionHash('test-session'),
         sevenDay: null,
         sevenDayCapturedAt: null,
+        sevenDaySessionHash: null,
         capturedAt,
       }));
 
@@ -227,7 +234,42 @@ describe('cah-status bin', () => {
       const cached = JSON.parse(readFileSync(cachePath, 'utf8'));
       assert.equal(cached.fiveHour.used, 15);
       assert.equal(cached.fiveHourCapturedAt, capturedAt, 'weekly refresh must not refresh 5h age');
+      assert.equal(cached.fiveHourSessionHash, sessionHash('test-session'));
       assert.ok(cached.sevenDayCapturedAt > capturedAt);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not show Claude 5h quota in a Codex session', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-status-codex-quota-'));
+    try {
+      const cachePath = join(dir, 'rate-limits.json');
+      const now = Date.now();
+      writeFileSync(cachePath, JSON.stringify({
+        version: 4,
+        fiveHour: { used: 15, resetsAt: new Date(now + 20 * 60 * 1000).toISOString() },
+        fiveHourCapturedAt: now,
+        fiveHourSessionHash: sessionHash('claude-session'),
+        sevenDay: null,
+        sevenDayCapturedAt: null,
+        sevenDaySessionHash: null,
+        capturedAt: now,
+      }));
+      const { stdout, status } = run(makePayload({
+        session_id: 'codex-session',
+        model: { id: 'gpt-6-luna', display_name: 'GPT-6 Luna' },
+        rate_limits: {
+          five_hour: { used_percentage: 15, resets_at: new Date(now + 20 * 60 * 1000).toISOString() },
+          seven_day: { used_percentage: 88, resets_at: new Date(now + 5 * 86400_000).toISOString() },
+        },
+      }), { CAH_RATE_LIMITS_CACHE: cachePath });
+      assert.equal(status, 0);
+      assert.doesNotMatch(stdout, /5h /);
+      assert.match(stdout, /wk .*88%/);
+      const cached = JSON.parse(readFileSync(cachePath, 'utf8'));
+      assert.equal(cached.fiveHour, null);
+      assert.equal(cached.fiveHourSessionHash, null);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -241,11 +283,13 @@ describe('cah-status bin', () => {
       const weekly = { used_percentage: 88, resets_at: new Date(now + 5 * 86400_000).toISOString() };
       const payload = makePayload({ rate_limits: { five_hour: null, seven_day: weekly } });
       const base = {
-        version: 3,
+        version: 4,
         fiveHour: { used: 15, resetsAt: new Date(now - 1000).toISOString() },
         fiveHourCapturedAt: now,
+        fiveHourSessionHash: sessionHash('test-session'),
         sevenDay: null,
         sevenDayCapturedAt: null,
+        sevenDaySessionHash: null,
         capturedAt: now,
       };
       writeFileSync(cachePath, JSON.stringify(base));
@@ -355,7 +399,7 @@ describe('cah-status bin', () => {
     );
   });
 
-  it('two sessions retain distinct context windows while sharing global rates', () => {
+  it('two sessions retain distinct context windows and do not share quota slots', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cah-status-sessions-'));
     const cachePath = join(dir, 'rate-limits.json');
     const rates = {
@@ -373,7 +417,8 @@ describe('cah-status bin', () => {
     assert.equal(a.contextWindowSize, 1_000_000);
     assert.equal(b.contextWindowSize, 200_000);
     assert.equal(a.fiveHour.used, 23);
-    assert.equal(b.sevenDay.used, 67);
+    assert.equal(b.fiveHour, null);
+    assert.equal(b.sevenDay, null);
   });
 
   it('appends the update suffix from an isolated fixture cache with a newer latestVersion', () => {

@@ -86,12 +86,13 @@ function buildLine(data) {
     }
   }
 
+  const isClaudeModel = typeof data?.model?.id === 'string' && data.model.id.startsWith('claude-');
   let fiveHourObserved = null;
   let sevenDay = null;
   try {
     const rl = data && data.rate_limits;
     if (rl && typeof rl === 'object') {
-      fiveHourObserved = extractRateSlot(rl.five_hour);
+      fiveHourObserved = isClaudeModel ? extractRateSlot(rl.five_hour) : null;
       sevenDay = extractRateSlot(rl.seven_day);
     }
   } catch {
@@ -133,12 +134,13 @@ function buildLine(data) {
   let fiveHour = fiveHourObserved;
   if (!fiveHour || !Number.isFinite(fiveHour.used) || fiveHour.used < 0 || fiveHour.used > 100) {
     try {
-      fiveHour = readStatusLineRateFallback(RATE_LIMITS_CACHE, 'fiveHour') || fiveHour;
+      fiveHour = readStatusLineRateFallback(
+        RATE_LIMITS_CACHE, 'fiveHour', data?.session_id, data?.model?.id,
+      ) || fiveHour;
     } catch {
       // Cached quota is a best-effort fallback only.
     }
   }
-
   // Reuse the shared formatter with time omitted (it's tolerant of null time).
   const line = formatStatusLine({
     time: null, displayName, usedTokens, limit, fiveHour, sevenDay, effort,
