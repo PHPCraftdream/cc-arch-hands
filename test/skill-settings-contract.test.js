@@ -34,6 +34,17 @@ const SETTINGS_LOCK_URL = pathToFileURL(join(__dirname, '..', 'lib', 'settings-l
 const WATCH = readSkill(
   join(__dirname, '..', 'templates', 'skills', 'checkpoint-watch', 'SKILL.md'));
 
+describe('clock refresh interval contract', () => {
+  it('publishes seconds and converts the legacy millisecond override', () => {
+    const entry = CLOCK.match(/```json\n(\{[\s\S]*?\})\n```/);
+    assert.ok(entry, 'clock must publish its statusLine entry');
+    assert.equal(JSON.parse(entry[1]).refreshInterval, 60);
+    assert.match(CLOCK, /Math\.max\(5, Math\.ceil\(n \/ 1000\)\)/);
+    assert.doesNotMatch(CLOCK, /refreshInterval[": ]+60000/);
+    assert.match(CLOCK, /erroneous millisecond value `60000`/);
+  });
+});
+
 function commandLines(text) {
   return text.match(/^node "<HOME>[^\n]*$/gm) || [];
 }
@@ -417,7 +428,7 @@ describe('published clock/checkpoint-watch settings instructions', () => {
           type: 'command',
           command: 'node "C:/Users/Alice/.claude/cah-bin/bin/cah-status.js"',
           padding: 0,
-          refreshInterval: 60000,
+          refreshInterval: 60,
           'cah-sentinel': 'cah-status:v1',
           'cah-name': 'clock',
         };
