@@ -26,7 +26,7 @@
     "sync:codex:check": "node scripts/sync-codex-models.js --check"
   },
   "engines": {
-    "node": ">=18.19.0"
+    "node": ">=24"
   },
   "repository": {
     "type": "git",

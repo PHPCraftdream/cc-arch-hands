@@ -1549,7 +1549,7 @@ describe('writeBins', () => {
       'the executable may update after its dependency chain is complete');
   });
 
-  it('removes executables and libraries before the Node 18 boundary, preserving cache', async () => {
+  it('removes executables and libraries before the ESM boundary, preserving cache', async () => {
     writeBins(dst, src);
     const cache = join(dst, 'cache');
     mkdirSync(cache);
@@ -1567,7 +1567,7 @@ describe('writeBins', () => {
     );
     await waitForPath(`${interlock}.ready`, 60000, running);
 
-    assert.ok(existsSync(join(dst, 'package.json')), 'Node 18 ESM boundary must be last');
+    assert.ok(existsSync(join(dst, 'package.json')), 'managed ESM boundary must be last');
     assert.equal(JSON.parse(readFileSync(join(dst, 'package.json'), 'utf8')).type, 'module');
     for (const file of BinFiles.filter((entry) => entry.dest !== 'package.json')) {
       assert.ok(!existsSync(join(dst, file.dest)), `${file.dest} must precede boundary removal`);

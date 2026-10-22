@@ -65,7 +65,7 @@ describe('test discovery contract', () => {
   it('runs every repo test file exactly once via bare node --test discovery', () => {
     const tokens = commandTokens(PACKAGE.scripts?.test);
     assert.equal(tokens.shift(), 'node', 'npm test must invoke Node directly');
-    assert.equal(PACKAGE.engines?.node, '>=18.19.0', 'test-concurrency requires the fixed Node minimum');
+    assert.equal(PACKAGE.engines?.node, '>=24', 'test-concurrency requires the fixed Node minimum');
     assert.deepEqual(
       tokens,
       ['--test', '--test-concurrency=1'],

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Минимальная поддерживаемая версия Node.js повышена до 24; CI проверяет Node 24 на Linux, macOS и Windows вместо прежней матрицы версий 18/20/22/24.
+
 ### Fixed
 
 - Панель, chat-stamp и checkpoint hint учитывают `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, не превышая окно модели: например, показывают `922k` вместо `1M` и считают процент от того же лимита. Невалидные значения игнорируются; исходное окно в session cache не перезаписывается уменьшенным лимитом.
