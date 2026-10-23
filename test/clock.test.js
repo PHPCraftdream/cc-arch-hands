@@ -177,6 +177,44 @@ describe('cah-status bin', () => {
     assert.equal(readFileSync(blocked, 'utf8'), 'preserved');
   });
 
+  it('traces quota decisions without changing panel output', (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-quota-trace-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const reset = new Date(Date.now() + 3_600_000).toISOString();
+    const rates = { five_hour: { used_percentage: 15, resets_at: reset },
+      seven_day: { used_percentage: 67, resets_at: reset } };
+    for (const [index, item] of [
+      { overrides: { rate_limits: rates }, reason: 'envelope', shown: true, weekly: true },
+      { overrides: { rate_limits: rates, model: { display_name: 'Unknown' } }, reason: 'model_missing', shown: false, weekly: true },
+      { overrides: { rate_limits: rates, model: { id: 'gpt-6-luna', display_name: 'Codex' } }, reason: 'model_not_claude', shown: false, weekly: true },
+      { overrides: { rate_limits: null }, reason: 'cache_missing', shown: false, weekly: false },
+      { overrides: { rate_limits: null }, reason: 'cache', shown: true, weekly: false, seed: true },
+      { overrides: { rate_limits: { five_hour: { used_percentage: 15, resets_at: 1e20 } } },
+        reason: 'cache_missing', shown: false, weekly: false, extractionFailed: true },
+    ].entries()) {
+      const cachePath = join(dir, `rates-${index}.json`);
+      if (item.seed) writeFileSync(cachePath, JSON.stringify({ fiveHour: { used: 15, resetsAt: reset },
+        fiveHourCapturedAt: Date.now(), fiveHourSessionHash: sessionHash('test-session'), capturedAt: Date.now() }));
+      const payload = makePayload(item.overrides);
+      const env = { CAH_RATE_LIMITS_CACHE: cachePath };
+      const plain = run(payload, env);
+      const trace = join(dir, `trace-${index}`);
+      const traced = run(payload, { ...env, CAH_CONTEXT_TRACE_DIR: trace });
+      assert.equal(plain.status, 0);
+      assert.equal(traced.status, 0);
+      assert.equal(traced.stdout, plain.stdout);
+      assert.equal(traced.stdout.includes('5h '), item.shown);
+      assert.equal(traced.stdout.includes('wk '), item.weekly);
+      const records = readdirSync(trace).filter((name) => /^context-\d+\.json$/.test(name));
+      assert.equal(records.length, 1);
+      const record = JSON.parse(readFileSync(join(trace, records[0]), 'utf8'));
+      assert.equal(record.fiveHour.reason, item.reason);
+      assert.equal(record.fiveHour.rendered, item.shown);
+      assert.equal(record.sevenDay.rendered, item.weekly);
+      assert.equal(record.rateExtractionFailed, !!item.extractionFailed);
+    }
+  });
+
   it('caps the displayed window at the inherited compact window without rewriting the raw cache', () => {
     const { stdout, cachePath } = run(makePayload({ context_window: {
       context_window_size: 1000000, total_input_tokens: 831000,

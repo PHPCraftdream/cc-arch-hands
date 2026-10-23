@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, readdirSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { formatStatusLine, statusContextUsage, readLastMeasuredContext, readTranscriptStats,
-  effectiveContextWindowSize, statusContextTraceRecord, writeStatusContextTrace } from '../lib/transcript-stats.js';
+  effectiveContextWindowSize, statusContextTraceRecord, writeStatusContextTrace, readStatusLineRateFallback } from '../lib/transcript-stats.js';
 
 function transcript(t, entries) {
   const dir = mkdtempSync(join(tmpdir(), 'cah-context-observation-'));
@@ -44,7 +45,14 @@ describe('context trace', () => {
         readLastMeasuredContext(path, 'claude-opus-5-5'));
       assert.equal(diagnostics.reason, reason);
       assert.ok(diagnostics.bytes > 0);
-      assert.deepEqual(Object.keys(diagnostics).sort(), ['bytes', 'reason', 'records']);
+      assert.ok(Object.keys(diagnostics).every((key) =>
+        ['bytes', 'reason', 'records', 'model', 'modelsMatch'].includes(key)));
+      if (reason === 'model_mismatch') {
+        assert.equal(diagnostics.modelsMatch, false);
+        assert.equal(diagnostics.model.class, 'other');
+        assert.match(diagnostics.model.hash, /^[a-f0-9]{64}$/);
+      }
+      assert.doesNotMatch(JSON.stringify(diagnostics), /private-request|private-content|other-model|claude-opus/);
     }
     const missing = {};
     assert.equal(readLastMeasuredContext(`${transcript(t, [])}.missing`, null, missing), null);
@@ -71,7 +79,9 @@ describe('context trace', () => {
         context_window_size: 200000, total_input_tokens: 0, used_percentage: 25,
         current_usage: { input_tokens: 0, content: secret },
       } }, { usedTokens: null, limit: 200000, source: secret, reason: secret,
-      scan: { records: 2, bytes: 100, content: secret }, elapsedMs: 3 }, 60000);
+      scan: { records: 2, bytes: 100, content: secret, model: { class: secret, hash: secret } },
+      fiveHour: { used: secret, source: secret, fallback: { reason: secret, ageMs: secret } },
+      elapsedMs: 3 }, 60000);
     assert.doesNotMatch(JSON.stringify(record), /must-not-appear/);
     assert.match(record.sessionHash, /^[a-f0-9]{64}$/);
     assert.equal(record.source, 'none');
@@ -80,6 +90,80 @@ describe('context trace', () => {
     assert.equal(record.usedPercentage, 25);
     assert.equal(statusContextTraceRecord({}, {}).usageType, 'missing');
     assert.equal(statusContextTraceRecord({ context_window: { current_usage: null } }, {}).usageType, 'null');
+  });
+
+  it('reports quota fallback decisions without changing the returned slot', (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-quota-decisions-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const now = Date.now();
+    const hash = createHash('sha256').update('string:session').digest('hex');
+    for (const [index, item] of [
+      { reason: 'cache_missing', missing: true },
+      { reason: 'session_missing', session: '' },
+      { reason: 'model_missing', model: '' },
+      { reason: 'model_not_claude', model: 'gpt-6-luna' },
+      { reason: 'session_mismatch', session: 'other' },
+      { reason: 'slot_invalid', used: 101 },
+      { reason: 'capture_invalid', at: null },
+      { reason: 'stale', at: now - 300_001 },
+      { reason: 'stale', at: now - 3_600_001 },
+      { reason: 'stale', at: now + 86400_000 },
+      { reason: 'reset_missing', reset: null },
+      { reason: 'reset_invalid', reset: 'invalid' },
+      { reason: 'reset_elapsed', reset: new Date(now).toISOString() },
+      { reason: 'cache' },
+    ].entries()) {
+      const path = join(dir, `rates-${index}.json`);
+      if (!item.missing) writeFileSync(path, JSON.stringify({
+        fiveHour: { used: item.used ?? 15, resetsAt: Object.hasOwn(item, 'reset')
+          ? item.reset : new Date(now + 3_600_000).toISOString() },
+        fiveHourCapturedAt: Object.hasOwn(item, 'at') ? item.at : now,
+        fiveHourSessionHash: hash, capturedAt: now,
+      }));
+      const session = item.session ?? 'session';
+      const model = item.model ?? 'claude-opus-5-5';
+      const diagnostics = {};
+      const plain = readStatusLineRateFallback(path, 'fiveHour', session, model, now);
+      const traced = readStatusLineRateFallback(path, 'fiveHour', session, model, now, diagnostics);
+      assert.deepEqual(traced, plain, item.reason);
+      assert.equal(diagnostics.reason, item.reason);
+      assert.equal(traced !== null, item.reason === 'cache');
+      assert.deepEqual(Object.keys(diagnostics).sort(), ['ageMs', 'reason']);
+    }
+  });
+
+  it('records quota visibility and model pseudonyms without raw identifiers', () => {
+    const record = statusContextTraceRecord({ model: { id: 'private-model' }, rate_limits: {
+      five_hour: { used_percentage: 25, resets_at: 'private-reset' },
+    } }, { reason: 'model_mismatch', scan: { model: { class: 'claude', hash: 'a'.repeat(64) }, modelsMatch: false },
+      fiveHour: { source: 'none', fallback: { reason: 'model_not_claude' } },
+      sevenDay: { used: 30, source: 'envelope' } });
+    assert.doesNotMatch(JSON.stringify(record), /private-model|private-reset/);
+    assert.equal(record.modelsMatch, false);
+    assert.equal(record.envelopeModel.class, 'other');
+    assert.match(record.envelopeModel.hash, /^[a-f0-9]{64}$/);
+    assert.equal(record.fiveHour.modelAllowed, false);
+    assert.equal(record.fiveHour.reason, 'model_not_claude');
+    assert.equal(record.fiveHour.rendered, false);
+    assert.equal(record.sevenDay.rendered, true);
+    assert.equal(record.sevenDay.reason, 'envelope');
+  });
+
+  it('separates sessions in different buckets at the same minute', (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-session-trace-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    let session;
+    for (let i = 0; i < 1024; i++) {
+      const value = `session-${i}`;
+      const hash = createHash('sha256').update(`string:${value}`).digest('hex');
+      if (Number.parseInt(hash.slice(0, 2), 16) % 8 !== 0) { session = value; break; }
+    }
+    assert.ok(session);
+    assert.equal(writeStatusContextTrace(dir, {}, {}, 0), true);
+    assert.equal(writeStatusContextTrace(dir, { session_id: session }, {}, 0), true);
+    const files = readdirSync(dir).filter((name) => /^context-\d+\.json$/.test(name));
+    assert.equal(files.length, 2);
+    assert.ok(files.every((name) => Number(name.match(/\d+/)[0]) < 256));
   });
 
   it('keeps 32 bounded slots and preserves foreign or blocked destinations', (t) => {

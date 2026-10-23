@@ -109,7 +109,7 @@ function buildLine(data, contextState = null) {
       sevenDay = extractRateSlot(rl.seven_day);
     }
   } catch {
-    // ignore
+    if (contextState) contextState.rateExtractionFailed = true;
   }
 
   // effort.level lives only in the statusLine envelope. cah-stamp intentionally
@@ -145,14 +145,24 @@ function buildLine(data, contextState = null) {
   }
 
   let fiveHour = fiveHourObserved;
+  let fiveHourSource = fiveHour ? 'envelope' : 'none';
+  const quotaFallback = contextState ? { reason: 'not_needed' } : null;
   if (!fiveHour || !Number.isFinite(fiveHour.used) || fiveHour.used < 0 || fiveHour.used > 100) {
     try {
-      fiveHour = readStatusLineRateFallback(
-        RATE_LIMITS_CACHE, 'fiveHour', data?.session_id, data?.model?.id,
-      ) || fiveHour;
+      const cached = readStatusLineRateFallback(
+        RATE_LIMITS_CACHE, 'fiveHour', data?.session_id, data?.model?.id, undefined, quotaFallback,
+      );
+      if (cached) fiveHourSource = 'cache';
+      fiveHour = cached || fiveHour;
     } catch {
+      if (quotaFallback) quotaFallback.reason = 'read_error';
       // Cached quota is a best-effort fallback only.
     }
+  }
+  if (contextState) {
+    contextState.fiveHour = { used: fiveHour?.used, source: fiveHourSource, fallback: quotaFallback };
+    contextState.sevenDay = { used: sevenDay?.used, source: sevenDay ? 'envelope' : 'none',
+      fallback: { reason: 'not_attempted' } };
   }
   // Reuse the shared formatter with time omitted (it's tolerant of null time).
   const line = formatStatusLine({

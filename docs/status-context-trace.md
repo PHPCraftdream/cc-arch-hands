@@ -15,10 +15,13 @@ Each `context-<slot>.json` contains a fixed allowlist:
 - observation timestamp and total render duration;
 - SHA-256 session pseudonym, not the original session ID;
 - missing/null/type distinctions for context and current usage;
-- booleans indicating whether a model ID and transcript path were supplied;
+- booleans indicating whether a session ID, model ID and transcript path were supplied;
+- model classes (`missing`, `claude`, `other`), SHA-256 model pseudonyms, and the scanner's model comparison result (`true`, `false`, or `null` when unavailable);
 - finite numeric window, percentage, total input and current input/cache/output counters;
 - selected usage, effective limit and source (`envelope`, `transcript`, `none`);
-- fallback decision reason and bounded scanner record/byte counts.
+- fallback decision reason and bounded scanner record/byte counts;
+- quota input types, finite percentages, reset field types, extraction failure, model eligibility, final visibility and source for each quota;
+- the 5h fallback decision and cached observation age in milliseconds. Weekly fallback is not attempted by the renderer.
 
 No raw envelope, transcript content, model ID, path, request ID, tool payload, environment, credentials or error message is serialized. Even so, token counters, timestamps and session pseudonyms are diagnostic metadata: review captures before sharing them.
 
@@ -38,10 +41,12 @@ No raw envelope, transcript content, model ID, path, request ID, tool payload, e
 | `no_measurement` | No positive eligible measurement was found. |
 | `render_error` | Rendering failed; error text is deliberately omitted. |
 
+Quota `reason` distinguishes `envelope` / `cache` visibility from hidden decisions. The 5h `fallbackReason` reports `session_missing`, `model_missing`, `model_not_claude`, `cache_missing`, `session_mismatch`, `slot_invalid`, `capture_invalid`, `stale`, `reset_missing`, `reset_invalid`, `reset_elapsed`, or `read_error`. `not_needed` means the input slot was already usable; `not_attempted` is used when no fallback ran. A hidden weekly slot reports `input_missing` or `input_invalid`. `render_error` overrides visibility when the whole render failed. Model pseudonyms allow comparisons without storing raw IDs, but are not encryption: known candidate IDs can be hashed and matched.
+
 Reasons describe the decision in cah, not the upstream cause. For example, `unknown_model` does not prove a proxy alias bug. An absent observation does not prove a particular failure either: the process may not have started, may have been cancelled, or trace publication may have failed.
 
 ## Bounds and limitations
 
-There are 32 rotating minute slots. Multiple observations within the same minute overwrite that slot; after 32 minutes it is reused. Concurrent renders or sessions can replace one another's observations, so this is a bounded sample, not a complete event log. Use timestamps and session pseudonyms when correlating samples. Ordinary trace JSON stays below 8 KiB; existing oversized, malformed, foreign or non-regular slot files are preserved rather than overwritten. Interrupted atomic publication can leave recovery artifacts, which are not automatically deleted by tracing.
+There are eight session buckets, each with 32 rotating minute slots: at most 256 trace JSON files. A bucket is selected from the session hash; a missing session ID uses bucket zero. Multiple observations in the same bucket and minute overwrite that slot; after 32 minutes it is reused. Sessions in different buckets no longer overwrite one another, but hash-bucket collisions and same-minute overwrites remain possible. This is a bounded sample, not a complete event log. Use timestamps and session pseudonyms when correlating samples. Ordinary trace JSON stays below 8 KiB; existing oversized, malformed, foreign or non-regular slot files are preserved rather than overwritten. Interrupted atomic publication can leave recovery artifacts, which are not automatically deleted by tracing.
 
 Disable capture by removing `CAH_CONTEXT_TRACE_DIR` from the renderer environment. Existing observations remain until overwritten or explicitly removed; this feature does not automatically expire files. The regular transcript reader's scan limits and model/compaction protections remain unchanged.
