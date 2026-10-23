@@ -26,6 +26,7 @@ import {
   readLastMeasuredContext,
   readStatusLineRateFallback,
   writeStatusContextTrace,
+  statusMeasuredContext,
 } from '../lib/transcript-stats.js';
 import { CURRENT_VERSION, getLatestVersion, isNewerVersion } from '../lib/update-check.js';
 
@@ -79,6 +80,7 @@ function buildLine(data, contextState = null) {
     // ignore
   }
 
+  const envelopeTokens = usedTokens;
   let source = usedTokens !== null ? 'envelope' : 'none';
   let reason = limit === null ? 'window_invalid'
     : usedTokens !== null ? 'envelope'
@@ -97,7 +99,14 @@ function buildLine(data, contextState = null) {
     }
     if (contextState) contextState.scan = scan;
   }
-  if (contextState) Object.assign(contextState, { usedTokens, limit, source, reason });
+  const measuredCache = contextState ? {} : null;
+  const retained = statusMeasuredContext(RATE_LIMITS_CACHE, data, envelopeTokens, limit, measuredCache);
+  if (usedTokens === null && retained !== null) {
+    usedTokens = retained;
+    source = 'cache';
+    reason = 'cached_measurement';
+  }
+  if (contextState) Object.assign(contextState, { usedTokens, limit, source, reason, measuredCache });
 
   const isClaudeModel = typeof data?.model?.id === 'string' && data.model.id.startsWith('claude-');
   let fiveHourObserved = null;

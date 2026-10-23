@@ -1,11 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, appendFileSync, readFileSync, readdirSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { formatStatusLine, statusContextUsage, readLastMeasuredContext, readTranscriptStats,
-  effectiveContextWindowSize, statusContextTraceRecord, writeStatusContextTrace, readStatusLineRateFallback } from '../lib/transcript-stats.js';
+  effectiveContextWindowSize, statusContextTraceRecord, writeStatusContextTrace, readStatusLineRateFallback, statusMeasuredContext } from '../lib/transcript-stats.js';
 
 function transcript(t, entries) {
   const dir = mkdtempSync(join(tmpdir(), 'cah-context-observation-'));
@@ -25,6 +25,65 @@ function iteration(type, inputTokens, overrides = {}) {
   return { type, input_tokens: inputTokens, output_tokens: 1,
     cache_creation_input_tokens: 0, cache_read_input_tokens: 0, ...overrides };
 }
+
+describe('measured envelope retention', () => {
+  function fixture(t) {
+    const path = transcript(t, [assistant(0, 'model-a')]);
+    return { path, cache: `${path}.rates.json`, data: { session_id: 'private-session',
+      model: { id: 'model-a' }, transcript_path: path } };
+  }
+
+  it('retains measured usage across anonymous zero chunks, without refreshing its age', (t) => {
+    const { path, cache, data } = fixture(t);
+    const now = Date.now();
+    assert.equal(statusMeasuredContext(cache, data, 50000, 200000, null, now), 50000);
+    appendFileSync(path, JSON.stringify({ type: 'assistant', message: { usage: { input_tokens: 0 } } }) + '\n');
+    const diagnostic = {};
+    assert.equal(statusMeasuredContext(cache, data, null, 200000, diagnostic, now + 1000), 50000);
+    assert.equal(diagnostic.reason, 'cached_measurement');
+    assert.equal(statusMeasuredContext(cache, { ...data, session_id: 'other' }, null, 200000, null, now + 1000), null);
+    const namespace = join(path, '..', 'context-measured-' + createHash('sha256')
+      .update('transcript.jsonl.rates.json').digest('hex'));
+    const raw = readdirSync(namespace).filter((name) => /^[a-f0-9]{64}\.json$/.test(name))
+      .map((name) => readFileSync(join(namespace, name), 'utf8')).join('');
+    assert.doesNotMatch(raw, /private-session|model-a|transcript\.jsonl/);
+    assert.equal(statusMeasuredContext(cache, data, null, 200000, diagnostic, now + 3_600_001), null);
+    assert.equal(diagnostic.reason, 'stale');
+  });
+
+  it('invalidates at compaction and requires a new positive envelope', (t) => {
+    const { path, cache, data } = fixture(t);
+    statusMeasuredContext(cache, data, 50000, 200000);
+    appendFileSync(path, JSON.stringify({ type: 'system', subtype: 'compact_boundary' }) + '\n');
+    const diagnostic = {};
+    assert.equal(statusMeasuredContext(cache, data, null, 200000, diagnostic), null);
+    assert.equal(diagnostic.reason, 'compaction');
+    assert.equal(statusMeasuredContext(cache, data, null, 200000), null);
+    assert.equal(statusMeasuredContext(cache, data, 10000, 200000), 10000);
+    assert.equal(statusMeasuredContext(cache, data, null, 200000), 10000);
+  });
+
+  it('invalidates a model switch even when switching back without measurements', (t) => {
+    const { cache, data } = fixture(t);
+    statusMeasuredContext(cache, data, 50000, 200000);
+    assert.equal(statusMeasuredContext(cache, { ...data, model: { id: 'model-b' } }, null, 200000), null);
+    assert.equal(statusMeasuredContext(cache, data, null, 200000), null);
+  });
+
+  it('rejects changed windows, truncated files, partial records, and scan overflow', (t) => {
+    for (const change of ['window', 'truncate', 'partial', 'bytes', 'records', 'model']) {
+      const { path, cache, data } = fixture(t);
+      statusMeasuredContext(cache, data, 50000, 200000);
+      if (change === 'truncate') writeFileSync(path, '');
+      if (change === 'partial') appendFileSync(path, '{"type":');
+      if (change === 'bytes') appendFileSync(path, ' '.repeat(4 * 1024 * 1024 + 1));
+      if (change === 'records') appendFileSync(path, '{}\n'.repeat(10001));
+      if (change === 'model') appendFileSync(path, JSON.stringify(assistant(0, 'model-b')) + '\n');
+      assert.equal(statusMeasuredContext(cache, data, null, change === 'window' ? 100000 : 200000), null, change);
+      assert.equal(statusMeasuredContext(cache, data, null, 200000), null, `${change} stays invalid`);
+    }
+  });
+});
 
 describe('context trace', () => {
   it('reports reader reasons without changing results or exposing record fields', (t) => {

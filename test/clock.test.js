@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, existsSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, existsSync, writeFileSync, appendFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { readRateLimitsCache, rateLimitsContextPath } from '../lib/transcript-stats.js';
 
@@ -175,6 +175,40 @@ describe('cah-status bin', () => {
     writeFileSync(blocked, 'preserved');
     assert.equal(run(payload, { ...env, CAH_CONTEXT_TRACE_DIR: blocked }).stdout, plain.stdout);
     assert.equal(readFileSync(blocked, 'utf8'), 'preserved');
+  });
+
+  it('retains envelope context through unidentified streaming chunks but not compaction', (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-context-retain-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const path = join(dir, 'transcript.jsonl');
+    writeFileSync(path, JSON.stringify({ type: 'assistant', message: {
+      model: 'claude-opus-5-5', usage: { input_tokens: 0 },
+    } }) + '\n');
+    const payload = makePayload({ transcript_path: path,
+      model: { id: 'claude-opus-5-5', display_name: 'Codex' },
+      context_window: { context_window_size: 200000, total_input_tokens: 50000 } });
+    const env = { CAH_RATE_LIMITS_CACHE: join(dir, 'rate-limits.json') };
+    assert.match(run(payload, env).stdout, /25% \(50k\/200k\)/);
+    appendFileSync(path, JSON.stringify({ type: 'assistant', message: {
+      usage: { input_tokens: 0 },
+    } }) + '\n');
+    payload.context_window = { context_window_size: 200000, total_input_tokens: 0,
+      current_usage: { input_tokens: 0, cache_read_input_tokens: 0 } };
+    const trace = join(dir, 'trace');
+    const result = run(payload, { ...env, CAH_CONTEXT_TRACE_DIR: trace });
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /25% \(50k\/200k\)/);
+    assert.doesNotMatch(result.stdout, /5h |wk /);
+    const records = readdirSync(trace).filter((name) => /^context-\d+\.json$/.test(name));
+    const record = JSON.parse(readFileSync(join(trace, records[0]), 'utf8'));
+    assert.equal(record.source, 'cache');
+    assert.equal(record.reason, 'cached_measurement');
+    assert.equal(record.measuredCacheReason, 'cached_measurement');
+    appendFileSync(path, JSON.stringify({ type: 'system', subtype: 'compact_boundary' }) + '\n');
+    const compacted = run(payload, env);
+    assert.equal(compacted.status, 0);
+    assert.doesNotMatch(compacted.stdout, /25%|50k/);
+    assert.doesNotMatch(run(payload, env).stdout, /25%|50k/);
   });
 
   it('traces quota decisions without changing panel output', (t) => {

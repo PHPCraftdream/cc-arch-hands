@@ -1,6 +1,14 @@
 # Context meter diagnostics
 
-The statusLine renderer can capture bounded technical observations without enabling the raw envelope probe or replacing the normal panel. This diagnoses missing context meters; it does not relax model or compaction boundaries or invent a missing context window.
+The statusLine renderer can capture bounded technical observations without enabling the raw envelope probe or replacing the normal panel. This diagnoses missing context meters; it does not relax transcript-reader boundaries or invent a missing context window.
+
+## Retained context measurements
+
+A positive statusLine envelope observation is also retained in a hashed per-session `context-measured` sidecar beside the quota cache. When envelope usage is zero or missing and the regular transcript fallback has no eligible measurement, the renderer may reuse this observation for the same session, model, transcript and effective window, for at most one hour. Reuse never refreshes the measurement's age.
+
+Before reuse, the renderer checks the transcript file identity, size and a 4 KiB checkpoint anchor, then parses only records appended since the checkpoint (at most 4 MiB / 10,000 records). Main-chain compaction, a known different model, truncation/replacement, incomplete records or an unverifiable checkpoint invalidate the observation. A reported model switch also invalidates it, including switching back without a new measurement. Unknown-model streaming records can retain a separately measured envelope value; they are not used as measurements themselves. Successful reuse advances the verified checkpoint without changing the original observation time. Checkpoints rely on the transcript's append-only JSONL protocol, not arbitrary in-place history editing.
+
+Writes are atomic and best-effort, with bounded cleanup of at most 64 recent session sidecars. Records contain numeric measurements, file checkpoint metadata and hashes, not raw model IDs, session IDs, transcript paths or content. Retention needs a new positive envelope after invalidation; the normal transcript fallback remains available independently. No previous measurement means no invented zero.
 
 ## Enable
 
@@ -18,7 +26,8 @@ Each `context-<slot>.json` contains a fixed allowlist:
 - booleans indicating whether a session ID, model ID and transcript path were supplied;
 - model classes (`missing`, `claude`, `other`), SHA-256 model pseudonyms, and the scanner's model comparison result (`true`, `false`, or `null` when unavailable);
 - finite numeric window, percentage, total input and current input/cache/output counters;
-- selected usage, effective limit and source (`envelope`, `transcript`, `none`);
+- selected usage, effective limit and source (`envelope`, `transcript`, `cache`, `none`);
+- retained-measurement decision (`measuredCacheReason`), including compaction, checkpoint changes, incomplete records, model/window mismatch, staleness and scan limits;
 - fallback decision reason and bounded scanner record/byte counts;
 - quota input types, finite percentages, reset field types, extraction failure, model eligibility, final visibility and source for each quota;
 - the 5h fallback decision and cached observation age in milliseconds. Weekly fallback is not attempted by the renderer.
@@ -31,6 +40,7 @@ No raw envelope, transcript content, model ID, path, request ID, tool payload, e
 |---|---|
 | `envelope` | The envelope supplied positive measured usage and a valid window. |
 | `measured` | The transcript supplied a matching measured context. |
+| `cached_measurement` | A previous positive envelope measurement passed the session/model/window and transcript checkpoint checks. |
 | `window_invalid` | No finite positive numeric window was supplied; no guessed denominator is used. |
 | `model_missing` / `path_missing` | Required fallback input was unavailable. |
 | `unknown_model` | An assistant/request boundary could not be assigned a model. |
