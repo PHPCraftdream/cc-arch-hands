@@ -1,10 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { formatStatusLine, statusContextUsage, readLastMeasuredContext, readTranscriptStats,
-  effectiveContextWindowSize } from '../lib/transcript-stats.js';
+  effectiveContextWindowSize, statusContextTraceRecord, writeStatusContextTrace } from '../lib/transcript-stats.js';
 
 function transcript(t, entries) {
   const dir = mkdtempSync(join(tmpdir(), 'cah-context-observation-'));
@@ -24,6 +24,90 @@ function iteration(type, inputTokens, overrides = {}) {
   return { type, input_tokens: inputTokens, output_tokens: 1,
     cache_creation_input_tokens: 0, cache_read_input_tokens: 0, ...overrides };
 }
+
+describe('context trace', () => {
+  it('reports reader reasons without changing results or exposing record fields', (t) => {
+    const measured = assistant(30000);
+    const unknown = { type: 'assistant', requestId: 'private-request', message: {
+      role: 'assistant', content: 'private-content', usage: { input_tokens: 0 } } };
+    const compact = { type: 'system', subtype: 'compact_boundary' };
+    for (const [entries, reason] of [
+      [[measured], 'measured'],
+      [[measured, unknown], 'unknown_model'],
+      [[measured, assistant(0, 'other-model')], 'model_mismatch'],
+      [[measured, compact], 'compaction'],
+      [[assistant(0)], 'no_measurement'],
+    ]) {
+      const path = transcript(t, entries);
+      const diagnostics = {};
+      assert.deepEqual(readLastMeasuredContext(path, 'claude-opus-5-5', diagnostics),
+        readLastMeasuredContext(path, 'claude-opus-5-5'));
+      assert.equal(diagnostics.reason, reason);
+      assert.ok(diagnostics.bytes > 0);
+      assert.deepEqual(Object.keys(diagnostics).sort(), ['bytes', 'reason', 'records']);
+    }
+    const missing = {};
+    assert.equal(readLastMeasuredContext(`${transcript(t, [])}.missing`, null, missing), null);
+    assert.equal(missing.reason, 'read_error');
+  });
+
+  it('distinguishes scan budgets and an unfinished request at EOF', (t) => {
+    const path = transcript(t, [assistant(30000), assistant(0)]);
+    for (const [limits, reason] of [[{ maxRecords: 1 }, 'record_limit'], [{ maxBytes: 10 }, 'byte_limit']]) {
+      const diagnostics = {};
+      assert.equal(readTranscriptStats(path, { lastMeasuredContext: true, diagnostics, ...limits }), null);
+      assert.equal(diagnostics.reason, reason);
+    }
+    const diagnostics = {};
+    readLastMeasuredContext(transcript(t, [{ type: 'assistant', requestId: 'request',
+      message: { usage: { input_tokens: 0 } } }]), null, diagnostics);
+    assert.equal(diagnostics.reason, 'unknown_model');
+  });
+
+  it('serializes only allowlisted technical data', () => {
+    const secret = 'must-not-appear';
+    const record = statusContextTraceRecord({ session_id: secret, transcript_path: secret,
+      model: { id: secret }, content: secret, context_window: {
+        context_window_size: 200000, total_input_tokens: 0, used_percentage: 25,
+        current_usage: { input_tokens: 0, content: secret },
+      } }, { usedTokens: null, limit: 200000, source: secret, reason: secret,
+      scan: { records: 2, bytes: 100, content: secret }, elapsedMs: 3 }, 60000);
+    assert.doesNotMatch(JSON.stringify(record), /must-not-appear/);
+    assert.match(record.sessionHash, /^[a-f0-9]{64}$/);
+    assert.equal(record.source, 'none');
+    assert.equal(record.reason, 'render_error');
+    assert.equal(record.usageType, 'object');
+    assert.equal(record.usedPercentage, 25);
+    assert.equal(statusContextTraceRecord({}, {}).usageType, 'missing');
+    assert.equal(statusContextTraceRecord({ context_window: { current_usage: null } }, {}).usageType, 'null');
+  });
+
+  it('keeps 32 bounded slots and preserves foreign or blocked destinations', (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-context-trace-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const state = { source: 'none', reason: 'unknown_model' };
+    for (let i = 0; i <= 32; i++) {
+      assert.equal(writeStatusContextTrace(dir, {}, state, i * 60000), true);
+    }
+    const slots = readdirSync(dir).filter((name) => /^context-\d+\.json$/.test(name));
+    assert.equal(slots.length, 32);
+    assert.equal(JSON.parse(readFileSync(join(dir, 'context-0.json'), 'utf8')).capturedAt, 32 * 60000);
+    for (const name of slots) assert.ok(readFileSync(join(dir, name)).length < 8192);
+    const foreign = join(dir, 'context-0.json');
+    writeFileSync(foreign, 'foreign data');
+    assert.equal(writeStatusContextTrace(dir, {}, state, 0), false);
+    assert.equal(readFileSync(foreign, 'utf8'), 'foreign data');
+    const blocked = join(dir, 'not-a-directory');
+    writeFileSync(blocked, 'preserved');
+    assert.equal(writeStatusContextTrace(blocked, {}, state, 0), false);
+    const fence = join(dir, 'context-1.json.cah-owned-publish');
+    mkdirSync(fence);
+    writeFileSync(join(fence, 'publication.json'), JSON.stringify({ version: 2, ownerPid: process.pid }));
+    const before = readFileSync(join(dir, 'context-1.json'), 'utf8');
+    assert.equal(writeStatusContextTrace(dir, {}, state, 60000), false);
+    assert.equal(readFileSync(join(dir, 'context-1.json'), 'utf8'), before);
+  });
+});
 
 describe('effective context window', () => {
   it('caps the model window without enlarging a smaller actual window', () => {

@@ -25,6 +25,7 @@ import {
   statusContextUsage,
   readLastMeasuredContext,
   readStatusLineRateFallback,
+  writeStatusContextTrace,
 } from '../lib/transcript-stats.js';
 import { CURRENT_VERSION, getLatestVersion, isNewerVersion } from '../lib/update-check.js';
 
@@ -58,7 +59,7 @@ function extractRateSlot(slot) {
   return { used, resetsAt };
 }
 
-function buildLine(data) {
+function buildLine(data, contextState = null) {
   let displayName = null;
   try {
     displayName = data && data.model && data.model.display_name || null;
@@ -78,14 +79,25 @@ function buildLine(data) {
     // ignore
   }
 
+  let source = usedTokens !== null ? 'envelope' : 'none';
+  let reason = limit === null ? 'window_invalid'
+    : usedTokens !== null ? 'envelope'
+      : typeof data?.model?.id !== 'string' || !data.model.id ? 'model_missing'
+        : 'path_missing';
   if (usedTokens === null && limit !== null
       && typeof data?.transcript_path === 'string' && typeof data.model?.id === 'string'
       && data.model.id.length > 0) {
-    const previous = readLastMeasuredContext(data.transcript_path, data.model.id);
+    const scan = contextState ? {} : null;
+    const previous = readLastMeasuredContext(data.transcript_path, data.model.id, scan);
+    reason = scan?.reason || 'no_measurement';
     if (previous?.modelId === data.model.id && previous.usedTokens > 0) {
       usedTokens = previous.usedTokens;
+      source = 'transcript';
+      reason = 'measured';
     }
+    if (contextState) contextState.scan = scan;
   }
+  if (contextState) Object.assign(contextState, { usedTokens, limit, source, reason });
 
   const isClaudeModel = typeof data?.model?.id === 'string' && data.model.id.startsWith('claude-');
   let fiveHourObserved = null;
@@ -177,8 +189,21 @@ function main() {
     }
   }
 
-  const line = buildLine(data);
+  const traceDirectory = process.env.CAH_CONTEXT_TRACE_DIR;
+  const contextState = traceDirectory ? {} : null;
+  const started = performance.now();
+  let line;
+  try {
+    line = buildLine(data, contextState);
+  } catch {
+    line = FALLBACK;
+    if (contextState) contextState.reason = 'render_error';
+  }
   process.stdout.write(line + '\n');
+  if (contextState) {
+    contextState.elapsedMs = performance.now() - started;
+    writeStatusContextTrace(traceDirectory, data, contextState);
+  }
 }
 
 try {

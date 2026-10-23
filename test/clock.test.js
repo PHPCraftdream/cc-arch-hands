@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdirSync, mkdtempSync, readFileSync, existsSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, existsSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { readRateLimitsCache, rateLimitsContextPath } from '../lib/transcript-stats.js';
 
@@ -32,6 +32,7 @@ function run(stdinData, env) {
     env: {
       ...process.env,
       CLAUDE_CODE_AUTO_COMPACT_WINDOW: '',
+      CAH_CONTEXT_TRACE_DIR: '',
       ...(env || {}),
       CAH_RATE_LIMITS_CACHE: cacheOverride,
       CAH_UPDATE_CHECK_CACHE: updateCacheOverride,
@@ -122,6 +123,58 @@ describe('cah-status bin', () => {
     assert.equal(status, 0);
     assert.match(stdout, /^Opus 4\.8 · \[[█▏▎▍▌▋▊▉░]{10}\] 67% \(670k\/1M\)$/);
     assert.ok(!/^\d{2}:\d{2}/.test(stdout), 'must NOT start with HH:MM — clock was dropped to dodge Windows cold-start race');
+  });
+
+  it('traces context decisions without changing stdout or capturing private fields', (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-status-trace-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const path = join(dir, 'transcript.jsonl');
+    const secret = 'private-trace-marker';
+    writeFileSync(path, JSON.stringify({ type: 'assistant', message: {
+      role: 'assistant', model: 'gpt-6-luna', content: secret, usage: { input_tokens: 50000 },
+    } }) + '\n');
+    const traceDir = join(dir, 'trace');
+    const payload = makePayload({ model: { id: 'gpt-6-luna', display_name: 'Codex' },
+      session_id: secret, transcript_path: path, content: secret, context_window: {
+        context_window_size: 200000, current_usage: null,
+      } });
+    const env = { CAH_RATE_LIMITS_CACHE: join(dir, 'rates.json') };
+    const plain = run(payload, env);
+    assert.ok(!existsSync(traceDir));
+    const traced = run(payload, { ...env, CAH_CONTEXT_TRACE_DIR: traceDir });
+    assert.equal(traced.status, 0);
+    assert.equal(traced.stdout, plain.stdout);
+    const records = readdirSync(traceDir).map((name) => readFileSync(join(traceDir, name), 'utf8'));
+    assert.ok(records.length > 0);
+    for (const raw of records) {
+      assert.doesNotMatch(raw, /private-trace-marker|transcript\.jsonl|gpt-6-luna/);
+      const record = JSON.parse(raw);
+      assert.equal(record.reason, 'measured');
+      assert.equal(record.source, 'transcript');
+      assert.equal(record.usedTokens, 50000);
+      assert.equal(record.limit, 200000);
+      assert.equal(record.usageType, 'null');
+      assert.equal(record.contextRendered, true);
+    }
+    for (const [overrides, reason] of [
+      [{ context_window: null }, 'window_invalid'],
+      [{ model: { display_name: 'Codex' } }, 'model_missing'],
+      [{ transcript_path: undefined }, 'path_missing'],
+      [{ model: { id: 'other-model', display_name: 'Other' } }, 'model_mismatch'],
+    ]) {
+      const destination = join(dir, reason);
+      const result = run({ ...payload, ...overrides }, { ...env, CAH_CONTEXT_TRACE_DIR: destination });
+      assert.equal(result.status, 0);
+      for (const name of readdirSync(destination)) {
+        const record = JSON.parse(readFileSync(join(destination, name), 'utf8'));
+        assert.equal(record.reason, reason);
+        assert.equal(record.contextRendered, false);
+      }
+    }
+    const blocked = join(dir, 'blocked');
+    writeFileSync(blocked, 'preserved');
+    assert.equal(run(payload, { ...env, CAH_CONTEXT_TRACE_DIR: blocked }).stdout, plain.stdout);
+    assert.equal(readFileSync(blocked, 'utf8'), 'preserved');
   });
 
   it('caps the displayed window at the inherited compact window without rewriting the raw cache', () => {
@@ -236,6 +289,31 @@ describe('cah-status bin', () => {
       assert.equal(cached.fiveHourCapturedAt, capturedAt, 'weekly refresh must not refresh 5h age');
       assert.equal(cached.fiveHourSessionHash, sessionHash('test-session'));
       assert.ok(cached.sevenDayCapturedAt > capturedAt);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps its own 5h fallback after another session publishes quota', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-status-quota-sessions-'));
+    try {
+      const cachePath = join(dir, 'rate-limits.json');
+      const env = { CAH_RATE_LIMITS_CACHE: cachePath };
+      const reset = new Date(Date.now() + 3_600_000).toISOString();
+      const rates = (used) => ({ five_hour: { used_percentage: used, resets_at: reset },
+        seven_day: { used_percentage: 88, resets_at: reset } });
+      assert.equal(run(makePayload({ session_id: 'session-a', rate_limits: rates(15) }), env).status, 0);
+      assert.equal(run(makePayload({ session_id: 'session-b', rate_limits: rates(42) }), env).status, 0);
+      const result = run(makePayload({ session_id: 'session-a', rate_limits: {
+        five_hour: null, seven_day: rates(15).seven_day,
+      } }), env);
+      assert.equal(result.status, 0);
+      assert.match(result.stdout, /5h .*15%/);
+      assert.doesNotMatch(result.stdout, /5h .*42%/);
+      const codex = run(makePayload({ session_id: 'session-a',
+        model: { id: 'gpt-6-luna', display_name: 'GPT-6 Luna' }, rate_limits: null }), env);
+      assert.equal(codex.status, 0);
+      assert.doesNotMatch(codex.stdout, /5h /);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -769,6 +769,11 @@ prints the parsed envelope so you can see exactly which fields Claude Code
 delivers on your account (e.g. whether `rate_limits.five_hour.resets_at` is
 populated). No manual `settings.json` edits.
 
+For intermittent context-meter gaps, the normal renderer also supports an
+opt-in, allowlisted `CAH_CONTEXT_TRACE_DIR` capture without replacing the panel
+or storing raw envelopes. See [context meter diagnostics](docs/status-context-trace.md)
+for activation, recorded fields, bounds, and limitations.
+
 From source (same commands, prefix with `node bin/cah.js`):
 
 ```bash
