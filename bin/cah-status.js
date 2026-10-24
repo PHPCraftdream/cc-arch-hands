@@ -15,7 +15,7 @@
 // the bar), always exits 0.
 
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import {
   formatStatusLine,
@@ -29,6 +29,7 @@ import {
   statusMeasuredContext,
 } from '../lib/transcript-stats.js';
 import { CURRENT_VERSION, getLatestVersion, isNewerVersion } from '../lib/update-check.js';
+import { proxyModelDisplayName } from '../lib/proxy-model.js';
 
 const FALLBACK = '—';
 
@@ -60,10 +61,10 @@ function extractRateSlot(slot) {
   return { used, resetsAt };
 }
 
-function buildLine(data, contextState = null) {
+function buildLine(data, contextState = null, proxyDisplayName = null) {
   let displayName = null;
   try {
-    displayName = data && data.model && data.model.display_name || null;
+    displayName = proxyDisplayName || data && data.model && data.model.display_name || null;
   } catch {
     // ignore
   }
@@ -191,7 +192,7 @@ function buildLine(data, contextState = null) {
   return line ? line + updateSuffix : FALLBACK;
 }
 
-function main() {
+async function main() {
   let raw = '';
   try {
     raw = readFileSync(0, 'utf8');
@@ -211,9 +212,13 @@ function main() {
   const traceDirectory = process.env.CAH_CONTEXT_TRACE_DIR;
   const contextState = traceDirectory ? {} : null;
   const started = performance.now();
+  let proxyDisplayName = null;
+  try {
+    proxyDisplayName = await proxyModelDisplayName(data?.model?.id, dirname(RATE_LIMITS_CACHE));
+  } catch { /* optional metadata must not break the panel */ }
   let line;
   try {
-    line = buildLine(data, contextState);
+    line = buildLine(data, contextState, proxyDisplayName);
   } catch {
     line = FALLBACK;
     if (contextState) contextState.reason = 'render_error';
@@ -226,7 +231,7 @@ function main() {
 }
 
 try {
-  main();
+  await main();
 } catch {
   try {
     process.stdout.write(FALLBACK + '\n');

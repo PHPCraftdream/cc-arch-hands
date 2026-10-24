@@ -73,6 +73,7 @@ function fakeSource(root) {
   );
   writeFileSync(join(root, 'lib', 'transcript-stats.js'), 'export const x = 1;\n');
   writeFileSync(join(root, 'lib', 'update-check.js'), 'export const y = 1;\n');
+  writeFileSync(join(root, 'lib', 'proxy-model.js'), 'export const proxy = 1;\n');
   writeFileSync(join(root, 'lib', 'lease-lock.js'), 'export const lease = 1;\n');
   writeFileSync(join(root, 'lib', 'marker-state.js'), 'export const marker = 1;\n');
   writeFileSync(join(root, 'lib', 'fsutil.js'), 'export const z = 1;\n');

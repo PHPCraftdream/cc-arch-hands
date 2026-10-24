@@ -11,6 +11,7 @@ import {
   currentHhMmSs, readRateLimitsCache, effectiveContextWindowSize,
 } from '../lib/transcript-stats.js';
 import { CURRENT_VERSION, getLatestVersion, isNewerVersion } from '../lib/update-check.js';
+import { proxyModelDisplayName } from '../lib/proxy-model.js';
 import { captureRegularFileSnapshot, isOlderThan, writeFileAtomic } from '../lib/fsutil.js';
 import { acquireLease, renewLease, pathIdentity, releaseLease, streamDirectoryEntries,
   recoverOwnedFileFences, removeOwnedFileForGeneration, readDirectoryScanStats,
@@ -318,7 +319,7 @@ function settleUpdateNotice(notice, lease, testHooks = {}) {
   } finally { releaseUpdateMarkerClaim(notice.claim); }
 }
 
-export function main(testHooks = {}) {
+export async function main(testHooks = {}) {
   let payload;
   try { payload = JSON.parse(readFileSync(0, 'utf8')); } catch { return; }
   if (payload.stop_hook_active === true || !payload.transcript_path) return;
@@ -371,7 +372,12 @@ export function main(testHooks = {}) {
     try { envelopeLimit = validContextWindowSize(payload.context_window?.context_window_size); } catch { /* ignore */ }
     const limit = stats?.modelId
       ? effectiveContextWindowSize(contextWindowLimit(stats.modelId, envelopeLimit || cached?.contextWindowSize)) : null;
-    const line = formatStatusLine({ time: currentHhMmSs(), displayName: stats?.modelId || null,
+    let displayName = stats?.modelId || null;
+    try {
+      displayName = await proxyModelDisplayName(stats?.modelId, dirname(RATE_LIMITS_CACHE)) || displayName;
+    } catch { /* optional metadata must not break the stamp */ }
+    if (!renewLease(lock)) return;
+    const line = formatStatusLine({ time: currentHhMmSs(), displayName,
       usedTokens: stats?.usedTokens !== null && stats?.modelId ? stats.usedTokens : null,
       limit: stats?.usedTokens !== null && stats?.modelId ? limit : null,
       fiveHour: cached?.fiveHour || null, sevenDay: cached?.sevenDay || null, bars: false });
@@ -392,6 +398,6 @@ export function main(testHooks = {}) {
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  try { main(); } catch { /* fail-silent */ }
+  try { await main(); } catch { /* fail-silent */ }
   process.exit(0);
 }

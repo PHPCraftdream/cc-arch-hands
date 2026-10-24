@@ -5,8 +5,53 @@ import { join } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { runStamp, runStampAsync, isolatedDir, writeTranscript, updateMarkerDir, stampSidecarPath, TIME_RE } from './stamp-helpers.js';
+import { proxyModelDisplayName } from '../lib/proxy-model.js';
 
 export function registerStampCoreCases() {
+  it('uses the shared ccgp label for both hook events without effort or duplicate stamps', async () => {
+    for (const event of ['PostToolUse', 'Stop']) {
+      const dir = isolatedDir();
+      const model = 'claude-opus-5-5';
+      const tp = join(dir, 'transcript.jsonl');
+      writeFileSync(tp, JSON.stringify({ type: 'assistant', requestId: 'proxy-stamp-request',
+        message: { role: 'assistant', model, usage: { input_tokens: 20000 } } }) + '\n');
+      const env = { ANTHROPIC_AUTH_TOKEN: 'ccgp',
+        ANTHROPIC_BASE_URL: 'http://127.0.0.1:60093/call/test-token',
+        CAH_RATE_LIMITS_CACHE: join(dir, 'rates.json'), CAH_STAMP_THROTTLE_PATH: join(dir, 'stamp.json'),
+        CAH_STAMP_MIN_INTERVAL_MS: '1' };
+      await proxyModelDisplayName(model, dir, { env, fetchRoute: async () => ({
+        kind: 'ccgp:model-route:v1', requestedModel: model, backendModel: 'backend-model',
+      }) });
+      const payload = { session_id: `proxy-stamp-${event}`, transcript_path: tp,
+        hook_event_name: event, context_window: { context_window_size: 200000 }, effort: { level: 'max' } };
+      const result = runStamp(payload, env);
+      assert.equal(result.status, 0);
+      const line = JSON.parse(result.stdout).systemMessage;
+      assert.match(line, /^\d{2}:\d{2}:\d{2} · backend-model · 10% \(20k\/200k\)/);
+      assert.doesNotMatch(line, /\[(?:l|m|h|x|xx)\]/);
+      const duplicate = runStamp({ ...payload, hook_event_name: event === 'Stop' ? 'PostToolUse' : 'Stop' }, env);
+      assert.equal(duplicate.status, 0);
+      assert.equal(duplicate.stdout, '');
+      const native = runStamp({ ...payload, session_id: `native-${event}` }, { ...env, ANTHROPIC_AUTH_TOKEN: '' });
+      assert.equal(native.status, 0);
+      assert.match(JSON.parse(native.stdout).systemMessage, /Opus/);
+      assert.doesNotMatch(JSON.parse(native.stdout).systemMessage, /backend-model/);
+    }
+  });
+
+  it('keeps the transcript model when ccgp metadata are unavailable', async () => {
+    const dir = isolatedDir();
+    const model = 'claude-sonnet-5-5';
+    const tp = writeTranscript(dir, model, 20000);
+    const env = { ANTHROPIC_AUTH_TOKEN: 'ccgp',
+      ANTHROPIC_BASE_URL: 'http://127.0.0.1:60093/call/test-token',
+      CAH_RATE_LIMITS_CACHE: join(dir, 'rates.json') };
+    await proxyModelDisplayName(model, dir, { env, fetchRoute: async () => null });
+    const result = runStamp({ session_id: 'proxy-unavailable', transcript_path: tp, hook_event_name: 'Stop' }, env);
+    assert.equal(result.status, 0);
+    assert.match(JSON.parse(result.stdout).systemMessage, /Sonnet/);
+  });
+
   it('terminates a deterministically hung child after its deadline', async () => {
     const started = Date.now();
     const result = await runStampAsync('', { CAH_TEST_ONLY_HANG: '1' }, {

@@ -21,6 +21,6 @@ if (process.env.CAH_TEST_ONLY_HANG === '1') {
   if (!target) throw new Error(`unknown companion kind: ${kind}`);
   const module = await import(new URL(`${target}?test-runner`, import.meta.url));
   const testInterlock = makeInterlock();
-  module.main({ testInterlock, protectMarker: testInterlock.protectMarker });
+  await module.main({ testInterlock, protectMarker: testInterlock.protectMarker });
   if (kind === 'hint') process.exit(0);
 }

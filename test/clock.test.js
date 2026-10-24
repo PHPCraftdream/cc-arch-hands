@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, existsSync, writeFileSync, appendFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { readRateLimitsCache, rateLimitsContextPath } from '../lib/transcript-stats.js';
+import { proxyModelDisplayName } from '../lib/proxy-model.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BIN = join(__dirname, '..', 'bin', 'cah-status.js');
@@ -33,6 +34,7 @@ function run(stdinData, env) {
       ...process.env,
       CLAUDE_CODE_AUTO_COMPACT_WINDOW: '',
       CAH_CONTEXT_TRACE_DIR: '',
+      ANTHROPIC_AUTH_TOKEN: '',
       ...(env || {}),
       CAH_RATE_LIMITS_CACHE: cacheOverride,
       CAH_UPDATE_CHECK_CACHE: updateCacheOverride,
@@ -175,6 +177,25 @@ describe('cah-status bin', () => {
     writeFileSync(blocked, 'preserved');
     assert.equal(run(payload, { ...env, CAH_CONTEXT_TRACE_DIR: blocked }).stdout, plain.stdout);
     assert.equal(readFileSync(blocked, 'utf8'), 'preserved');
+  });
+
+  it('uses optional proxy labels without changing context or requiring a proxy CLI', async (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-proxy-label-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const payload = makePayload();
+    const env = { ANTHROPIC_AUTH_TOKEN: 'ccgp',
+      ANTHROPIC_BASE_URL: 'http://127.0.0.1:60093/call/test-token' };
+    await proxyModelDisplayName(payload.model.id, dir, { env, fetchRoute: async () => ({
+      kind: 'ccgp:model-route:v1', requestedModel: payload.model.id, backendModel: 'backend-model',
+    }) });
+    const result = run(payload, { ...env, CAH_RATE_LIMITS_CACHE: join(dir, 'rates.json') });
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /^backend-model · /);
+    assert.match(result.stdout, /67% \(670k\/1M\)/);
+    const native = run(payload, { ...env, ANTHROPIC_AUTH_TOKEN: '' });
+    assert.equal(native.status, 0);
+    assert.match(native.stdout, /^Opus 4\.8 · /);
+    assert.equal(payload.model.id, 'claude-opus-4-8');
   });
 
   it('retains envelope context through unidentified streaming chunks but not compaction', (t) => {
