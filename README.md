@@ -46,8 +46,8 @@ Updates publish that package boundary first, then `sentinel.js`,
 `fs-atomic-identity.js`, `lease-clock.js`, `fs-atomic-publication.js`,
 `fs-atomic.js`, `fsutil.js`, `lease-lock.js`, `marker-capacity-ops.js`,
 `marker-capacity-stage.js`, `marker-capacity-recovery.js`, `marker-state.js`,
-`transcript-stats.js` and `update-check.js`, and
-only then replace executable leaves. This dependency-first closure keeps a new
+`rate-limits-cache.js`, `transcript-stats.js`, `update-check.js`, and `proxy-model.js`,
+and only then replace executable leaves. This dependency-first closure keeps a new
 executable from becoming visible before its complete sibling dependency chain.
 
 The companion runtime bins:
@@ -709,7 +709,8 @@ npx cc-arch-hands install --only omp-commands                 # nine OMP workflo
 npx cc-arch-hands install --only bins                         # companion bins (cah-status, cah-stamp,
                                                     #   cah-checkpoint-hint, cah-status-probe,
                                                     #   + shared lib leaves: transcript-stats.js,
-                                                    #     update-check.js, lease-lock.js, marker-capacity-ops.js,
+                                                    #     update-check.js, proxy-model.js, rate-limits-cache.js,
+                                                    #     lease-lock.js, marker-capacity-ops.js,
                                                     #     fs-atomic-publication.js, marker-capacity-stage.js,
                                                     #     marker-capacity-recovery.js,
                                                     #     marker-state.js, fsutil.js,

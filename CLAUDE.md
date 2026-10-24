@@ -65,8 +65,8 @@ companion runtime bins and their shared library leaves
 `lib/fs-atomic-publication.js`,
 `lib/fs-atomic.js`, `lib/fsutil.js`, `lib/lease-lock.js`,
 `lib/marker-capacity-ops.js`, `lib/marker-capacity-stage.js`,
-`lib/marker-capacity-recovery.js`, `lib/marker-state.js`, `lib/transcript-stats.js`,
-and `lib/update-check.js`) into
+`lib/marker-capacity-recovery.js`, `lib/marker-state.js`, `lib/rate-limits-cache.js`,
+`lib/transcript-stats.js`, `lib/update-check.js`, and `lib/proxy-model.js`) into
 `~/.claude/cah-bin/`, mirroring the package's `bin/` + `lib/` layout so
 the bins' relative imports resolve unchanged. `settings.json` then references
 them by absolute path (`node "<HOME>/.claude/cah-bin/bin/cah-status.js"`)
@@ -88,7 +88,7 @@ Publication is dependency-first: the managed package boundary, `sentinel.js`,
 `fs-atomic.js`, `fsutil.js`,
 `lease-lock.js`, `marker-capacity-ops.js`, `marker-capacity-stage.js`,
 `marker-capacity-recovery.js`, `marker-state.js`,
-`transcript-stats.js`, and `update-check.js` are replaced before any executable
+`rate-limits-cache.js`, `transcript-stats.js`, `update-check.js`, and `proxy-model.js` are replaced before any executable
 bin. A new executable is
 never exposed before its complete mirrored dependency chain is present.
 
@@ -114,7 +114,9 @@ never exposed before its complete mirrored dependency chain is present.
 | `lib/lease-clock.js` | Shared lease heartbeat/expiry rule (`LEASE_MAX_MS`, `ownerTimestamp`, `leaseExpired`) used by both lease-lock and fs-atomic-publication |
 | `lib/settings-lock.js` | Shared cross-process settings.json lock — acquire/release with ownership-verified reclaim and release, built on lease-lock; used by lib/probe.js and the skills' published protocol |
 | `lib/fs-atomic.js` | Atomic publication, quarantine, and conditional removal |
-| `lib/transcript-stats.js` | Shared transcript walker + status-line formatter for all hook bins |
+| `lib/transcript-stats.js` | Shared transcript walker + status-line formatter for all hook bins; re-exports cache helpers |
+| `lib/rate-limits-cache.js` | Session-scoped quota/context-window sidecars, freshness, migration and bounded cleanup |
+| `lib/proxy-model.js` | Optional local ccgp backend-label metadata with bounded fail-silent caching |
 | `lib/marker-capacity-ops.js` | Durable marker-capacity transitions, exact victim CAS, and surfaced mismatch recovery |
 | `lib/marker-capacity-stage.js` | Deterministic bounded staging and recovery for marker capacity transactions |
 | `lib/marker-capacity-recovery.js` | Generation-aware transaction retirement, publication recovery, and victim restoration |
