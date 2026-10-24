@@ -21,7 +21,7 @@ A heartbeat for the TaskList. Wakes work up after network errors, API timeouts, 
 
 Run these steps in order. **Each one has an observable result** — don't trust your own narration, trust the tool output.
 
-1. **Call `CronList`.** Look in the returned jobs for a recurring entry whose prompt starts with `# babysit tick`. If you find one, stop here and report `babysit already running: <job-id>, every <interval>`. Do NOT install a second one — two babysitters fight each other.
+1. **Call `CronList`.** Look for a recurring entry whose prompt starts with `# babysit tick`. If found, compare its full saved prompt with the current **Tick prompt** below. If identical, report `babysit already armed: <job-id>, every <interval>`; if different, report the job id and that the current logic is not applied. If only a truncated prompt is available, report `babysit prompt match unverified: <job-id>`; a matching prefix proves neither equality nor difference. Stop in all three cases: do not duplicate or replace the job without the user's request.
 
 2. **Call `CronCreate`.** Arguments:
    - `cron`: an "every N minutes" expression at **off-minutes** (the CronCreate doc warns about :00 and :30 fleet pileups). Examples:
@@ -44,33 +44,31 @@ Copy the block below into the `prompt` argument of CronCreate **as-is**, includi
 ```
 # babysit tick — monitor the TaskList and wake stalled work
 
-Run these steps in order on each tick. The TaskList is the source of truth; /goal is not consulted.
+The TaskList defines remaining work, not execution state; /goal is not consulted. User stops and changes of direction take priority. Respect scope and permissions; leave other agents' tasks alone.
 
-1. Snapshot the TaskList. Count pending, in_progress, and blocked (a pending whose blockedBy is non-empty and not all resolved).
+1. Read the TaskList. If no owned pending or in_progress tasks remain, find your cron via CronList by this prompt's first line, delete it via CronDelete, and end the tick.
 
-2. Stop condition: if pending + in_progress == 0, find your own job id by calling CronList, matching this prompt's first line. Call CronDelete on that id. Report "TaskList empty — babysit done." End the tick.
+2. Establish execution state from tool results and notifications, distinguishing last-known from currently confirmed state. in_progress, TaskUpdate, a commit, a cron, or repeating an old result does not prove a live executor. Reconfirm inherited executors after a session restart. A terminal result closes that executor; do not report it as running again without evidence of a new launch. A finished watcher does not establish the observed operation's state. Distinguish running, queued, waiting, blocked, and unknown; if current state cannot be established, use unknown. Use the supported verification mechanism; do not launch duplicates or replace completion notifications with manual polling. If queued/waiting state persists unusually long, inspect available evidence of the delay and report its confirmed cause or that it is unknown; do not label waiting as execution or restart work merely because it is delayed.
 
-3. If any task is in_progress:
-   - Look for fresh progress signals since the previous tick: a new commit in `git log`, a TaskUpdate within the interval, a recent agent message.
-   - Signal present → one-line report "still running #<id>". End the tick.
-   - Signal absent → resume that task from its description (it carries the strategy /babygoal recorded). Do NOT change the goal, do NOT start new work, do NOT touch tasks owned by another agent.
+3. Continue actionable started tasks and pick pending tasks with satisfied dependencies; prefer lower IDs when otherwise equal. Follow the recorded strategy. Run independent work in parallel when authorized and free of file or resource conflicts. One waiting task does not block the rest; permission to parallelize grants no additional permissions for agents or commands.
 
-4. Otherwise (only pending tasks remain): pick the lowest-id pending whose blockedBy is empty or fully resolved. Mark it in_progress via TaskUpdate. Begin work using the strategy named in its description.
+4. Execute work, not promises. Mark started tasks in_progress and completed tasks completed only after verifying their acceptance criteria. After each result, continue actionable work in this turn without waiting for a tick. After a terminal result, consume it and perform the next authorized task-advancing tool action, if any; saying "continuing" is not execution. Before ending a work tick, verify that work is complete, a specific blocker exists, or step 5 permits waiting. When no owned open tasks remain, delete the cron as in step 1.
 
-5. Every blocked? Report the blocker chain and end the tick — don't loop tighter, the next tick will re-check.
+5. Wait only when no other authorized work is actionable and a launched finite operation or agent will produce a result needed to advance the goal. Name the task, executor ID, confirmed state, supporting launch/status result or notification (with its time when available), needed result, and resumption mechanism. A bare "still running #<task>" is not evidence. Servers and watchers are infrastructure: wait for a specific necessary event (server readiness, a finite CI run's result), not merely a live process. A running CI watch does not prove CI execution. Do not launch unnecessary work to justify waiting. If blocked, name the missing permission, decision, resource, or dependency instead of promising background work.
 
-Each tick must end with at most one short line of output: still running #N / resumed #N / started #N / blocked / done. Status essays burn the cron's small token budget.
+Keep reports brief: actual results or the precise reason for waiting or blockage. The next tick is a recovery fallback, not a substitute for an available action.
 ```
 
 ## Cleanup
 
-- The tick prompt **self-deletes** the cron when the TaskList becomes empty (step 2 of the tick).
+- The tick prompt **self-deletes** the cron when no owned open tasks remain (steps 1 and 4 of the tick).
 - If you finish a babygoal-led session early and want to kill the babysit explicitly: `CronList` to find the job, then `CronDelete <id>`.
 - All cron jobs auto-expire after 7 days regardless. If a babygoal run lives that long, re-invoke `/babysit` to re-arm.
 
 ## Important
 
-- **The tick's job-picking (tick step 4) is a fallback for a stalled or dead session, not a pacing gate.** A session actively working a TaskList (typically one started by `/babygoal`) picks up its own next ready task the instant the current one completes — it never pauses between tasks to wait for a tick to do that for it. The tick only matters when nobody live is around to pick tasks up; it exists to survive an API error, a crash, or a silent stall, not to throttle normal progress to once per interval.
+- **The timer is a recovery fallback, not a pacing gate.** An active session continues actionable work without waiting for the next tick.
+- A cron stores a copy of the tick prompt: editing this file does not update existing jobs. Recreate an existing babysit job to apply the new logic.
 - The skill loader does not execute the cron for you. **Reading this file is not the same as installing the cron.** Don't move on until step 3 above has logged a confirmed `<job-id>`.
 - This skill changes neither the goal nor the plan — it only nudges existing work forward. New tasks come from `/task` or `/babygoal`. List hygiene comes from `/triage`.
 - If `CronList` shows the TaskList is empty of your work but other agents' tasks are still alive — leave their tasks alone, but do call CronDelete on your own job. It's not yours to babysit.

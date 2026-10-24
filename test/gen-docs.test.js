@@ -32,6 +32,8 @@ const EXPECTED_SHARED_LIB_LEAVES = [
   'lib/marker-capacity-recovery.js',
   'lib/marker-capacity-stage.js',
   'lib/marker-state.js',
+  'lib/proxy-model.js',
+  'lib/rate-limits-cache.js',
   'lib/sentinel.js',
   'lib/transcript-stats.js',
   'lib/update-check.js',

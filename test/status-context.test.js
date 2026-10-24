@@ -1,10 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, appendFileSync, readFileSync, readdirSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { formatStatusLine, statusContextUsage, readLastMeasuredContext, readTranscriptStats,
-  effectiveContextWindowSize } from '../lib/transcript-stats.js';
+  effectiveContextWindowSize, statusContextTraceRecord, writeStatusContextTrace, readStatusLineRateFallback, statusMeasuredContext } from '../lib/transcript-stats.js';
 
 function transcript(t, entries) {
   const dir = mkdtempSync(join(tmpdir(), 'cah-context-observation-'));
@@ -24,6 +25,232 @@ function iteration(type, inputTokens, overrides = {}) {
   return { type, input_tokens: inputTokens, output_tokens: 1,
     cache_creation_input_tokens: 0, cache_read_input_tokens: 0, ...overrides };
 }
+
+describe('measured envelope retention', () => {
+  function fixture(t) {
+    const path = transcript(t, [assistant(0, 'model-a')]);
+    return { path, cache: `${path}.rates.json`, data: { session_id: 'private-session',
+      model: { id: 'model-a' }, transcript_path: path } };
+  }
+
+  it('retains measured usage across anonymous zero chunks, without refreshing its age', (t) => {
+    const { path, cache, data } = fixture(t);
+    const now = Date.now();
+    assert.equal(statusMeasuredContext(cache, data, 50000, 200000, null, now), 50000);
+    appendFileSync(path, JSON.stringify({ type: 'assistant', message: { usage: { input_tokens: 0 } } }) + '\n');
+    const diagnostic = {};
+    assert.equal(statusMeasuredContext(cache, data, null, 200000, diagnostic, now + 1000), 50000);
+    assert.equal(diagnostic.reason, 'cached_measurement');
+    assert.equal(statusMeasuredContext(cache, { ...data, session_id: 'other' }, null, 200000, null, now + 1000), null);
+    const namespace = join(path, '..', 'context-measured-' + createHash('sha256')
+      .update('transcript.jsonl.rates.json').digest('hex'));
+    const raw = readdirSync(namespace).filter((name) => /^[a-f0-9]{64}\.json$/.test(name))
+      .map((name) => readFileSync(join(namespace, name), 'utf8')).join('');
+    assert.doesNotMatch(raw, /private-session|model-a|transcript\.jsonl/);
+    assert.equal(statusMeasuredContext(cache, data, null, 200000, diagnostic, now + 3_600_001), null);
+    assert.equal(diagnostic.reason, 'stale');
+  });
+
+  it('invalidates at compaction and requires a new positive envelope', (t) => {
+    const { path, cache, data } = fixture(t);
+    statusMeasuredContext(cache, data, 50000, 200000);
+    appendFileSync(path, JSON.stringify({ type: 'system', subtype: 'compact_boundary' }) + '\n');
+    const diagnostic = {};
+    assert.equal(statusMeasuredContext(cache, data, null, 200000, diagnostic), null);
+    assert.equal(diagnostic.reason, 'compaction');
+    assert.equal(statusMeasuredContext(cache, data, null, 200000), null);
+    assert.equal(statusMeasuredContext(cache, data, 10000, 200000), 10000);
+    assert.equal(statusMeasuredContext(cache, data, null, 200000), 10000);
+  });
+
+  it('invalidates a model switch even when switching back without measurements', (t) => {
+    const { cache, data } = fixture(t);
+    statusMeasuredContext(cache, data, 50000, 200000);
+    assert.equal(statusMeasuredContext(cache, { ...data, model: { id: 'model-b' } }, null, 200000), null);
+    assert.equal(statusMeasuredContext(cache, data, null, 200000), null);
+  });
+
+  it('rejects changed windows, truncated files, partial records, and scan overflow', (t) => {
+    for (const change of ['window', 'truncate', 'partial', 'bytes', 'records', 'model']) {
+      const { path, cache, data } = fixture(t);
+      statusMeasuredContext(cache, data, 50000, 200000);
+      if (change === 'truncate') writeFileSync(path, '');
+      if (change === 'partial') appendFileSync(path, '{"type":');
+      if (change === 'bytes') appendFileSync(path, ' '.repeat(4 * 1024 * 1024 + 1));
+      if (change === 'records') appendFileSync(path, '{}\n'.repeat(10001));
+      if (change === 'model') appendFileSync(path, JSON.stringify(assistant(0, 'model-b')) + '\n');
+      assert.equal(statusMeasuredContext(cache, data, null, change === 'window' ? 100000 : 200000), null, change);
+      assert.equal(statusMeasuredContext(cache, data, null, 200000), null, `${change} stays invalid`);
+    }
+  });
+});
+
+describe('context trace', () => {
+  it('reports reader reasons without changing results or exposing record fields', (t) => {
+    const measured = assistant(30000);
+    const unknown = { type: 'assistant', requestId: 'private-request', message: {
+      role: 'assistant', content: 'private-content', usage: { input_tokens: 0 } } };
+    const compact = { type: 'system', subtype: 'compact_boundary' };
+    for (const [entries, reason] of [
+      [[measured], 'measured'],
+      [[measured, unknown], 'unknown_model'],
+      [[measured, assistant(0, 'other-model')], 'model_mismatch'],
+      [[measured, compact], 'compaction'],
+      [[assistant(0)], 'no_measurement'],
+    ]) {
+      const path = transcript(t, entries);
+      const diagnostics = {};
+      assert.deepEqual(readLastMeasuredContext(path, 'claude-opus-5-5', diagnostics),
+        readLastMeasuredContext(path, 'claude-opus-5-5'));
+      assert.equal(diagnostics.reason, reason);
+      assert.ok(diagnostics.bytes > 0);
+      assert.ok(Object.keys(diagnostics).every((key) =>
+        ['bytes', 'reason', 'records', 'model', 'modelsMatch'].includes(key)));
+      if (reason === 'model_mismatch') {
+        assert.equal(diagnostics.modelsMatch, false);
+        assert.equal(diagnostics.model.class, 'other');
+        assert.match(diagnostics.model.hash, /^[a-f0-9]{64}$/);
+      }
+      assert.doesNotMatch(JSON.stringify(diagnostics), /private-request|private-content|other-model|claude-opus/);
+    }
+    const missing = {};
+    assert.equal(readLastMeasuredContext(`${transcript(t, [])}.missing`, null, missing), null);
+    assert.equal(missing.reason, 'read_error');
+  });
+
+  it('distinguishes scan budgets and an unfinished request at EOF', (t) => {
+    const path = transcript(t, [assistant(30000), assistant(0)]);
+    for (const [limits, reason] of [[{ maxRecords: 1 }, 'record_limit'], [{ maxBytes: 10 }, 'byte_limit']]) {
+      const diagnostics = {};
+      assert.equal(readTranscriptStats(path, { lastMeasuredContext: true, diagnostics, ...limits }), null);
+      assert.equal(diagnostics.reason, reason);
+    }
+    const diagnostics = {};
+    readLastMeasuredContext(transcript(t, [{ type: 'assistant', requestId: 'request',
+      message: { usage: { input_tokens: 0 } } }]), null, diagnostics);
+    assert.equal(diagnostics.reason, 'unknown_model');
+  });
+
+  it('serializes only allowlisted technical data', () => {
+    const secret = 'must-not-appear';
+    const record = statusContextTraceRecord({ session_id: secret, transcript_path: secret,
+      model: { id: secret }, content: secret, context_window: {
+        context_window_size: 200000, total_input_tokens: 0, used_percentage: 25,
+        current_usage: { input_tokens: 0, content: secret },
+      } }, { usedTokens: null, limit: 200000, source: secret, reason: secret,
+      scan: { records: 2, bytes: 100, content: secret, model: { class: secret, hash: secret } },
+      fiveHour: { used: secret, source: secret, fallback: { reason: secret, ageMs: secret } },
+      elapsedMs: 3 }, 60000);
+    assert.doesNotMatch(JSON.stringify(record), /must-not-appear/);
+    assert.match(record.sessionHash, /^[a-f0-9]{64}$/);
+    assert.equal(record.source, 'none');
+    assert.equal(record.reason, 'render_error');
+    assert.equal(record.usageType, 'object');
+    assert.equal(record.usedPercentage, 25);
+    assert.equal(statusContextTraceRecord({}, {}).usageType, 'missing');
+    assert.equal(statusContextTraceRecord({ context_window: { current_usage: null } }, {}).usageType, 'null');
+  });
+
+  it('reports quota fallback decisions without changing the returned slot', (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-quota-decisions-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const now = Date.now();
+    const hash = createHash('sha256').update('string:session').digest('hex');
+    for (const [index, item] of [
+      { reason: 'cache_missing', missing: true },
+      { reason: 'session_missing', session: '' },
+      { reason: 'model_missing', model: '' },
+      { reason: 'model_not_claude', model: 'gpt-6-luna' },
+      { reason: 'session_mismatch', session: 'other' },
+      { reason: 'slot_invalid', used: 101 },
+      { reason: 'capture_invalid', at: null },
+      { reason: 'stale', at: now - 300_001 },
+      { reason: 'stale', at: now - 3_600_001 },
+      { reason: 'stale', at: now + 86400_000 },
+      { reason: 'reset_missing', reset: null },
+      { reason: 'reset_invalid', reset: 'invalid' },
+      { reason: 'reset_elapsed', reset: new Date(now).toISOString() },
+      { reason: 'cache' },
+    ].entries()) {
+      const path = join(dir, `rates-${index}.json`);
+      if (!item.missing) writeFileSync(path, JSON.stringify({
+        fiveHour: { used: item.used ?? 15, resetsAt: Object.hasOwn(item, 'reset')
+          ? item.reset : new Date(now + 3_600_000).toISOString() },
+        fiveHourCapturedAt: Object.hasOwn(item, 'at') ? item.at : now,
+        fiveHourSessionHash: hash, capturedAt: now,
+      }));
+      const session = item.session ?? 'session';
+      const model = item.model ?? 'claude-opus-5-5';
+      const diagnostics = {};
+      const plain = readStatusLineRateFallback(path, 'fiveHour', session, model, now);
+      const traced = readStatusLineRateFallback(path, 'fiveHour', session, model, now, diagnostics);
+      assert.deepEqual(traced, plain, item.reason);
+      assert.equal(diagnostics.reason, item.reason);
+      assert.equal(traced !== null, item.reason === 'cache');
+      assert.deepEqual(Object.keys(diagnostics).sort(), ['ageMs', 'reason']);
+    }
+  });
+
+  it('records quota visibility and model pseudonyms without raw identifiers', () => {
+    const record = statusContextTraceRecord({ model: { id: 'private-model' }, rate_limits: {
+      five_hour: { used_percentage: 25, resets_at: 'private-reset' },
+    } }, { reason: 'model_mismatch', scan: { model: { class: 'claude', hash: 'a'.repeat(64) }, modelsMatch: false },
+      fiveHour: { source: 'none', fallback: { reason: 'model_not_claude' } },
+      sevenDay: { used: 30, source: 'envelope' } });
+    assert.doesNotMatch(JSON.stringify(record), /private-model|private-reset/);
+    assert.equal(record.modelsMatch, false);
+    assert.equal(record.envelopeModel.class, 'other');
+    assert.match(record.envelopeModel.hash, /^[a-f0-9]{64}$/);
+    assert.equal(record.fiveHour.modelAllowed, false);
+    assert.equal(record.fiveHour.reason, 'model_not_claude');
+    assert.equal(record.fiveHour.rendered, false);
+    assert.equal(record.sevenDay.rendered, true);
+    assert.equal(record.sevenDay.reason, 'envelope');
+  });
+
+  it('separates sessions in different buckets at the same minute', (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-session-trace-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    let session;
+    for (let i = 0; i < 1024; i++) {
+      const value = `session-${i}`;
+      const hash = createHash('sha256').update(`string:${value}`).digest('hex');
+      if (Number.parseInt(hash.slice(0, 2), 16) % 8 !== 0) { session = value; break; }
+    }
+    assert.ok(session);
+    assert.equal(writeStatusContextTrace(dir, {}, {}, 0), true);
+    assert.equal(writeStatusContextTrace(dir, { session_id: session }, {}, 0), true);
+    const files = readdirSync(dir).filter((name) => /^context-\d+\.json$/.test(name));
+    assert.equal(files.length, 2);
+    assert.ok(files.every((name) => Number(name.match(/\d+/)[0]) < 256));
+  });
+
+  it('keeps 32 bounded slots and preserves foreign or blocked destinations', (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-context-trace-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const state = { source: 'none', reason: 'unknown_model' };
+    for (let i = 0; i <= 32; i++) {
+      assert.equal(writeStatusContextTrace(dir, {}, state, i * 60000), true);
+    }
+    const slots = readdirSync(dir).filter((name) => /^context-\d+\.json$/.test(name));
+    assert.equal(slots.length, 32);
+    assert.equal(JSON.parse(readFileSync(join(dir, 'context-0.json'), 'utf8')).capturedAt, 32 * 60000);
+    for (const name of slots) assert.ok(readFileSync(join(dir, name)).length < 8192);
+    const foreign = join(dir, 'context-0.json');
+    writeFileSync(foreign, 'foreign data');
+    assert.equal(writeStatusContextTrace(dir, {}, state, 0), false);
+    assert.equal(readFileSync(foreign, 'utf8'), 'foreign data');
+    const blocked = join(dir, 'not-a-directory');
+    writeFileSync(blocked, 'preserved');
+    assert.equal(writeStatusContextTrace(blocked, {}, state, 0), false);
+    const fence = join(dir, 'context-1.json.cah-owned-publish');
+    mkdirSync(fence);
+    writeFileSync(join(fence, 'publication.json'), JSON.stringify({ version: 2, ownerPid: process.pid }));
+    const before = readFileSync(join(dir, 'context-1.json'), 'utf8');
+    assert.equal(writeStatusContextTrace(dir, {}, state, 60000), false);
+    assert.equal(readFileSync(join(dir, 'context-1.json'), 'utf8'), before);
+  });
+});
 
 describe('effective context window', () => {
   it('caps the model window without enlarging a smaller actual window', () => {

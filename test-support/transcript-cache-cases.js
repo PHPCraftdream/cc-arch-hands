@@ -17,6 +17,8 @@ import {
   readRateLimitsCache,
   persistRateLimitsCache,
   rateLimitsContextPath,
+  rateLimitsQuotaPath,
+  readStatusLineRateFallback,
 } from '../lib/transcript-stats.js';
 import { writeFileAtomic } from '../lib/fsutil.js';
 import {
@@ -277,6 +279,92 @@ describe('readRateLimitsCache', () => {
     persistRateLimitsCache(path, null, null, null, 200_000, 'capacity-session', now);
 
     assert.ok(readdirSync(namespace).length <= 64);
+  });
+
+  it('retains each session quota after another session overwrites the shared cache', () => {
+    const path = join(isolatedDir(), 'rate-limits.json');
+    const now = Date.now();
+    const fiveHour = { used: 10, resetsAt: new Date(now + 3_600_000).toISOString() };
+    const weekly = { used: 50, resetsAt: new Date(now + 86400_000).toISOString() };
+    persistRateLimitsCache(path, fiveHour, weekly, null, null, 'session-a', now);
+    persistRateLimitsCache(path, { ...fiveHour, used: 20 }, { ...weekly, used: 60 },
+      null, null, 'session-b', now + 1);
+
+    assert.equal(JSON.parse(readFileSync(path, 'utf8')).fiveHour.used, 20);
+    assert.deepEqual(readStatusLineRateFallback(path, 'fiveHour', 'session-a', 'claude-opus-5-5', now + 2), fiveHour);
+    assert.equal(readRateLimitsCache(path, now + 2, 'session-a').sevenDay.used, 50);
+    assert.equal(readRateLimitsCache(path, now + 2, 'session-b').fiveHour.used, 20);
+    assert.equal(readStatusLineRateFallback(path, 'fiveHour', 'session-c', 'claude-opus-5-5', now + 2), null);
+    assert.equal(readStatusLineRateFallback(path, 'fiveHour', 'session-a', 'gpt-6-luna', now + 2), null);
+
+    persistRateLimitsCache(path, null, { ...weekly, used: 51 }, null, null, 'session-a', now + 60_000);
+    const local = JSON.parse(readFileSync(rateLimitsQuotaPath(path, 'session-a'), 'utf8'));
+    assert.equal(local.fiveHourCapturedAt, now);
+    assert.equal(local.sevenDayCapturedAt, now + 60_000);
+    assert.deepEqual(readStatusLineRateFallback(path, 'fiveHour', 'session-a', 'claude-opus-5-5', now + 60_001), fiveHour);
+    assert.equal(readStatusLineRateFallback(path, 'fiveHour', 'session-a', 'claude-opus-5-5', now + 300_001), null);
+    assert.equal(readStatusLineRateFallback(path, 'fiveHour', 'session-a', 'claude-opus-5-5', now + 3_600_000), null);
+  });
+
+  it('reads session quotas without the shared file and rejects expired or mismatched sidecars', () => {
+    const dir = isolatedDir();
+    const path = join(dir, 'rate-limits.json');
+    const now = Date.now();
+    const quotaPath = rateLimitsQuotaPath(path, '../session-a');
+    assert.match(quotaPath, /[\\/]rate-quota[\\/][a-f0-9]{64}\.json$/);
+    assert.equal(rateLimitsQuotaPath(path, ''), null);
+    assert.notEqual(quotaPath, rateLimitsQuotaPath(join(dir, 'other.json'), '../session-a'));
+    mkdirSync(join(dir, 'rate-quota'), { recursive: true });
+    const hash = createHash('sha256').update('string:../session-a').digest('hex');
+    const state = { version: 4, fiveHour: { used: 10, resetsAt: new Date(now + 60_000).toISOString() },
+      fiveHourCapturedAt: now, fiveHourSessionHash: hash, capturedAt: now };
+    writeFileSync(quotaPath, JSON.stringify(state));
+    assert.equal(readRateLimitsCache(path, now, '../session-a').fiveHour.used, 10);
+    assert.equal(readStatusLineRateFallback(path, 'fiveHour', '../session-a', 'claude-opus-5-5', now + 60_000), null);
+    assert.equal(readRateLimitsCache(path, now + 3_600_001, '../session-a'), null);
+    state.fiveHourSessionHash = 'foreign';
+    writeFileSync(quotaPath, JSON.stringify(state));
+    assert.equal(readRateLimitsCache(path, now, '../session-a'), null);
+  });
+
+  it('prefers a newer same-session shared observation over its sidecar', () => {
+    const path = join(isolatedDir(), 'rate-limits.json');
+    const now = Date.now();
+    const slot = { used: 10, resetsAt: new Date(now + 3_600_000).toISOString() };
+    persistRateLimitsCache(path, slot, null, null, null, 'session-a', now);
+    const base = JSON.parse(readFileSync(path, 'utf8'));
+    base.fiveHour = { ...slot, used: 20 };
+    base.fiveHourCapturedAt = now + 1;
+    base.capturedAt = now + 1;
+    writeFileSync(path, JSON.stringify(base));
+    assert.equal(readStatusLineRateFallback(path, 'fiveHour', 'session-a', 'claude-opus-5-5', now + 2).used, 20);
+    base.fiveHourCapturedAt = now + 24 * 3_600_000;
+    writeFileSync(path, JSON.stringify(base));
+    assert.equal(readStatusLineRateFallback(path, 'fiveHour', 'session-a', 'claude-opus-5-5', now + 2).used, 10);
+  });
+
+  it('bounds quota sidecars independently and tolerates a blocked quota namespace', () => {
+    const dir = isolatedDir();
+    const path = join(dir, 'rate-limits.json');
+    const namespace = join(dir, 'rate-quota');
+    const now = Date.now();
+    mkdirSync(namespace);
+    for (let i = 0; i < 65; i++) {
+      const hash = createHash('sha256').update(`string:preexisting-${i}`).digest('hex');
+      writeFileSync(join(namespace, `${hash}.json`), JSON.stringify({ capturedAt: now }));
+    }
+    const slot = { used: 10, resetsAt: new Date(now + 3_600_000).toISOString() };
+    persistRateLimitsCache(path, slot, null, null, 200_000, 'session-a', now);
+    assert.ok(readdirSync(namespace).filter((name) => /^[a-f0-9]{64}\.json$/.test(name)).length <= 64);
+    assert.equal(readRateLimitsCache(path, now, 'session-a').contextWindowSize, 200_000);
+
+    const blockedDir = isolatedDir();
+    const blockedPath = join(blockedDir, 'rate-limits.json');
+    const blocked = join(blockedDir, 'rate-quota');
+    writeFileSync(blocked, 'foreign');
+    assert.doesNotThrow(() => persistRateLimitsCache(blockedPath, slot, null, null, null, 'session-a', now));
+    assert.equal(readFileSync(blocked, 'utf8'), 'foreign');
+    assert.equal(readStatusLineRateFallback(blockedPath, 'fiveHour', 'session-a', 'claude-opus-5-5', now).used, 10);
   });
 
   it('retains an omitted rate slot without refreshing its observation time', () => {

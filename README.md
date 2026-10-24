@@ -46,8 +46,8 @@ Updates publish that package boundary first, then `sentinel.js`,
 `fs-atomic-identity.js`, `lease-clock.js`, `fs-atomic-publication.js`,
 `fs-atomic.js`, `fsutil.js`, `lease-lock.js`, `marker-capacity-ops.js`,
 `marker-capacity-stage.js`, `marker-capacity-recovery.js`, `marker-state.js`,
-`transcript-stats.js` and `update-check.js`, and
-only then replace executable leaves. This dependency-first closure keeps a new
+`rate-limits-cache.js`, `transcript-stats.js`, `update-check.js`, and `proxy-model.js`,
+and only then replace executable leaves. This dependency-first closure keeps a new
 executable from becoming visible before its complete sibling dependency chain.
 
 The companion runtime bins:
@@ -58,7 +58,9 @@ The companion runtime bins:
 
 **Квоты `/clock`.** В statusLine показываются использование квоты и время сброса: `wk 67% →сб 27.06 16:19`; время сброса — локальное. Если в Claude-сессии временно отсутствует `five_hour`, панель повторно использует последнее измерение той же сессии до 5 минут и только пока его reset ещё впереди; Codex-модели и другие сессии не наследуют чужой 5h-квотомер. Старые и истёкшие измерения не показываются.
 
-Панель использует стандартные данные Claude Code: statusLine envelope и transcript. Она не обращается к proxy, не читает его credentials и не требует специальных переменных окружения или endpoints. Индикаторы 5h/week появляются только при наличии штатных `rate_limits.five_hour` / `rate_limits.seven_day`; отсутствие этих полей не интерпретируется как нулевая квота. Передачу квот нестандартного backend через Claude Code нужно подтверждать отдельно: поддержка context usage не означает поддержку subscription rate limits.
+Context and quotas use standard Claude Code statusLine/transcript data, not proxy configuration or credentials files. Missing quota fields are not treated as zero, and context support does not imply subscription quota support.
+
+**Optional ccgp model labels.** Sessions launched through `ccgp` or `ccgpy` can show the configured backend model instead of Claude Code's request alias. Both the statusLine and Stop/PostToolUse chat-stamps use the local proxy's authenticated `/call/<token>/model?requested=<alias>` endpoint, which uses ccgp's own routing resolver. They share the same metadata cache. Only the display label changes; context identity, model checks and quota rules still use the original envelope/transcript model. Stamp deduplication and throttling are unchanged, suppressed stamps do not request metadata, and stamps still omit effort. This is the configured route, not proof of the model ultimately selected by an upstream provider. Responses, including unavailable metadata, are cached for 60 seconds by authenticated endpoint and requested model; hot routing edits may therefore take up to 60 seconds to appear. Local metadata requests have a 200 ms deadline, a 4 KiB response cap, and never follow redirects. The cache contains only the label and an endpoint hash, never its token or URL, and uses at most 64 slots. Outside an explicit ccgp launcher environment, no request or cache access occurs. Missing ccgp executables, older proxy versions, stopped servers and invalid metadata leave the original label intact. No CLI dependency, proxy config parser, or API key is added. Remote proxy URLs are not queried for labels.
 
 Контекст берётся из `total_input_tokens`, с fallback на сумму input/cache компонентов `current_usage`. Если во время stream приходит нулевой placeholder, панель может сохранить на экране последнее положительное измерение той же модели из стандартного `transcript_path`, без дополнительных служебных подписей. Это последнее измерение, а не оценка ещё не посчитанного запроса. Ограниченный обратный обход не пересекает `compact_boundary`; при `current_usage: null` (старт/compaction) fallback не используется. Если подходящего измерения нет, блок контекста временно не показывается; название модели и доступные квоты остаются. Лимит отображения — минимум окна Claude Code и валидного `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (целое число токенов от 100000 до 1000000). Например, при `context_window_size: 1000000`, переменной `922000` и input 831000 панель покажет `90.13% (831k/922k)`. Без переменной или при невалидном значении используется штатное окно; меньшее окно модели никогда не увеличивается. Тот же расчёт применяется к chat-stamp и 90%-подсказке checkpoint. Это заполнение эффективного окна, не точный процент до сжатия: резерв ответа и `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` могут сдвигать момент сжатия. В session cache сохраняется исходное окно Claude Code, а не уменьшенный лимит отображения.
 
@@ -707,7 +709,8 @@ npx cc-arch-hands install --only omp-commands                 # nine OMP workflo
 npx cc-arch-hands install --only bins                         # companion bins (cah-status, cah-stamp,
                                                     #   cah-checkpoint-hint, cah-status-probe,
                                                     #   + shared lib leaves: transcript-stats.js,
-                                                    #     update-check.js, lease-lock.js, marker-capacity-ops.js,
+                                                    #     update-check.js, proxy-model.js, rate-limits-cache.js,
+                                                    #     lease-lock.js, marker-capacity-ops.js,
                                                     #     fs-atomic-publication.js, marker-capacity-stage.js,
                                                     #     marker-capacity-recovery.js,
                                                     #     marker-state.js, fsutil.js,
@@ -768,6 +771,11 @@ capturing bin and backs up the original. `stop` restores the original and
 prints the parsed envelope so you can see exactly which fields Claude Code
 delivers on your account (e.g. whether `rate_limits.five_hour.resets_at` is
 populated). No manual `settings.json` edits.
+
+For intermittent context-meter gaps, the normal renderer also supports an
+opt-in, allowlisted `CAH_CONTEXT_TRACE_DIR` capture without replacing the panel
+or storing raw envelopes. See [context meter diagnostics](docs/status-context-trace.md)
+for activation, recorded fields, bounds, and limitations.
 
 From source (same commands, prefix with `node bin/cah.js`):
 

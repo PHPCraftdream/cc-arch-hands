@@ -15,7 +15,7 @@
 // the bar), always exits 0.
 
 import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import {
   formatStatusLine,
@@ -25,8 +25,11 @@ import {
   statusContextUsage,
   readLastMeasuredContext,
   readStatusLineRateFallback,
+  writeStatusContextTrace,
+  statusMeasuredContext,
 } from '../lib/transcript-stats.js';
 import { CURRENT_VERSION, getLatestVersion, isNewerVersion } from '../lib/update-check.js';
+import { proxyModelDisplayName } from '../lib/proxy-model.js';
 
 const FALLBACK = '—';
 
@@ -58,10 +61,10 @@ function extractRateSlot(slot) {
   return { used, resetsAt };
 }
 
-function buildLine(data) {
+function buildLine(data, contextState = null, proxyDisplayName = null) {
   let displayName = null;
   try {
-    displayName = data && data.model && data.model.display_name || null;
+    displayName = proxyDisplayName || data && data.model && data.model.display_name || null;
   } catch {
     // ignore
   }
@@ -78,14 +81,33 @@ function buildLine(data) {
     // ignore
   }
 
+  const envelopeTokens = usedTokens;
+  let source = usedTokens !== null ? 'envelope' : 'none';
+  let reason = limit === null ? 'window_invalid'
+    : usedTokens !== null ? 'envelope'
+      : typeof data?.model?.id !== 'string' || !data.model.id ? 'model_missing'
+        : 'path_missing';
   if (usedTokens === null && limit !== null
       && typeof data?.transcript_path === 'string' && typeof data.model?.id === 'string'
       && data.model.id.length > 0) {
-    const previous = readLastMeasuredContext(data.transcript_path, data.model.id);
+    const scan = contextState ? {} : null;
+    const previous = readLastMeasuredContext(data.transcript_path, data.model.id, scan);
+    reason = scan?.reason || 'no_measurement';
     if (previous?.modelId === data.model.id && previous.usedTokens > 0) {
       usedTokens = previous.usedTokens;
+      source = 'transcript';
+      reason = 'measured';
     }
+    if (contextState) contextState.scan = scan;
   }
+  const measuredCache = contextState ? {} : null;
+  const retained = statusMeasuredContext(RATE_LIMITS_CACHE, data, envelopeTokens, limit, measuredCache);
+  if (usedTokens === null && retained !== null) {
+    usedTokens = retained;
+    source = 'cache';
+    reason = 'cached_measurement';
+  }
+  if (contextState) Object.assign(contextState, { usedTokens, limit, source, reason, measuredCache });
 
   const isClaudeModel = typeof data?.model?.id === 'string' && data.model.id.startsWith('claude-');
   let fiveHourObserved = null;
@@ -97,7 +119,7 @@ function buildLine(data) {
       sevenDay = extractRateSlot(rl.seven_day);
     }
   } catch {
-    // ignore
+    if (contextState) contextState.rateExtractionFailed = true;
   }
 
   // effort.level lives only in the statusLine envelope. cah-stamp intentionally
@@ -133,14 +155,24 @@ function buildLine(data) {
   }
 
   let fiveHour = fiveHourObserved;
+  let fiveHourSource = fiveHour ? 'envelope' : 'none';
+  const quotaFallback = contextState ? { reason: 'not_needed' } : null;
   if (!fiveHour || !Number.isFinite(fiveHour.used) || fiveHour.used < 0 || fiveHour.used > 100) {
     try {
-      fiveHour = readStatusLineRateFallback(
-        RATE_LIMITS_CACHE, 'fiveHour', data?.session_id, data?.model?.id,
-      ) || fiveHour;
+      const cached = readStatusLineRateFallback(
+        RATE_LIMITS_CACHE, 'fiveHour', data?.session_id, data?.model?.id, undefined, quotaFallback,
+      );
+      if (cached) fiveHourSource = 'cache';
+      fiveHour = cached || fiveHour;
     } catch {
+      if (quotaFallback) quotaFallback.reason = 'read_error';
       // Cached quota is a best-effort fallback only.
     }
+  }
+  if (contextState) {
+    contextState.fiveHour = { used: fiveHour?.used, source: fiveHourSource, fallback: quotaFallback };
+    contextState.sevenDay = { used: sevenDay?.used, source: sevenDay ? 'envelope' : 'none',
+      fallback: { reason: 'not_attempted' } };
   }
   // Reuse the shared formatter with time omitted (it's tolerant of null time).
   const line = formatStatusLine({
@@ -160,7 +192,7 @@ function buildLine(data) {
   return line ? line + updateSuffix : FALLBACK;
 }
 
-function main() {
+async function main() {
   let raw = '';
   try {
     raw = readFileSync(0, 'utf8');
@@ -177,12 +209,29 @@ function main() {
     }
   }
 
-  const line = buildLine(data);
+  const traceDirectory = process.env.CAH_CONTEXT_TRACE_DIR;
+  const contextState = traceDirectory ? {} : null;
+  const started = performance.now();
+  let proxyDisplayName = null;
+  try {
+    proxyDisplayName = await proxyModelDisplayName(data?.model?.id, dirname(RATE_LIMITS_CACHE));
+  } catch { /* optional metadata must not break the panel */ }
+  let line;
+  try {
+    line = buildLine(data, contextState, proxyDisplayName);
+  } catch {
+    line = FALLBACK;
+    if (contextState) contextState.reason = 'render_error';
+  }
   process.stdout.write(line + '\n');
+  if (contextState) {
+    contextState.elapsedMs = performance.now() - started;
+    writeStatusContextTrace(traceDirectory, data, contextState);
+  }
 }
 
 try {
-  main();
+  await main();
 } catch {
   try {
     process.stdout.write(FALLBACK + '\n');
