@@ -21,6 +21,10 @@ function assistant(tokens, model = 'claude-opus-5-5') {
   } } };
 }
 
+function apiError() {
+  return { ...assistant(0, '<synthetic>'), isApiErrorMessage: true, requestId: 'error-request' };
+}
+
 function iteration(type, inputTokens, overrides = {}) {
   return { type, input_tokens: inputTokens, output_tokens: 1,
     cache_creation_input_tokens: 0, cache_read_input_tokens: 0, ...overrides };
@@ -49,6 +53,32 @@ describe('measured envelope retention', () => {
     assert.doesNotMatch(raw, /private-session|model-a|transcript\.jsonl/);
     assert.equal(statusMeasuredContext(cache, data, null, 200000, diagnostic, now + 3_600_001), null);
     assert.equal(diagnostic.reason, 'stale');
+  });
+
+  it('retains envelope measurements through synthetic API errors without refreshing their age', (t) => {
+    const { path, cache, data } = fixture(t);
+    const now = Date.now();
+    assert.equal(statusMeasuredContext(cache, data, 50000, 200000, null, now), 50000);
+    const diagnostic = {};
+    for (const elapsed of [1000, 2000]) {
+      appendFileSync(path, JSON.stringify(apiError()) + '\n');
+      assert.equal(statusMeasuredContext(cache, data, null, 200000, diagnostic, now + elapsed), 50000);
+      assert.equal(diagnostic.reason, 'cached_measurement');
+    }
+    assert.equal(statusMeasuredContext(cache, data, null, 200000, diagnostic, now + 3_600_001), null);
+    assert.equal(diagnostic.reason, 'stale');
+  });
+
+  it('does not let synthetic errors hide compaction or real model changes from retention', (t) => {
+    for (const boundary of [{ type: 'system', subtype: 'compact_boundary' }, assistant(0, 'model-b')]) {
+      const { path, cache, data } = fixture(t);
+      statusMeasuredContext(cache, data, 50000, 200000);
+      appendFileSync(path, [apiError(), boundary, apiError()].map((entry) => JSON.stringify(entry)).join('\n') + '\n');
+      const diagnostic = {};
+      assert.equal(statusMeasuredContext(cache, data, null, 200000, diagnostic), null);
+      assert.equal(diagnostic.reason, boundary.type === 'system' ? 'compaction' : 'model_mismatch');
+      assert.equal(statusMeasuredContext(cache, data, null, 200000), null);
+    }
   });
 
   it('invalidates at compaction and requires a new positive envelope', (t) => {
@@ -86,6 +116,35 @@ describe('measured envelope retention', () => {
 });
 
 describe('context trace', () => {
+  it('skips synthetic API errors only for context measurements, not ordinary turn stats', (t) => {
+    const measured = { ...assistant(30000), requestId: 'measured-request' };
+    const error = apiError();
+    const path = transcript(t, [measured, error, error]);
+    const diagnostic = {};
+    assert.deepEqual(readLastMeasuredContext(path, 'claude-opus-5-5', diagnostic), {
+      usedTokens: 30000, modelId: 'claude-opus-5-5', requestId: 'measured-request',
+    });
+    assert.equal(diagnostic.reason, 'measured');
+    assert.equal(diagnostic.modelsMatch, true);
+    assert.deepEqual(readTranscriptStats(path), {
+      usedTokens: 0, modelId: '<synthetic>', requestId: 'error-request',
+    });
+    assert.equal(readLastMeasuredContext(transcript(t, [error]), 'claude-opus-5-5'), null);
+  });
+
+  it('preserves context barriers before a synthetic API error', (t) => {
+    for (const [boundary, reason] of [
+      [{ type: 'system', subtype: 'compact_boundary' }, 'compaction'],
+      [assistant(0, 'other-model'), 'model_mismatch'],
+      [{ type: 'assistant', message: { usage: { input_tokens: 0 } } }, 'unknown_model'],
+    ]) {
+      const path = transcript(t, [assistant(30000), boundary, apiError()]);
+      const diagnostic = {};
+      assert.equal(readLastMeasuredContext(path, 'claude-opus-5-5', diagnostic), null);
+      assert.equal(diagnostic.reason, reason);
+    }
+  });
+
   it('reports reader reasons without changing results or exposing record fields', (t) => {
     const measured = assistant(30000);
     const unknown = { type: 'assistant', requestId: 'private-request', message: {

@@ -232,6 +232,41 @@ describe('cah-status bin', () => {
     assert.doesNotMatch(run(payload, env).stdout, /25%|50k/);
   });
 
+  it('keeps context visible after API errors with transcript or retained envelope measurements', (t) => {
+    for (const source of ['transcript', 'cache']) {
+      const dir = mkdtempSync(join(tmpdir(), 'cah-context-api-error-'));
+      t.after(() => rmSync(dir, { recursive: true, force: true }));
+      const path = join(dir, 'transcript.jsonl');
+      writeFileSync(path, JSON.stringify({ type: 'assistant', message: {
+        model: 'claude-opus-5-5', usage: { input_tokens: source === 'transcript' ? 50000 : 0 },
+      } }) + '\n');
+      const payload = makePayload({ transcript_path: path,
+        model: { id: 'claude-opus-5-5', display_name: 'Codex' },
+        context_window: { context_window_size: 200000, total_input_tokens: 50000 } });
+      const env = { CAH_RATE_LIMITS_CACHE: join(dir, 'rate-limits.json'), CAH_CONTEXT_TRACE_DIR: join(dir, 'trace') };
+      if (source === 'cache') {
+        assert.match(run(payload, { ...env, CAH_CONTEXT_TRACE_DIR: '' }).stdout, /25% \(50k\/200k\)/);
+      }
+      appendFileSync(path, JSON.stringify({ type: 'assistant', isApiErrorMessage: true,
+        message: { model: '<synthetic>', usage: { input_tokens: 0, cache_read_input_tokens: 0 } },
+      }) + '\n');
+      payload.context_window.total_input_tokens = 0;
+      const result = run(payload, env);
+      assert.equal(result.status, 0);
+      assert.match(result.stdout, /25% \(50k\/200k\)/, source);
+      const name = readdirSync(env.CAH_CONTEXT_TRACE_DIR).find((entry) => /^context-\d+\.json$/.test(entry));
+      const trace = JSON.parse(readFileSync(join(env.CAH_CONTEXT_TRACE_DIR, name), 'utf8'));
+      assert.equal(trace.source, source);
+      assert.equal(trace.contextRendered, true);
+      if (source === 'cache') assert.equal(trace.measuredCacheReason, 'cached_measurement');
+      payload.context_window.total_input_tokens = 80000;
+      assert.match(run(payload, env).stdout, /40% \(80k\/200k\)/);
+      appendFileSync(path, JSON.stringify({ type: 'system', subtype: 'compact_boundary' }) + '\n');
+      payload.context_window.total_input_tokens = 0;
+      assert.doesNotMatch(run(payload, env).stdout, /25%|40%|50k|80k/);
+    }
+  });
+
   it('traces quota decisions without changing panel output', (t) => {
     const dir = mkdtempSync(join(tmpdir(), 'cah-quota-trace-'));
     t.after(() => rmSync(dir, { recursive: true, force: true }));
