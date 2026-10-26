@@ -183,7 +183,7 @@ npx cc-arch-hands reinstall --codex-agents
 npx cc-arch-hands uninstall --codex-agents
 ```
 
-Generated agent names use an effort prefix plus a model suffix. Current Sol 6.1 (`s`, model ID `gpt-6.1-sol`) uses `l/m/h/x/xx/u` for `low/medium/high/xhigh/max/ultra`. Older Sol releases shift back one slot: Sol 6 uses suffix `1` (`ls1`, etc.) with six levels, and Sol 5.6 uses suffix `2` (`ls2`, etc.) with six levels. Luna (`l`, model ID `gpt-6-luna`) has five levels and its 5.6 predecessor keeps suffix `1` with the same five (neither Luna accepts `ultra`). Terra 6.1 (`t`, model ID `gpt-6.1-terra`) uses all six levels and its 5.6 predecessor (`gpt-5.6-terra`) keeps suffix `1` (`lt1`, etc.) with six levels; Astra (`a`, model ID `gpt-6-astra`) uses six (`l/m/h/x/xx/u`). These aliases write TOML custom-agent files for Codex under `~/.codex/agents/`.
+Generated agent names use an effort prefix plus a model suffix. Current Sol 6.1 (`s`, model ID `gpt-6.1-sol`) uses `l/m/h/x/xx/u` for `low/medium/high/xhigh/max/ultra`. Older Sol releases shift back one slot: Sol 6 uses suffix `1` (`ls1`, etc.) with six levels, and Sol 5.6 uses suffix `2` (`ls2`, etc.) with six levels. Luna (`l`, model ID `gpt-6-luna`) has five levels and its 5.6 predecessor keeps suffix `1` with the same five (neither Luna accepts `ultra`). Terra 6.1 (`t`, model ID `gpt-6.1-terra`) uses all six levels and its 5.6 predecessor (`gpt-5.6-terra`) keeps suffix `1` (`lt1`, etc.) with six levels; Astra (`a`) uses six (`l/m/h/x/xx/u`). Its model ID is `gpt-6-astra`. These aliases write TOML custom-agent files for Codex under `~/.codex/agents/`.
 
 <!--gen:table:codex-agents (run `npm run gen:docs` after editing lib/manifest.js) -->
 | Model | Agents by effort |
