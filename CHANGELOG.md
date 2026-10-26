@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Claude Code `/ccheckpoint` коммитит файл обычными `git add` и `git commit --only` короткими отдельными вызовами вместо 300-строчного shell-блока с ручными lock-файлами, временным index и `commit-tree`/`update-ref`, который агенты ломали при переносе в команду. Ошибку вызова агент исправляет и повторяет сам; пользователю сообщается только реальный блокер: незавершённый merge/rebase, чужой `index.lock`, упавший hook, отказ в правах. Commit hooks теперь выполняются.
 - Минимальная поддерживаемая версия Node.js повышена до 24; CI проверяет Node 24 на Linux, macOS и Windows вместо прежней матрицы версий 18/20/22/24.
 
 ### Fixed

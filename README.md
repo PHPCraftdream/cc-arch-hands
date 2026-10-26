@@ -585,7 +585,8 @@ Empty sections stay empty with a one-line reason — the skill never
 invents content to look complete. Checkpoints are not added to git
 automatically; that decision stays with you — unless you use
 `/ccheckpoint` instead of `/checkpoint`, which commits only that checkpoint
-through an isolated temporary index (never the real index and never a push).
+with ordinary `git add` + `git commit --only` (unrelated staged changes stay
+staged; never a push).
 
 `cah` also installs `/checkpoint-watch` globally, but invoking it in a project
 writes a Stop hook into *that project's* `.claude/settings.json` (never the
