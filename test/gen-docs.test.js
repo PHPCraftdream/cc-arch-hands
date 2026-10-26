@@ -57,20 +57,20 @@ describe('gen-docs --check', () => {
   it('keeps the current narrative counts tied to the fixed registry oracle', () => {
     assert.equal(AllModelCommands.length, 62);
     assert.equal(AllModelCommands.length * 2, 124);
-    assert.equal(AllCodexAgents.length, 40);
+    assert.equal(AllCodexAgents.length, 46);
     assert.deepEqual(AllCodexSkills, ['cli-run', 'checkpoint', 'ccheckpoint', 'resume']);
 
     assert.match(README, /<!--gen:count:model-commands-->62<!--\/gen-->/);
     assert.match(README, /<!--gen:count:model-bodies-->124<!--\/gen--> command\+agent bodies/);
-    assert.match(README, /<!--gen:count:codex-agents-->40<!--\/gen-->/);
+    assert.match(README, /<!--gen:count:codex-agents-->46<!--\/gen-->/);
     assert.match(README, /<!--gen:count:codex-skills-->4<!--\/gen-->/);
     assert.match(
       README,
-      /AllCodexAgents \(40\)/,
+      /AllCodexAgents \(46\)/,
       'README layout annotation must use the manifest Codex-agent count',
     );
     assert.match(CLAUDE, /62 current Claude model definitions[\s\S]*124 installed bodies total/);
-    assert.match(CLAUDE, /current `AllCodexAgents` registry contains 40 optional Codex agents/);
+    assert.match(CLAUDE, /current `AllCodexAgents` registry contains 46 optional Codex agents/);
 
     for (const stale of [
       'three companion',
@@ -160,7 +160,7 @@ describe('gen-docs --check', () => {
   });
 
   it('defines exactly six collision-free Astra Codex agents', () => {
-    assert.equal(AllCodexAgents.length, 40);
+    assert.equal(AllCodexAgents.length, 46);
     const astra = AllCodexAgents.filter((agent) => agent.model === 'gpt-6-astra');
     assert.deepEqual(
       astra.map(identity),
@@ -186,6 +186,7 @@ describe('gen-docs --check', () => {
       ['gpt-6-sol', 6],
       ['gpt-5.6-sol', 6],
       ['gpt-6-luna', 5],
+      ['gpt-6.1-terra', 6],
       ['gpt-5.6-terra', 6],
       ['gpt-5.6-luna', 5],
       ['gpt-6-astra', 6],
@@ -200,6 +201,8 @@ describe('gen-docs --check', () => {
       ['gpt-6-luna', ['ll', 'ml', 'hl', 'xl', 'xxl'], false],
       ['gpt-5.6-luna', ['ll1', 'ml1', 'hl1', 'xl1', 'xxl1'], false],
       ['gpt-6-astra', ['la', 'ma', 'ha', 'xa', 'xxa', 'ua'], true],
+      ['gpt-6.1-terra', ['lt', 'mt', 'ht', 'xt', 'xxt', 'ut'], true],
+      ['gpt-5.6-terra', ['lt1', 'mt1', 'ht1', 'xt1', 'xxt1', 'ut1'], true],
     ]) {
       const agents = AllCodexAgents.filter((agent) => agent.model === model);
       assert.deepEqual(agents.map((agent) => agent.name), aliases);
@@ -219,7 +222,7 @@ describe('gen-docs --check', () => {
         { name: 'xs1', model: 'gpt-6-sol', effort: 'xhigh', display: 'Sol 6 - Extra High' },
         { name: 'xs2', model: 'gpt-5.6-sol', effort: 'xhigh', display: 'Sol 5.6 - Extra High' },
         { name: 'xl', model: 'gpt-6-luna', effort: 'xhigh', display: 'Luna - Extra High' },
-        { name: 'xt', model: 'gpt-5.6-terra', effort: 'xhigh', display: 'Terra - Extra High' },
+        { name: 'xt', model: 'gpt-6.1-terra', effort: 'xhigh', display: 'Terra 6.1 - Extra High' },
         { name: 'xl1', model: 'gpt-5.6-luna', effort: 'xhigh', display: 'Luna 5.6 - Extra High' },
         { name: 'xa', model: 'gpt-6-astra', effort: 'xhigh', display: 'Astra - Extra High' },
       ],

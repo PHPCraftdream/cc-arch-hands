@@ -682,7 +682,7 @@ describe('run install/uninstall --codex-agents', () => {
         assert.equal(run(['install', '--codex-agents']), 0);
         assert.ok(existsSync(join(home, '.codex', 'agents', 'ha.toml')));
         assert.ok(readFileSync(join(home, '.codex', 'agents', 'ha.toml'), 'utf8').includes('model = "gpt-6-astra"'));
-        assert.ok(readFileSync(join(home, '.codex', 'agents', 'xxt.toml'), 'utf8').includes('model = "gpt-5.6-terra"'));
+        assert.ok(readFileSync(join(home, '.codex', 'agents', 'xxt.toml'), 'utf8').includes('model = "gpt-6.1-terra"'));
         assert.ok(readFileSync(join(home, '.codex', 'agents', 'xxt.toml'), 'utf8').includes('model_reasoning_effort = "max"'));
         assert.ok(readFileSync(join(home, '.codex', 'agents', 'll.toml'), 'utf8').includes('model = "gpt-6-luna"'));
         for (const [model, suffix, levels] of [

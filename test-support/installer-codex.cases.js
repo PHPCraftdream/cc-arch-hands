@@ -44,7 +44,8 @@ describe('writeCodexAgents', { concurrency: false }, () => {
     const agentsDir = join(dir, '.codex', 'agents');
 
     for (const [name, model, display] of [
-      ['xt', 'gpt-5.6-terra', 'Terra - Extra High'],
+      ['xt', 'gpt-6.1-terra', 'Terra 6.1 - Extra High'],
+      ['xt1', 'gpt-5.6-terra', 'Terra 5.6 - Extra High'],
       ['xl', 'gpt-6-luna', 'Luna - Extra High'],
       ['xs', 'gpt-6.1-sol', 'Sol 6.1 - Extra High'],
       ['xl1', 'gpt-5.6-luna', 'Luna 5.6 - Extra High'],

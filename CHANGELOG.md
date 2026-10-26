@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Codex-агенты для новой модели Terra 6.1 (`gpt-6.1-terra`, Codex принимает и `ultra`): `lt`, `mt`, `ht`, `xt`, `xxt`, `ut`. Прежняя Terra 5.6 (`gpt-5.6-terra`) сдвинута на слот назад: `lt1`, `mt1`, `ht1`, `xt1`, `xxt1`, `ut1`. Реестр — 46 агентов, также для OMP и OpenCode. Окно контекста `gpt-6.1-sol` в `lib/codex-model-specs.js` обновлено по `codex debug models`: 500k вместо 272k.
+
 ### Changed
 
 - Claude Code `/ccheckpoint` коммитит файл обычными `git add` и `git commit --only` короткими отдельными вызовами вместо 300-строчного shell-блока с ручными lock-файлами, временным index и `commit-tree`/`update-ref`, который агенты ломали при переносе в команду. Ошибку вызова агент исправляет и повторяет сам; пользователю сообщается только реальный блокер: незавершённый merge/rebase, чужой `index.lock`, упавший hook, отказ в правах. Commit hooks теперь выполняются.
