@@ -5,38 +5,27 @@ description: "Read the latest (or named) checkpoint written by /checkpoint, rebu
 
 # resume
 
-The other half of `/checkpoint`. Reads a saved snapshot of session state and restores as much of it as the runtime allows.
+The other half of `/checkpoint`: load a saved snapshot, restore what is missing, keep working.
 
 ## Usage
 
 ```
-/resume                # load the most recently modified checkpoint
-/resume pre-refactor   # load checkpoint named pre-refactor.md
-/resume --list         # just print the available checkpoints, do not restore
-/resume 2026-06-19     # prefix match against filenames; ambiguous → ask
+/resume                # most recently modified checkpoint
+/resume pre-refactor   # pre-refactor.md
+/resume --list         # list checkpoints only, do not restore
+/resume 2026-06-19     # prefix match; ambiguous → ask
 ```
 
 ## Behavior
 
-1. **Locate the checkpoint directory.** From the caller's original working directory, run `git rev-parse --show-toplevel`. If it succeeds with a non-empty path, use that path as `<repo-root>` and read `<repo-root>/docs/checkpoints/`. Use Git's repository discovery rather than inspecting `.git` or walking parent directories yourself: this handles both a normal `.git` directory and a linked worktree's `.git` file without accidentally selecting the parent repository. **If the command fails or returns an empty path (caller is outside any Git repository), refuse and stop** — report that `/resume` needs a Git repository. Checkpoints are project-scoped; never read `~/.claude/checkpoints/` or any other path shared across projects/agents.
-2. **`--list` mode.** Read the directory, sort by mtime descending, and print a table: name, size, mtime, first-line title from the file. Then stop — do NOT restore.
-3. **Resolve the target file.** With no argument: sort every `.md` in the directory by filesystem mtime descending and pick the first — the actual disk write time, not any timestamp embedded in the filename (named checkpoints like `pre-refactor.md` carry no filename timestamp at all, so mtime is the only signal that works for both auto-named and named files). With an argument:
+1. **Find the directory.** Run `git rev-parse --show-toplevel` from the caller's working directory and read `<repo-root>/docs/checkpoints/`. Git's discovery handles a linked worktree's `.git` file too. If the command fails or returns an empty path (caller is outside any Git repository), refuse and stop. Checkpoints are project-scoped: never read `~/.claude/checkpoints/` or any other path shared across projects/agents.
+2. **`--list`:** print name, size, mtime and first-line title, newest first. Stop.
+3. **Pick the file.** No argument: sort every `.md` in the directory by filesystem mtime descending and take the first. With an argument:
    - Exact filename match (with or without `.md`): take it.
-   - Otherwise prefix match against filenames. **If multiple files match**, list them and ask the user to disambiguate — do not silently pick.
-   - If nothing matches: say so and stop. Do not invent state.
-4. **Read and parse.** Read the markdown sections produced by `/checkpoint`. Be lenient — sections may have moved or been hand-edited.
-5. **Print the Session summary first.** Output the contents of the `Session summary` section verbatim as the leading block of the response. This is what re-establishes context after auto-compact or a new session — surface it before doing anything else.
-6. **Restore TaskList.** For each task in the snapshot:
-   - Call TaskCreate with the original `subject` and `description` (description may be inferred from `subject` if missing).
-   - After all tasks are created, walk the new IDs and call TaskUpdate to set `blockedBy` per the snapshot. Note: IDs WILL differ from the snapshot; re-derive them by `subject` match.
-   - Skip tasks whose status was `completed` or `deleted` in the snapshot — they don't need to come back.
-7. **Restate the goal.** If the snapshot had an active goal, print it back and instruct the user how to re-arm the Stop hook: a fenced `/goal <text>` block they can copy-paste.
-8. **Surface open questions.** Print them as a bullet list. These are likely the first things the user needs to answer before work continues.
-9. **Print decisions.** As a short "context recap" so the agent (and the user) re-anchor on what was chosen and why.
-
-## Important
-
-- `/resume` does NOT auto-set `/goal` — `/goal` is a user-side command. Print the line, ask the user to copy it.
-- If the checkpoint is older than 7 days, warn the user — repo state and decisions may have drifted.
-- If the live TaskList already has open tasks, ask the user whether to merge or replace before doing anything destructive.
-- If no checkpoint exists at the resolved path, say so and stop — do not invent state.
+   - Otherwise prefix match; several matches → list them and ask.
+   - No match → say so and stop. Never invent state.
+4. **Print the `Session summary` section verbatim** as the first block of the reply. Warn if the checkpoint is older than 7 days.
+5. **Restore tasks — decide yourself, never ask.** Call TaskList. TaskCreate only the snapshot's unfinished tasks whose `subject` is not already in the live list, then set their `blockedBy` by `subject` match (IDs differ). Leave live tasks untouched. Nothing missing → one line "TaskList already up to date".
+6. **Goal:** if one was saved, print it as a fenced `/goal <text>` line for the user to paste; never set it yourself.
+7. **Print open questions and decisions** as short bullet lists.
+8. **Continue the work in this same turn:** keep the `in_progress` task or start the lowest-id ready one. Ask only if an open question blocks every ready task.
