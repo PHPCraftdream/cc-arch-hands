@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-26
+
 ### Added
 
 - Codex-агенты для новой модели Terra 6.1 (`gpt-6.1-terra`, Codex принимает и `ultra`): `lt`, `mt`, `ht`, `xt`, `xxt`, `ut`. Прежняя Terra 5.6 (`gpt-5.6-terra`) сдвинута на слот назад: `lt1`, `mt1`, `ht1`, `xt1`, `xxt1`, `ut1`. Реестр — 46 агентов, также для OMP и OpenCode. Окно контекста `gpt-6.1-sol` в `lib/codex-model-specs.js` обновлено по `codex debug models`: 500k вместо 272k.
