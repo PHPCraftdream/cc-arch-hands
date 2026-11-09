@@ -8,8 +8,9 @@ import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import {
   captureRegularFileSnapshot, enumerateRecoveryArtifacts, isQuarantineName, isQuarantinePath,
-  maintainRecoveryArtifacts, removeOwnedRegularFile, sweepStaleAtomicTemps, writeFileAtomic,
+  maintainRecoveryArtifacts, removeOwnedRegularFile, writeFileAtomic,
 } from '../lib/fs-atomic.js';
+import { sweepStaleAtomicTemps } from '../lib/stale-temps.js';
 import { recoverPublicationFence } from '../lib/fs-atomic-publication.js';
 import { renewLease } from '../lib/lease-lock.js';
 
