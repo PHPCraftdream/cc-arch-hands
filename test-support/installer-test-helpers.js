@@ -5,16 +5,21 @@ import { Worker } from 'node:worker_threads';
 import { runWorker, DEFAULT_CHILD_DEADLINE_MS } from './process-batches.js';
 
 export const FABLE_ORACLE = [
-  ['fl', 'claude-fable-5-1', 'low'],
-  ['fm', 'claude-fable-5-1', 'medium'],
-  ['fh', 'claude-fable-5-1', 'high'],
-  ['fx', 'claude-fable-5-1', 'xhigh'],
-  ['fxx', 'claude-fable-5-1', 'max'],
-  ['f1l', 'claude-fable-5', 'low'],
-  ['f1m', 'claude-fable-5', 'medium'],
-  ['f1h', 'claude-fable-5', 'high'],
-  ['f1x', 'claude-fable-5', 'xhigh'],
-  ['f1xx', 'claude-fable-5', 'max'],
+  ['fl', 'claude-fable-5-2', 'low'],
+  ['fm', 'claude-fable-5-2', 'medium'],
+  ['fh', 'claude-fable-5-2', 'high'],
+  ['fx', 'claude-fable-5-2', 'xhigh'],
+  ['fxx', 'claude-fable-5-2', 'max'],
+  ['f1l', 'claude-fable-5-1', 'low'],
+  ['f1m', 'claude-fable-5-1', 'medium'],
+  ['f1h', 'claude-fable-5-1', 'high'],
+  ['f1x', 'claude-fable-5-1', 'xhigh'],
+  ['f1xx', 'claude-fable-5-1', 'max'],
+  ['f2l', 'claude-fable-5', 'low'],
+  ['f2m', 'claude-fable-5', 'medium'],
+  ['f2h', 'claude-fable-5', 'high'],
+  ['f2x', 'claude-fable-5', 'xhigh'],
+  ['f2xx', 'claude-fable-5', 'max'],
 ];
 
 export function tmpDir() {

@@ -4,13 +4,132 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, existsSync, writeFileSync, appendFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, existsSync, writeFileSync, appendFileSync, rmSync, statSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { readRateLimitsCache, rateLimitsContextPath } from '../lib/transcript-stats.js';
 import { proxyModelDisplayName } from '../lib/proxy-model.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BIN = join(__dirname, '..', 'bin', 'cah-status.js');
+
+// Regression: Claude Code cancels an in-flight statusLine command whenever a new
+// update fires. Every render used to rewrite its cache files (a temp file plus a
+// rename) even when only a timestamp changed, so each cancelled render risked
+// stranding a `.cah-tmp-*` file; the leak reached ~200k files. A render that
+// observes nothing new must therefore perform no cache write at all.
+describe('cah-status steady-state renders do not write the cache', () => {
+  function snapshot(root) {
+    const files = {};
+    for (const name of readdirSync(root, { recursive: true })) {
+      const path = join(root, name);
+      const info = statSync(path, { bigint: true });
+      if (info.isFile()) {
+        files[name] = { ino: String(info.ino), mtimeNs: String(info.mtimeNs), content: readFileSync(path, 'utf8') };
+      }
+    }
+    return files;
+  }
+
+  function fixture(t) {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-status-steady-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const transcript = join(dir, 'transcript.jsonl');
+    writeFileSync(transcript, JSON.stringify({ type: 'assistant', message: { role: 'assistant',
+      model: 'claude-opus-4-8', usage: { input_tokens: 50000, cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0 } } }) + '\n');
+    const cache = join(dir, 'cache');
+    mkdirSync(cache);
+    const resets = (ms) => new Date(Date.now() + ms).toISOString();
+    const payload = (used = 23) => makePayload({
+      transcript_path: transcript,
+      effort: { level: 'high' },
+      rate_limits: {
+        five_hour: { used_percentage: used, resets_at: resets(4 * 3600 * 1000) },
+        seven_day: { used_percentage: 67, resets_at: resets(6 * 24 * 3600 * 1000) },
+      },
+      context_window: { total_input_tokens: 0, context_window_size: 200000,
+        current_usage: { input_tokens: 50000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
+    });
+    return { cache, payload, env: { CAH_RATE_LIMITS_CACHE: join(cache, 'rate-limits.json') } };
+  }
+
+  it('leaves every cache file, inode and timestamp untouched on repeated identical renders', (t) => {
+    const { cache, payload, env } = fixture(t);
+    const body = payload();
+    assert.equal(run(body, env).status, 0);
+    const first = snapshot(cache);
+    const names = Object.keys(first);
+    for (const expected of ['rate-limits.json']) assert.ok(names.includes(expected), names.join(', '));
+    assert.ok(names.some((name) => name.startsWith('rate-context')), 'context sidecar is written once');
+    assert.ok(names.some((name) => name.startsWith('rate-quota')), 'quota sidecar is written once');
+    assert.ok(names.some((name) => name.startsWith('context-measured')), 'measured record is written once');
+
+    for (let render = 0; render < 3; render++) {
+      assert.equal(run(body, env).status, 0);
+      assert.deepEqual(snapshot(cache), first, `render ${render + 2} rewrote a cache file`);
+    }
+    const stranded = readdirSync(cache, { recursive: true })
+      .filter((name) => /\.cah-tmp-|\.cah-owned-/.test(name));
+    assert.deepEqual(stranded, []);
+  });
+
+  it('still publishes a changed observation immediately', (t) => {
+    const { cache, payload, env } = fixture(t);
+    assert.equal(run(payload(23), env).status, 0);
+    const before = JSON.parse(readFileSync(join(cache, 'rate-limits.json'), 'utf8'));
+    assert.equal(before.fiveHour.used, 23);
+    assert.equal(run(payload(24), env).status, 0);
+    const after = JSON.parse(readFileSync(join(cache, 'rate-limits.json'), 'utf8'));
+    assert.equal(after.fiveHour.used, 24);
+  });
+});
+
+// Sweeps need an explicit root: a redirected rate cache may share the OS temp dir.
+describe('cah-status daily stale temp sweep', () => {
+  const token = '00112233445566778899aabbccddeeff';
+  const status = (env) => run({ model: { display_name: 'Opus 4.8' } }, env);
+
+  it('reclaims aged orphan temps once, in the root named by CAH_STALE_TEMP_SWEEP_DIR', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-status-sweep-'));
+    try {
+      const aged = join(dir, `.cah-tmp-4242-${token}`);
+      const fresh = join(dir, `.cah-tmp-4243-${token}`);
+      writeFileSync(aged, '{}\n');
+      writeFileSync(fresh, '{}\n');
+      const old = new Date(Date.now() - 2 * 24 * 3600 * 1000);
+      utimesSync(aged, old, old);
+      const env = { CAH_STALE_TEMP_SWEEP_DIR: dir, CAH_RATE_LIMITS_CACHE: join(dir, 'rate-limits.json') };
+      assert.equal(status(env).status, 0);
+      assert.equal(existsSync(aged), false);
+      assert.equal(existsSync(fresh), true);
+      assert.equal(existsSync(join(dir, 'stale-temp-sweep.stamp')), true);
+
+      const again = join(dir, `.cah-tmp-4244-${token}`);
+      writeFileSync(again, '{}\n');
+      utimesSync(again, old, old);
+      assert.equal(status(env).status, 0);
+      assert.equal(existsSync(again), true, 'a second render inside 24 h must not sweep');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not sweep the directory of a redirected rate cache by default', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-status-nosweep-'));
+    try {
+      const aged = join(dir, `.cah-tmp-4242-${token}`);
+      writeFileSync(aged, '{}\n');
+      const old = new Date(Date.now() - 2 * 24 * 3600 * 1000);
+      utimesSync(aged, old, old);
+      const env = { CAH_RATE_LIMITS_CACHE: join(dir, 'rate-limits.json'), CAH_STALE_TEMP_SWEEP_DIR: '' };
+      assert.equal(status(env).status, 0);
+      assert.equal(existsSync(aged), true);
+      assert.equal(existsSync(join(dir, 'stale-temp-sweep.stamp')), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 function run(stdinData, env) {
   // Redirect both caches the status bin derives from homedir() to temp files

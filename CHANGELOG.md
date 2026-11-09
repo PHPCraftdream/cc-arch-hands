@@ -7,18 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-09
+
 ### Added
 
 - License gate in CI: `npm run check:licenses` (`scripts/check-licenses.js`) checks the package license and every `package-lock.json` entry (dev included) against a permissive allowlist, evaluates SPDX expressions (`OR`/`AND`/`WITH`), and fails on copyleft, missing or unparseable licenses and on declared dependencies without a lockfile. It runs as a separate `licenses` job in `ci.yml` (which also gates `publish.yml`) and in `npm test`.
 
 ### Changed
 
+- Fable 5.2 (`claude-fable-5-2`, 1M context) is the top Fable: `/fl` `/fm` `/fh` `/fx` `/fxx` and the matching agents now target it. The releases-behind-top tiers shift back one slot without dropping a generation: `f1*` is Fable 5.1 (`claude-fable-5-1`) and the new `f2*` tier keeps Fable 5 (`claude-fable-5`). 67 model definitions, 134 command+agent bodies.
 - `/resume` (Claude Code, Codex, OpenCode, OMP) no longer asks whether to merge tasks with the live list: it restores only the tasks that are not in the list yet (matched by `subject`/content), leaves live ones untouched, and continues straight with a ready task. It stops to ask only when an open question blocks every ready task.
 
 ### Fixed
 
 - `cah-status`: the retained last-measured-context cache is now keyed by session and transcript. Two sessions sharing one `session_id` (e.g. a ccgp mirror of a resumed session) no longer clobber each other's checkpoint, so the context gauge no longer disappears while streaming.
 - `cah install`/`uninstall`: removes orphaned `.cah-tmp-<pid>-<token>` files (exact name, older than 24 h, not referenced by a publication proof) in the `cache/` root and in `rate-context`, `rate-quota`, `context-measured`, `context-trace`. Previously such temps left by killed writers accumulated without bound (up to 200k files).
+- Root cause of the stranded temps: Claude Code cancels an in-flight statusLine command whenever a new update fires, and every `cah-status` render rewrote up to four cache files (`rate-limits.json`, its `rate-quota` and `rate-context` sidecars, the `context-measured` record) even when nothing but the timestamp changed; a run cancelled inside one of those writes left its temp behind. Before 0.17.0 a writer could also wait up to ~30 s on a busy publication fence with its temp already on disk, which turned almost every cancelled render into a leak. Now an unchanged rate record is rewritten at most once a minute and an unchanged measured-context record at most every 15 s (a changed value is still written at once), so a typical render performs no write at all.
+- `cah-status` runs the same stale-temp sweep automatically at most once every 24 h (after the line is printed, stamp `cache/stale-temp-sweep.stamp` touched only after a complete sweep), so orphans no longer wait for the next `cah install`. New shared runtime leaf `lib/stale-temps.js`.
 
 ## [0.17.0] - 2026-10-26
 

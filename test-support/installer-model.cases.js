@@ -35,8 +35,9 @@ describe('Fable model contract', { concurrency: false }, () => {
     writeModelAgents(null, scope);
 
     for (const [name, model, effort] of [
-      ['fh', 'claude-fable-5-1', 'high'],
-      ['f1h', 'claude-fable-5', 'high'],
+      ['fh', 'claude-fable-5-2', 'high'],
+      ['f1h', 'claude-fable-5-1', 'high'],
+      ['f2h', 'claude-fable-5', 'high'],
     ]) {
       const command = readFileSync(join(dir, '.claude', 'commands', `${name}.md`), 'utf8');
       assert.ok(command.startsWith([

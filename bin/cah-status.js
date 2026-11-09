@@ -30,6 +30,7 @@ import {
 } from '../lib/transcript-stats.js';
 import { CURRENT_VERSION, getLatestVersion, isNewerVersion } from '../lib/update-check.js';
 import { proxyModelDisplayName } from '../lib/proxy-model.js';
+import { sweepStaleTempsDaily } from '../lib/stale-temps.js';
 
 const FALLBACK = '—';
 
@@ -228,6 +229,12 @@ async function main() {
     contextState.elapsedMs = performance.now() - started;
     writeStatusContextTrace(traceDirectory, data, contextState);
   }
+  // Once a day, after the line is out: reclaim aged temps stranded by killed writers.
+  // A redirected rate cache (tests/CI) may sit in a shared directory such as the OS
+  // temp dir, so it sweeps only where CAH_STALE_TEMP_SWEEP_DIR names a cache root.
+  const sweepDir = process.env.CAH_STALE_TEMP_SWEEP_DIR
+    || (process.env.CAH_RATE_LIMITS_CACHE ? null : dirname(RATE_LIMITS_CACHE));
+  if (sweepDir) sweepStaleTempsDaily(sweepDir);
 }
 
 try {

@@ -110,6 +110,70 @@ describe('measured envelope retention', () => {
     assert.equal(names.length, 2);
   });
 
+  // Each publication is a temp window that a cancelled statusLine run strands.
+  describe('republication throttle', () => {
+    function sidecar(path) {
+      const namespace = join(path, '..', 'context-measured-' + createHash('sha256')
+        .update('transcript.jsonl.rates.json').digest('hex'));
+      const [name] = readdirSync(namespace).filter((entry) => /^[a-f0-9]{64}\.json$/.test(entry));
+      return () => readFileSync(join(namespace, name), 'utf8');
+    }
+
+    it('does not rewrite an unchanged measurement on every render', (t) => {
+      const { path, cache, data } = fixture(t);
+      const now = Date.now();
+      statusMeasuredContext(cache, data, 50000, 200000, null, now);
+      const read = sidecar(path);
+      const first = read();
+      appendFileSync(path, JSON.stringify(assistant(0, 'model-a')) + '\n');
+      assert.equal(statusMeasuredContext(cache, data, 50000, 200000, null, now + 1000), 50000);
+      assert.equal(statusMeasuredContext(cache, data, null, 200000, null, now + 2000), 50000);
+      assert.equal(read(), first);
+
+      assert.equal(statusMeasuredContext(cache, data, 60000, 200000, null, now + 3000), 60000);
+      assert.equal(JSON.parse(read()).usedTokens, 60000, 'a changed measurement is written at once');
+      assert.equal(statusMeasuredContext(cache, data, 60000, 200000, null, now + 18_000), 60000);
+      assert.equal(JSON.parse(read()).publishedAt, now + 18_000, 'republished after the window');
+    });
+
+    it('keeps validating from the older checkpoint while a write is skipped', (t) => {
+      const { path, cache, data } = fixture(t);
+      const now = Date.now();
+      statusMeasuredContext(cache, data, 50000, 200000, null, now);
+      appendFileSync(path, JSON.stringify(apiError()) + '\n');
+      assert.equal(statusMeasuredContext(cache, data, null, 200000, null, now + 1000), 50000);
+      appendFileSync(path, JSON.stringify(assistant(0, 'model-b')) + '\n');
+      const diagnostic = {};
+      assert.equal(statusMeasuredContext(cache, data, null, 200000, diagnostic, now + 2000), null);
+      assert.equal(diagnostic.reason, 'model_mismatch');
+    });
+
+    it('lets a fresh measurement renew an old capture time', (t) => {
+      const { path, cache, data } = fixture(t);
+      const now = Date.now();
+      statusMeasuredContext(cache, data, 50000, 200000, null, now);
+      appendFileSync(path, JSON.stringify(apiError()) + '\n');
+      assert.equal(statusMeasuredContext(cache, data, null, 200000, null, now + 70_000), 50000);
+      const read = sidecar(path);
+      assert.equal(JSON.parse(read()).capturedAt, now, 'an unmeasured render keeps the capture time');
+      assert.equal(statusMeasuredContext(cache, data, 50000, 200000, null, now + 71_000), 50000);
+      assert.equal(JSON.parse(read()).capturedAt, now + 71_000);
+    });
+
+    it('writes a rejection once, not on every render', (t) => {
+      const { path, cache, data } = fixture(t);
+      const now = Date.now();
+      statusMeasuredContext(cache, data, 50000, 200000, null, now);
+      const read = sidecar(path);
+      const noModel = { ...data, model: {} };
+      assert.equal(statusMeasuredContext(cache, noModel, 50000, 200000, null, now + 1000), null);
+      const rejected = read();
+      assert.equal(JSON.parse(rejected).usedTokens, null);
+      assert.equal(statusMeasuredContext(cache, noModel, 50000, 200000, null, now + 2000), null);
+      assert.equal(read(), rejected);
+    });
+  });
+
   it('retains envelope measurements through synthetic API errors without refreshing their age', (t) => {
     const { path, cache, data } = fixture(t);
     const now = Date.now();

@@ -25,7 +25,7 @@ node bin/cah.js install --templates ./templates --only skills --cwd /tmp/sandbox
 
 The codebase has two layers: a thin CLI (`lib/cli.js`) that does arg parsing and dispatch, and the installer modules (`lib/*.js`) that own all side effects.
 
-**Manifest-driven generation.** The 62 current Claude model definitions live in `lib/manifest.js` as `AllModelCommands`; each renders one command body and one agent body, for 124 installed bodies total. Both Claude commands and Claude agents are rendered parametrically at install time from this single registry. The current `AllCodexAgents` registry contains 46 optional Codex agents, installed only with `--codex-agents`. Every record also carries its model's `contextWindow` (Claude and Codex) and `maxContextWindow` (Codex); the Codex windows and accepted efforts come from the generated `lib/codex-model-specs.js`.
+**Manifest-driven generation.** The 67 current Claude model definitions live in `lib/manifest.js` as `AllModelCommands`; each renders one command body and one agent body, for 134 installed bodies total. Both Claude commands and Claude agents are rendered parametrically at install time from this single registry. The current `AllCodexAgents` registry contains 46 optional Codex agents, installed only with `--codex-agents`. Every record also carries its model's `contextWindow` (Claude and Codex) and `maxContextWindow` (Codex); the Codex windows and accepted efforts come from the generated `lib/codex-model-specs.js`.
 
 **Skills are static trees.** Each skill is a directory under `templates/skills/<name>/`. The `AllSkills` array in `lib/manifest.js` is the registry. Adding a skill = drop a directory + append the name.
 
@@ -62,7 +62,7 @@ wrong turn.
 **The `bins` install class (since 0.4.0).** `cah install` copies the four
 companion runtime bins and their shared library leaves
 (`lib/sentinel.js`, `lib/fs-atomic-identity.js`, `lib/lease-clock.js`,
-`lib/fs-atomic-publication.js`,
+`lib/fs-atomic-publication.js`, `lib/stale-temps.js`,
 `lib/fs-atomic.js`, `lib/fsutil.js`, `lib/lease-lock.js`,
 `lib/marker-capacity-ops.js`, `lib/marker-capacity-stage.js`,
 `lib/marker-capacity-recovery.js`, `lib/marker-state.js`, `lib/rate-limits-cache.js`,
@@ -84,7 +84,7 @@ SKILL.md migrate a pre-0.4.0 bare-name `command` to the absolute path on
 re-run.**
 
 Publication is dependency-first: the managed package boundary, `sentinel.js`,
-`fs-atomic-identity.js`, `lease-clock.js`, `fs-atomic-publication.js`,
+`fs-atomic-identity.js`, `lease-clock.js`, `fs-atomic-publication.js`, `stale-temps.js`,
 `fs-atomic.js`, `fsutil.js`,
 `lease-lock.js`, `marker-capacity-ops.js`, `marker-capacity-stage.js`,
 `marker-capacity-recovery.js`, `marker-state.js`,
@@ -111,6 +111,7 @@ never exposed before its complete mirrored dependency chain is present.
 | `lib/fsutil.js` | Read/list/prune helpers plus compatibility re-exports for filesystem primitives |
 | `lib/fs-atomic-identity.js` | Exact BigInt identities and stable file snapshots |
 | `lib/fs-atomic-publication.js` | Generation-fenced no-overwrite publication transaction |
+| `lib/stale-temps.js` | `sweepStaleAtomicTemps` / `sweepStaleCacheTemps` (aged exact-name `.cah-tmp-<pid>-<token>` orphans, never recursive) and `sweepStaleTempsDaily` (once-a-day sweep driven by `cah-status`; also run by `cah install`/`uninstall`) |
 | `lib/lease-clock.js` | Shared lease heartbeat/expiry rule (`LEASE_MAX_MS`, `ownerTimestamp`, `leaseExpired`) used by both lease-lock and fs-atomic-publication |
 | `lib/settings-lock.js` | Shared cross-process settings.json lock — acquire/release with ownership-verified reclaim and release, built on lease-lock; used by lib/probe.js and the skills' published protocol |
 | `lib/fs-atomic.js` | Atomic publication, quarantine, and conditional removal |

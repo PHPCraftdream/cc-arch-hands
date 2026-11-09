@@ -10,7 +10,9 @@ import {
   captureRegularFileSnapshot, enumerateRecoveryArtifacts, isQuarantineName, isQuarantinePath,
   maintainRecoveryArtifacts, removeOwnedRegularFile, writeFileAtomic,
 } from '../lib/fs-atomic.js';
-import { sweepStaleAtomicTemps } from '../lib/stale-temps.js';
+import {
+  STALE_TEMP_SUBDIRS, sweepStaleAtomicTemps, sweepStaleCacheTemps, sweepStaleTempsDaily,
+} from '../lib/stale-temps.js';
 import { recoverPublicationFence } from '../lib/fs-atomic-publication.js';
 import { renewLease } from '../lib/lease-lock.js';
 
@@ -1019,5 +1021,90 @@ describe('stale atomic temp sweep', () => {
     const report = sweepStaleAtomicTemps(join(tmpdir(), 'cah-stale-temps-absent-' + process.pid));
     assert.deepEqual(report.swept, []);
     assert.deepEqual(report.failures, []);
+  });
+});
+
+describe('daily stale temp sweep', () => {
+  const token = 'fedcba9876543210fedcba9876543210';
+  const aged = new Date(Date.now() - 2 * 24 * 3600 * 1000);
+  const stamp = (dir) => join(dir, 'stale-temp-sweep.stamp');
+  function cacheFixture() {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-daily-sweep-'));
+    for (const sub of STALE_TEMP_SUBDIRS) mkdirSync(join(dir, sub));
+    const temp = (where, pid, old = true) => {
+      const path = join(dir, where, `.cah-tmp-${pid}-${token}`);
+      writeFileSync(path, '{}\n');
+      if (old) utimesSync(path, aged, aged);
+      return path;
+    };
+    return { dir, temp };
+  }
+
+  it('sweeps the cache root and every sidecar namespace, never marker namespaces', () => {
+    const { dir, temp } = cacheFixture();
+    try {
+      mkdirSync(join(dir, 'stamp-state'));
+      const kept = temp('stamp-state', 1);
+      const roots = ['', ...STALE_TEMP_SUBDIRS].map((where, index) => temp(where, 10 + index));
+      const report = sweepStaleCacheTemps(dir);
+      assert.deepEqual([...report.swept].sort(), [...roots].sort());
+      assert.equal(existsSync(kept), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('sweeps when due, stamps, and then stays quiet until the interval passes', () => {
+    const { dir, temp } = cacheFixture();
+    try {
+      const first = temp('rate-context', 20);
+      assert.deepEqual(sweepStaleTempsDaily(dir).swept, [first]);
+      assert.equal(existsSync(stamp(dir)), true);
+
+      const second = temp('rate-context', 21);
+      assert.equal(sweepStaleTempsDaily(dir), null);
+      assert.equal(existsSync(second), true, 'a second run inside the interval must not scan');
+
+      const later = Date.now() + 25 * 3600 * 1000;
+      const report = sweepStaleTempsDaily(dir, { now: later });
+      assert.deepEqual(report.swept, [second]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('treats a stamp from the future as due instead of silencing the sweep forever', () => {
+    const { dir, temp } = cacheFixture();
+    try {
+      writeFileSync(stamp(dir), '');
+      const future = new Date(Date.now() + 10 * 24 * 3600 * 1000);
+      utimesSync(stamp(dir), future, future);
+      const old = temp('', 30);
+      assert.deepEqual(sweepStaleTempsDaily(dir).swept, [old]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not stamp an incomplete sweep, so the next run retries', () => {
+    const { dir, temp } = cacheFixture();
+    try {
+      const old = temp('', 40);
+      const fence = join(dir, 'rate-limits.json.cah-owned-publish');
+      mkdirSync(fence);
+      writeFileSync(join(fence, 'publication.json'), JSON.stringify({ version: 2 }));
+      const report = sweepStaleTempsDaily(dir);
+      assert.equal(report.incomplete, true);
+      assert.equal(existsSync(stamp(dir)), false);
+      assert.equal(existsSync(old), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('never throws and creates nothing for a missing cache directory', () => {
+    const dir = join(tmpdir(), `cah-daily-sweep-absent-${process.pid}`);
+    assert.doesNotThrow(() => sweepStaleTempsDaily(dir));
+    assert.equal(existsSync(dir), false);
   });
 });

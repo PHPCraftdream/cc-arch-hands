@@ -85,6 +85,7 @@ function fakeSource(root) {
   writeFileSync(join(root, 'lib', 'marker-capacity-recovery.js'), 'export const recovery = 1;\n');
   writeFileSync(join(root, 'lib', 'marker-capacity-ops.js'), 'export const ops = 1;\n');
   writeFileSync(join(root, 'lib', 'fs-atomic.js'), 'export const atomic = 1;\n');
+  writeFileSync(join(root, 'lib', 'stale-temps.js'), 'export const stale = 1;\n');
   writeFileSync(join(root, 'lib', 'sentinel.js'), 'export const sentinel = 1;\n');
   writeFileSync(
     join(root, 'lib', 'cah-bin-package.json'),

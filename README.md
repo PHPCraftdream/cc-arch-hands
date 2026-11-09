@@ -20,8 +20,8 @@ statusLine commands, or diagnostics, copied into `~/.claude/cah-bin/` at
 install time.
 
 The artifacts:
-- **per-model slash-commands** (<!--gen:count:model-commands-->62<!--/gen-->) under `~/.claude/commands/`,
-- **per-model sub-agents** (<!--gen:count:model-commands-->62<!--/gen-->) under `~/.claude/agents/`,
+- **per-model slash-commands** (<!--gen:count:model-commands-->67<!--/gen-->) under `~/.claude/commands/`,
+- **per-model sub-agents** (<!--gen:count:model-commands-->67<!--/gen-->) under `~/.claude/agents/`,
 - **skills** (11) under `~/.claude/skills/`,
 - **companion bins** under `~/.claude/cah-bin/` (since 0.4.0).
 
@@ -43,7 +43,7 @@ The installed companion tree also contains a managed `package.json` with
 working on the package's supported Node >=24 runtime. A pre-existing foreign
 `~/.claude/cah-bin/package.json` is preserved and reported as foreign.
 Updates publish that package boundary first, then `sentinel.js`,
-`fs-atomic-identity.js`, `lease-clock.js`, `fs-atomic-publication.js`,
+`fs-atomic-identity.js`, `lease-clock.js`, `fs-atomic-publication.js`, `stale-temps.js`,
 `fs-atomic.js`, `fsutil.js`, `lease-lock.js`, `marker-capacity-ops.js`,
 `marker-capacity-stage.js`, `marker-capacity-recovery.js`, `marker-state.js`,
 `rate-limits-cache.js`, `transcript-stats.js`, `update-check.js`, and `proxy-model.js`,
@@ -71,7 +71,7 @@ Claude Code's own `used_percentage` formula. Without this, raw
 `input_tokens` after the first turn is ~1 token (everything else is
 served from the prompt cache) and a naive percentage would always read 0%.
 
-### 1. Per-model slash-commands (<!--gen:count:model-commands-->62<!--/gen-->)
+### 1. Per-model slash-commands (<!--gen:count:model-commands-->67<!--/gen-->)
 
 Part of the default install. To manage only the commands, use `--commands`,
 or select them as a class via `--only commands` (also combinable, e.g.
@@ -90,7 +90,7 @@ command name encodes model letter + version + effort suffix:
 /oh   run this turn on Opus (top) at high effort
 /o2x  run this turn on Opus 4.7 (2 releases behind top) at xhigh effort
 /sm   Sonnet (top), medium effort
-/fxx  Fable 5.1, max effort
+/fxx  Fable 5.2, max effort
 /hm   Haiku 5.5 (top), medium effort
 /h1x  Haiku 4.5 (1 release behind top), xhigh
 ```
@@ -111,7 +111,7 @@ Whatever you type after the command becomes the prompt for that turn.
 > model instead of the requested one. The `cah-stamp` line `/clock` installs
 > shows the model that actually served each turn.
 
-### 2. Per-model sub-agents (<!--gen:count:model-commands-->62<!--/gen-->)
+### 2. Per-model sub-agents (<!--gen:count:model-commands-->67<!--/gen-->)
 
 The same supported effort matrix as the commands — but as **delegated sub-agents** instead of inline commands. Use them to hand a self-contained task to a fresh
 context window on a chosen model/effort; the agent runs autonomously and
@@ -150,8 +150,9 @@ Sonnet was, `h1*` whichever Haiku was.
 <!--gen:table:model-commands (run `npm run gen:docs` after editing lib/manifest.js) -->
 | Model | model id | low | medium | high | xhigh | max |
 |---|---|---|---|---|---|---|
-| **Fable** (top, 1M) | `claude-fable-5-1` | `/fl` | `/fm` | `/fh` | `/fx` | `/fxx` |
-| Fable 5 (1M) | `claude-fable-5` | `/f1l` | `/f1m` | `/f1h` | `/f1x` | `/f1xx` |
+| **Fable** (top, 1M) | `claude-fable-5-2` | `/fl` | `/fm` | `/fh` | `/fx` | `/fxx` |
+| Fable 5.1 (1M) | `claude-fable-5-1` | `/f1l` | `/f1m` | `/f1h` | `/f1x` | `/f1xx` |
+| Fable 5 (1M) | `claude-fable-5` | `/f2l` | `/f2m` | `/f2h` | `/f2x` | `/f2xx` |
 | **Opus** (top, 1M) | `claude-opus-5-5` | `/ol` | `/om` | `/oh` | `/ox` | `/oxx` |
 | Opus 5 (1M) | `claude-opus-5` | `/o1l` | `/o1m` | `/o1h` | `/o1x` | `/o1xx` |
 | Opus 4.8 (1M) | `claude-opus-4-8` | `/o2l` | `/o2m` | `/o2h` | `/o2x` | `/o2xx` |
@@ -170,7 +171,7 @@ slash-command body; `oh` (no prefix) is the agent invoked by the `Agent`
 tool with `subagent_type: "oh"`. The two live in separate lookup tables
 inside Claude Code, so identical names do not collide.
 
-<!--gen:count:model-commands-->62<!--/gen--> commands, <!--gen:count:model-commands-->62<!--/gen--> agents — one line per row-cell in
+<!--gen:count:model-commands-->67<!--/gen--> commands, <!--gen:count:model-commands-->67<!--/gen--> agents — one line per row-cell in
 [`lib/manifest.js`](lib/manifest.js).
 
 ### 3. Optional Codex custom agents (<!--gen:count:codex-agents-->46<!--/gen-->)
@@ -621,8 +622,8 @@ What `/resume` does:
 
 | Artifact | Count | Destination |
 |---|---|---|
-| Slash-commands | <!--gen:count:model-commands-->62<!--/gen--> | `<scope>/.claude/commands/<name>.md` (only with `--commands`) |
-| Sub-agents | <!--gen:count:model-commands-->62<!--/gen--> | `<scope>/.claude/agents/<name>.md` |
+| Slash-commands | <!--gen:count:model-commands-->67<!--/gen--> | `<scope>/.claude/commands/<name>.md` (only with `--commands`) |
+| Sub-agents | <!--gen:count:model-commands-->67<!--/gen--> | `<scope>/.claude/agents/<name>.md` |
 | Skills | 11 | `<scope>/.claude/skills/<name>/` |
 | Codex custom agents | <!--gen:count:codex-agents-->46<!--/gen--> | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
 | Codex skills | <!--gen:count:codex-skills-->4<!--/gen--> | `<scope>/.codex/skills/<name>/` (only with `--codex-skills`) |
@@ -716,7 +717,7 @@ npx cc-arch-hands install --only bins                         # companion bins (
                                                     #     fs-atomic-publication.js, marker-capacity-stage.js,
                                                     #     marker-capacity-recovery.js,
                                                     #     marker-state.js, fsutil.js,
-                                                    #     fs-atomic-identity.js, lease-clock.js, fs-atomic.js,
+                                                    #     fs-atomic-identity.js, lease-clock.js, stale-temps.js, fs-atomic.js,
                                                     #     sentinel.js)
 
 # One example per skill (every installable artefact has its own line).
@@ -849,7 +850,7 @@ cc-arch-hands/
 ├── bin/cah-status-probe.js      # diagnostic statusLine bin used by `cah probe statusline`
 ├── lib/
 │   ├── cli.js                   # dispatch, arg parsing (node:util parseArgs), --only resolver
-│   ├── manifest.js              # AllModelCommands (62 definitions), AllCodexAgents (46), AllSkills (11), SkillDeps
+│   ├── manifest.js              # AllModelCommands (67 definitions), AllCodexAgents (46), AllSkills (11), SkillDeps
 │   ├── codex-model-specs.js     # generated by `npm run sync:codex`: Codex context windows + accepted efforts
 │   ├── cli-info.js              # `cah version` and `cah models --json`
 │   ├── sentinel.js              # new + legacy markers, ownership classifier
@@ -863,8 +864,8 @@ cc-arch-hands/
 │   ├── marker-capacity-recovery.js # generation-aware transaction retirement/recovery
 │   ├── fs-atomic.js             # atomic publication, identity, quarantine helpers
 │   ├── transcript-stats.js      # shared: stats, formatStatusLine, makeBar, reset formatters
-│   ├── commands.js              # render + install + remove (62 .md bodies)
-│   ├── agents.js                # render + install + remove (62 .md bodies)
+│   ├── commands.js              # render + install + remove (67 .md bodies)
+│   ├── agents.js                # render + install + remove (67 .md bodies)
 │   ├── skills.js                # mirror templates/skills/<n>/ tree, optional subset
 │   ├── codex-skills.js          # optional Codex skill installation
 │   ├── codex-mcp-config.js      # marked [mcp_servers.cli-run] block in Codex config.toml
@@ -892,8 +893,8 @@ cc-arch-hands/
 └── package.json
 ```
 
-The <!--gen:count:model-commands-->62<!--/gen--> model definitions render
-<!--gen:count:model-bodies-->124<!--/gen--> command+agent bodies, which are
+The <!--gen:count:model-commands-->67<!--/gen--> model definitions render
+<!--gen:count:model-bodies-->134<!--/gen--> command+agent bodies, which are
 **rendered parametrically** at install time from `AllModelCommands`, not stored
 as nearly-identical files. Adding a new `{model, effort}` pair = one object in
 `lib/manifest.js`.

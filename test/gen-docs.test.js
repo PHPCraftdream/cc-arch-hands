@@ -35,6 +35,7 @@ const EXPECTED_SHARED_LIB_LEAVES = [
   'lib/proxy-model.js',
   'lib/rate-limits-cache.js',
   'lib/sentinel.js',
+  'lib/stale-temps.js',
   'lib/transcript-stats.js',
   'lib/update-check.js',
 ];
@@ -55,13 +56,13 @@ describe('gen-docs --check', () => {
   });
 
   it('keeps the current narrative counts tied to the fixed registry oracle', () => {
-    assert.equal(AllModelCommands.length, 62);
-    assert.equal(AllModelCommands.length * 2, 124);
+    assert.equal(AllModelCommands.length, 67);
+    assert.equal(AllModelCommands.length * 2, 134);
     assert.equal(AllCodexAgents.length, 46);
     assert.deepEqual(AllCodexSkills, ['cli-run', 'checkpoint', 'ccheckpoint', 'resume']);
 
-    assert.match(README, /<!--gen:count:model-commands-->62<!--\/gen-->/);
-    assert.match(README, /<!--gen:count:model-bodies-->124<!--\/gen--> command\+agent bodies/);
+    assert.match(README, /<!--gen:count:model-commands-->67<!--\/gen-->/);
+    assert.match(README, /<!--gen:count:model-bodies-->134<!--\/gen--> command\+agent bodies/);
     assert.match(README, /<!--gen:count:codex-agents-->46<!--\/gen-->/);
     assert.match(README, /<!--gen:count:codex-skills-->4<!--\/gen-->/);
     assert.match(
@@ -69,7 +70,7 @@ describe('gen-docs --check', () => {
       /AllCodexAgents \(46\)/,
       'README layout annotation must use the manifest Codex-agent count',
     );
-    assert.match(CLAUDE, /62 current Claude model definitions[\s\S]*124 installed bodies total/);
+    assert.match(CLAUDE, /67 current Claude model definitions[\s\S]*134 installed bodies total/);
     assert.match(CLAUDE, /current `AllCodexAgents` registry contains 46 optional Codex agents/);
 
     for (const stale of [

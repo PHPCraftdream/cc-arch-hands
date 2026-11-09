@@ -43,7 +43,7 @@ describe('toDisplayName', () => {
   });
 
   it('converts the current top Fable model id', () => {
-    assert.equal(toDisplayName('claude-fable-5-1'), 'Fable 5.1');
+    assert.equal(toDisplayName('claude-fable-5-2'), 'Fable 5.2');
   });
 });
 
