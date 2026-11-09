@@ -1086,6 +1086,20 @@ describe('daily stale temp sweep', () => {
     }
   });
 
+  it('tolerates a stamp whose mtime is slightly ahead of the clock', () => {
+    const { dir, temp } = cacheFixture();
+    try {
+      writeFileSync(stamp(dir), '');
+      const ahead = new Date(Date.now() + 2000);
+      utimesSync(stamp(dir), ahead, ahead);
+      const old = temp('', 31);
+      assert.equal(sweepStaleTempsDaily(dir), null);
+      assert.equal(existsSync(old), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('does not stamp an incomplete sweep, so the next run retries', () => {
     const { dir, temp } = cacheFixture();
     try {
