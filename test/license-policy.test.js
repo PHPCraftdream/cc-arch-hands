@@ -59,7 +59,7 @@ describe('checkLicenses', () => {
 
   it('fails when declared dependencies have no lockfile or are absent from it', () => {
     const declared = { ...pkg, dependencies: { a: '^1' } };
-    assert.match(checkLicenses(declared, null).violations[0], /lockfile is missing/);
+    assert.match(checkLicenses(declared, null).violations[0], /package-lock\.json is missing/);
     assert.match(checkLicenses(declared, lockOf({})).violations[0], /a: declared in package.json but absent/);
   });
 
