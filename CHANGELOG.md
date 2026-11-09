@@ -9,16 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- CI-проверка лицензий: `npm run check:licenses` (`scripts/check-licenses.js`) проверяет лицензию пакета и каждую запись `package-lock.json` (включая dev) по allowlist разрешающих лицензий, разбирает SPDX-выражения (`OR`/`AND`/`WITH`), падает на копилефте, отсутствующей или нераспознанной лицензии и на зависимостях без lockfile. Запускается отдельным job `licenses` в `ci.yml` (им же гейтится `publish.yml`) и в `npm test`.
+- License gate in CI: `npm run check:licenses` (`scripts/check-licenses.js`) checks the package license and every `package-lock.json` entry (dev included) against a permissive allowlist, evaluates SPDX expressions (`OR`/`AND`/`WITH`), and fails on copyleft, missing or unparseable licenses and on declared dependencies without a lockfile. It runs as a separate `licenses` job in `ci.yml` (which also gates `publish.yml`) and in `npm test`.
 
 ### Changed
 
-- `/resume` (Claude Code, Codex, OpenCode, OMP) больше не спрашивает, объединять ли задачи с живым списком: восстанавливает только задачи, которых в списке ещё нет (по `subject`/содержимому), живые не трогает и сразу продолжает работу с готовой задачи. Останавливается на вопрос только если открытый вопрос блокирует все готовые задачи.
+- `/resume` (Claude Code, Codex, OpenCode, OMP) no longer asks whether to merge tasks with the live list: it restores only the tasks that are not in the list yet (matched by `subject`/content), leaves live ones untouched, and continues straight with a ready task. It stops to ask only when an open question blocks every ready task.
 
 ### Fixed
 
-- `cah-status`: кеш последнего замера контекста теперь ключуется по сессии и по транскрипту. Две сессии с одним `session_id` (например, ccgp-зеркало возобновлённой сессии) больше не затирают checkpoint друг друга, и градусник не пропадает на стриминге.
-- `cah install`/`uninstall`: удаляет осиротевшие `.cah-tmp-<pid>-<token>` (точное имя, старше 24 ч, без ссылки из publication proof) в корне `cache/` и в `rate-context`, `rate-quota`, `context-measured`, `context-trace`. Раньше такие temp от убитых писателей копились бесконечно (до 200 тыс. файлов).
+- `cah-status`: the retained last-measured-context cache is now keyed by session and transcript. Two sessions sharing one `session_id` (e.g. a ccgp mirror of a resumed session) no longer clobber each other's checkpoint, so the context gauge no longer disappears while streaming.
+- `cah install`/`uninstall`: removes orphaned `.cah-tmp-<pid>-<token>` files (exact name, older than 24 h, not referenced by a publication proof) in the `cache/` root and in `rate-context`, `rate-quota`, `context-measured`, `context-trace`. Previously such temps left by killed writers accumulated without bound (up to 200k files).
 
 ## [0.17.0] - 2026-10-26
 
