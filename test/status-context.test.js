@@ -55,6 +55,61 @@ describe('measured envelope retention', () => {
     assert.equal(diagnostic.reason, 'stale');
   });
 
+  it('keeps one retained measurement per transcript when two processes share a session id', (t) => {
+    const { path, cache, data } = fixture(t);
+    const mirror = transcript(t, [assistant(0, 'model-a')]);
+    const sibling = { ...data, transcript_path: mirror };
+    const now = Date.now();
+    assert.equal(statusMeasuredContext(cache, data, 50000, 200000, null, now), 50000);
+    assert.equal(statusMeasuredContext(cache, sibling, 70000, 200000, null, now + 500), 70000);
+    appendFileSync(path, JSON.stringify(assistant(0, 'model-a')) + '\n');
+    const diagnostic = {};
+    assert.equal(statusMeasuredContext(cache, data, null, 200000, diagnostic, now + 1000), 50000);
+    assert.equal(diagnostic.reason, 'cached_measurement');
+    assert.equal(statusMeasuredContext(cache, sibling, null, 200000, diagnostic, now + 1000), 70000);
+  });
+
+  it('does not let a rejection on one shared-session transcript null the other', (t) => {
+    const { path, cache, data } = fixture(t);
+    const mirror = transcript(t, [assistant(0, 'model-a')]);
+    const sibling = { ...data, transcript_path: mirror };
+    const now = Date.now();
+    statusMeasuredContext(cache, data, 50000, 200000, null, now);
+    statusMeasuredContext(cache, sibling, 70000, 200000, null, now);
+    appendFileSync(path, JSON.stringify({ type: 'system', subtype: 'compact_boundary' }) + '\n');
+    const diagnostic = {};
+    assert.equal(statusMeasuredContext(cache, data, null, 200000, diagnostic, now + 1000), null);
+    assert.equal(diagnostic.reason, 'compaction');
+    assert.equal(statusMeasuredContext(cache, sibling, null, 200000, diagnostic, now + 1000), 70000);
+    assert.equal(diagnostic.reason, 'cached_measurement');
+  });
+
+  it('survives alternating renders of two transcripts sharing a session id', (t) => {
+    const { cache, data } = fixture(t);
+    const sibling = { ...data, transcript_path: transcript(t, [assistant(0, 'model-a')]) };
+    const now = Date.now();
+    statusMeasuredContext(cache, sibling, 30000, 200000, null, now);
+    for (let i = 1; i <= 5; i++) {
+      const diagnostic = {};
+      statusMeasuredContext(cache, data, 80000, 200000, null, now + i * 100);
+      assert.equal(statusMeasuredContext(cache, sibling, null, 200000, diagnostic, now + i * 100 + 50), 30000);
+      assert.equal(diagnostic.reason, 'cached_measurement');
+      assert.equal(statusMeasuredContext(cache, data, null, 200000, diagnostic, now + i * 100 + 60), 80000);
+      assert.equal(diagnostic.reason, 'cached_measurement');
+    }
+  });
+
+  it('stores one sidecar per transcript, named by an opaque hash', (t) => {
+    const { path, cache, data } = fixture(t);
+    const sibling = { ...data, transcript_path: transcript(t, [assistant(0, 'model-a')]) };
+    statusMeasuredContext(cache, data, 50000, 200000, null, Date.now());
+    statusMeasuredContext(cache, sibling, 70000, 200000, null, Date.now());
+    const namespace = join(path, '..', 'context-measured-' + createHash('sha256')
+      .update('transcript.jsonl.rates.json').digest('hex'));
+    const names = readdirSync(namespace).filter((name) => /^[a-f0-9]{64}\.json$/.test(name));
+    assert.equal(names.length, 2);
+  });
+
   it('retains envelope measurements through synthetic API errors without refreshing their age', (t) => {
     const { path, cache, data } = fixture(t);
     const now = Date.now();
