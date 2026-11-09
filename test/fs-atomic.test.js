@@ -8,7 +8,7 @@ import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import {
   captureRegularFileSnapshot, enumerateRecoveryArtifacts, isQuarantineName, isQuarantinePath,
-  maintainRecoveryArtifacts, removeOwnedRegularFile, writeFileAtomic,
+  maintainRecoveryArtifacts, removeOwnedRegularFile, sweepStaleAtomicTemps, writeFileAtomic,
 } from '../lib/fs-atomic.js';
 import { recoverPublicationFence } from '../lib/fs-atomic-publication.js';
 import { renewLease } from '../lib/lease-lock.js';
@@ -935,5 +935,88 @@ describe('transient publication-fence mkdir failures', () => {
       restoreEnv(prior);
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('stale atomic temp sweep', () => {
+  const token = '0123456789abcdef0123456789abcdef';
+  const stale = (name) => new Date(Date.now() - 2 * 24 * 3600 * 1000);
+  function fixture() {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-stale-temps-'));
+    const make = (name, aged = true) => {
+      const path = join(dir, name);
+      writeFileSync(path, '{}\n');
+      if (aged) utimesSync(path, stale(), stale());
+      return path;
+    };
+    return { dir, make };
+  }
+
+  it('removes only aged exact-name temps and leaves everything else', () => {
+    const { dir, make } = fixture();
+    try {
+      const old = make(`.cah-tmp-1234-${token}`);
+      const young = make(`.cah-tmp-1235-${token}`, false);
+      const victim = make('.cah-tmp-victim-leaf');
+      const odd = make(`.cah-tmp-abc-${token}`);
+      const user = make('user-file.json');
+      const report = sweepStaleAtomicTemps(dir);
+      assert.deepEqual(report.swept, [old]);
+      for (const path of [young, victim, odd, user]) assert.equal(existsSync(path), true);
+      assert.equal(existsSync(old), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('honors a custom age floor and a bounded limit', () => {
+    const { dir, make } = fixture();
+    try {
+      for (let i = 0; i < 5; i++) make(`.cah-tmp-${100 + i}-${token}`);
+      const bounded = sweepStaleAtomicTemps(dir, { limit: 2 });
+      assert.equal(bounded.swept.length, 2);
+      assert.equal(bounded.truncated, true);
+      const none = sweepStaleAtomicTemps(dir, { maxAgeMs: 30 * 24 * 3600 * 1000 });
+      assert.deepEqual(none.swept, []);
+      assert.equal(readdirSync(dir).length, 3);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not follow or remove a directory or non-regular entry with a temp name', () => {
+    const { dir } = fixture();
+    try {
+      const impostor = join(dir, `.cah-tmp-7-${token}`);
+      mkdirSync(impostor);
+      utimesSync(impostor, stale(), stale());
+      const report = sweepStaleAtomicTemps(dir);
+      assert.deepEqual(report.swept, []);
+      assert.equal(existsSync(impostor), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('sweeps nothing while a publication fence it cannot read may name any temp', () => {
+    const { dir, make } = fixture();
+    try {
+      const old = make(`.cah-tmp-9-${token}`);
+      const fence = join(dir, 'rate-limits.json.cah-owned-publish');
+      mkdirSync(fence);
+      writeFileSync(join(fence, 'publication.json'), JSON.stringify({ version: 2, ownerPid: process.pid }));
+      const report = sweepStaleAtomicTemps(dir);
+      assert.deepEqual(report.swept, []);
+      assert.equal(report.incomplete, true);
+      assert.equal(existsSync(old), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('is a no-op for a missing root', () => {
+    const report = sweepStaleAtomicTemps(join(tmpdir(), 'cah-stale-temps-absent-' + process.pid));
+    assert.deepEqual(report.swept, []);
+    assert.deepEqual(report.failures, []);
   });
 });

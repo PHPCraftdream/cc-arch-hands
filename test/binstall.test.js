@@ -2,7 +2,7 @@ import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, mkdtempSync, statSync, lstatSync,
-  symlinkSync, linkSync,
+  symlinkSync, linkSync, utimesSync,
 } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
@@ -1870,6 +1870,27 @@ describe('removeBins', () => {
     assert.deepEqual(removed.maintenance.unprovedTemps, ['cache/.cah-tmp-crashed-install']);
     assert.deepEqual(removed.recovery, ['cache/.cah-tmp-crashed-install']);
     assert.ok(!removed.skipped.includes('cache'));
+  });
+
+  it('sweeps only aged exact-name atomic temps from cache sidecar namespaces', () => {
+    writeBins(dst, src);
+    const token = '0123456789abcdef0123456789abcdef';
+    const aged = new Date(Date.now() - 2 * 24 * 3600 * 1000);
+    const cache = join(dst, 'cache');
+    const rateQuota = join(cache, 'rate-quota');
+    const markers = join(cache, 'hint-markers');
+    for (const dir of [rateQuota, markers]) mkdirSync(dir, { recursive: true });
+    const stale = [join(cache, `.cah-tmp-11-${token}`), join(rateQuota, `.cah-tmp-12-${token}`)];
+    const kept = [join(cache, `.cah-tmp-13-${token}`), join(cache, '.cah-tmp-crashed-aged'),
+      join(markers, `.cah-tmp-14-${token}`)];
+    for (const path of [...stale, ...kept]) writeFileSync(path, 'x');
+    for (const path of [...stale, kept[1], kept[2]]) utimesSync(path, aged, aged);
+
+    const installed = writeBins(dst, src);
+    for (const path of stale) assert.equal(existsSync(path), false, path);
+    for (const path of kept) assert.equal(existsSync(path), true, path);
+    assert.deepEqual([...installed.maintenance.swept].sort(),
+      [`cache/.cah-tmp-11-${token}`, `cache/rate-quota/.cah-tmp-12-${token}`]);
   });
 
   it('leaves unknown foreign files and keeps the dir', () => {
