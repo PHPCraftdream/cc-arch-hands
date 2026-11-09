@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- CI-проверка лицензий: `npm run check:licenses` (`scripts/check-licenses.js`) проверяет лицензию пакета и каждую запись `package-lock.json` (включая dev) по allowlist разрешающих лицензий, разбирает SPDX-выражения (`OR`/`AND`/`WITH`), падает на копилефте, отсутствующей или нераспознанной лицензии и на зависимостях без lockfile. Запускается отдельным job `licenses` в `ci.yml` (им же гейтится `publish.yml`) и в `npm test`.
+
 ### Changed
 
 - `/resume` (Claude Code, Codex, OpenCode, OMP) больше не спрашивает, объединять ли задачи с живым списком: восстанавливает только задачи, которых в списке ещё нет (по `subject`/содержимому), живые не трогает и сразу продолжает работу с готовой задачи. Останавливается на вопрос только если открытый вопрос блокирует все готовые задачи.

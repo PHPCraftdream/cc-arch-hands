@@ -14,6 +14,7 @@ No `npm install` needed — zero runtime dependencies, tests use `node:test` + `
 ```bash
 npm test                            # full suite
 node --test test/cli.test.js        # single file
+npm run check:licenses              # license gate: package + lockfile vs. permissive allowlist
 node bin/cah.js install --templates ./templates --only skills --cwd /tmp/sandbox
 ```
 

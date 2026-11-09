@@ -10,6 +10,17 @@ on:
   workflow_call:
 
 jobs:
+  # Gates every dependency (lockfile, dev included) against the permissive
+  # license allowlist; publish.yml reuses this workflow, so a release is gated too.
+  licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - run: npm run check:licenses
+
   test:
     runs-on: ${{ matrix.os }}
     strategy:
