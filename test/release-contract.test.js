@@ -311,7 +311,7 @@ describe('release and generated-doc contracts', () => {
     assert.match(CHECKPOINT_SKILL, /Never enter a worktree for this/);
     assert.match(CHECKPOINT_SKILL, /not committed: this session is confined to its\s+worktree/);
     assert.match(RESUME_SKILL, /Exact filename match \(with or without `\.md`\): take it/);
-    assert.match(RESUME_SKILL, /sort every `\.md` in the directory by filesystem mtime descending/);
+    assert.match(RESUME_SKILL, /sort every `\.md` in those directories by filesystem mtime descending/);
   });
 
   it('the main-folder check finds the main folder on any branch and from a linked worktree', () => {
