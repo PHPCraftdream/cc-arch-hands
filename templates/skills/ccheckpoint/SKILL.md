@@ -19,8 +19,9 @@ with ordinary Git commands. Never push.
 
 1. Invoke `Skill('checkpoint', <the same argument, or none>)` from the same
    caller working directory. If it refused (not a Git repository), relay that
-   and stop: nothing to commit. In a linked worktree it still writes into the
-   main folder, so continue; never enter a worktree for this.
+   and stop: nothing to commit. If its write was refused, relay that blocker
+   and stop. In a linked worktree it still writes into the main folder, so
+   continue; never enter a worktree for this.
 2. Take the basename of the reported path, as data. It must match
    `^[a-z0-9]+(?:-[a-z0-9]+)*\.md$` and the file must be
    `<repo-root>/docs/checkpoints/<basename>`, with `<repo-root>` the main
@@ -42,7 +43,13 @@ with ordinary Git commands. Never push.
    - `git add` says the path is ignored → report "not committed:
      docs/checkpoints/ is ignored". Never use `git add -f`.
    - Add the active commit-attribution trailers with an extra `-m`.
-   - From a worktree the commit lands on the branch checked out in the main folder; say so in the report.
+   - From a worktree the commit lands on the branch checked out in the main
+     folder; say so in the report.
+   - The harness refuses `git -C` because this session is confined to its
+     worktree → report "not committed: this session is confined to its
+     worktree; commit it from `<repo-root>`" and stop. The checkpoint is
+     already written. Never work around the refusal (`cd`, `GIT_DIR`,
+     `GIT_WORK_TREE`, wrapper scripts).
    - `git commit --only` commits just this path; everything else stays staged
      as it was.
 
@@ -53,7 +60,8 @@ with ordinary Git commands. Never push.
   Don't end the turn on a failure an ordinary Git command can still fix.
 - Stop and report (quoting Git) only a real blocker for the user: a merge,
   rebase, cherry-pick or revert in progress, another process holding
-  `index.lock`, a failing commit hook, or a denied permission.
+  `index.lock`, a failing commit hook, or a denied permission (including a
+  session confined to its worktree).
 - Never remove a lock you did not create, never bypass hooks (`--no-verify`),
   never reset, restore or discard anything.
 - Do not use `git commit-tree`, `git update-ref`, a custom `GIT_INDEX_FILE`,

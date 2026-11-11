@@ -294,8 +294,9 @@ describe('release and generated-doc contracts', () => {
     assert.match(MAIN_FOLDER_FRAGMENT, /equals line 3 \(`--git-common-dir`\) → the caller is in the main folder/);
     assert.match(MAIN_FOLDER_FRAGMENT, /linked worktree \(line 1\): `<repo-root>` is the parent directory of line 3/);
     assert.match(MAIN_FOLDER_FRAGMENT, /Do not refuse, and do not move, merge or change anything in any worktree/);
-    assert.match(MAIN_FOLDER_FRAGMENT, /git -C <repo-root> worktree list/);
-    assert.match(MAIN_FOLDER_FRAGMENT, /for every linked worktree, its path, branch/);
+    assert.match(MAIN_FOLDER_FRAGMENT, /From the caller's directory run `git worktree list --porcelain`/);
+    assert.match(MAIN_FOLDER_FRAGMENT, /Never work around such a refusal/);
+    assert.match(MAIN_FOLDER_FRAGMENT, /"not readable from this session"/);
     assert.match(MAIN_FOLDER_FRAGMENT, /Never create or enter a worktree for a checkpoint/);
     assert.match(MAIN_FOLDER_FRAGMENT, /any other path shared across projects\/agents/);
     assert.doesNotMatch(MAIN_FOLDER_FRAGMENT, /~\/\.claude|TaskList|todo/, 'the shared rule stays harness-neutral');
@@ -305,6 +306,7 @@ describe('release and generated-doc contracts', () => {
     assert.match(CHECKPOINT_SKILL, /Invoke `Skill\('checkpoint'/);
     assert.match(CHECKPOINT_SKILL, /git -C "<repo-root>" add/);
     assert.match(CHECKPOINT_SKILL, /never enter a worktree for this/);
+    assert.match(CHECKPOINT_SKILL, /not committed: this session is confined to its\s+worktree/);
     assert.match(RESUME_SKILL, /Exact filename match \(with or without `\.md`\): take it/);
     assert.match(RESUME_SKILL, /sort every `\.md` in the directory by filesystem mtime descending/);
   });
