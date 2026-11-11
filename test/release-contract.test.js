@@ -83,10 +83,16 @@ function makeCheckpointRepo(prefix = 'cah-ccheckpoint-') {
 
 // Runs the published commands as separate calls, as the skill instructs, and
 // stops at the first failure. Returns one spawnSync result per command run.
+// The main folder as the skill resolves it: the parent of the common git dir.
+function mainFolder(cwd) {
+  return dirname(runGit(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
+}
+
 function runCheckpointCommands(cwd, stem = 'state', commands = CHECKPOINT_COMMANDS) {
   const results = [];
   for (const command of commands) {
-    const result = spawnSync(BASH, ['-c', command.replaceAll('NAME', stem)], { cwd, encoding: 'utf8' });
+    const script = command.replaceAll('NAME', stem).replaceAll('<repo-root>', mainFolder(cwd));
+    const result = spawnSync(BASH, ['-c', script], { cwd, encoding: 'utf8' });
     results.push(result);
     if (result.status !== 0) break;
   }
@@ -141,10 +147,10 @@ describe('release and generated-doc contracts', () => {
 
   it('ccheckpoint publishes only ordinary Git commands', () => {
     assert.deepEqual(CHECKPOINT_COMMANDS, [
-      "git status --porcelain -- ':(top)docs/checkpoints/NAME.md'",
-      "git add -- ':(top)docs/checkpoints/NAME.md'",
-      "git commit --only -m 'checkpoint: NAME' -- ':(top)docs/checkpoints/NAME.md'",
-      'git rev-parse --short HEAD',
+      `git -C "<repo-root>" status --porcelain -- ':(top)docs/checkpoints/NAME.md'`,
+      `git -C "<repo-root>" add -- ':(top)docs/checkpoints/NAME.md'`,
+      `git -C "<repo-root>" commit --only -m 'checkpoint: NAME' -- ':(top)docs/checkpoints/NAME.md'`,
+      'git -C "<repo-root>" rev-parse --short HEAD',
     ]);
     assert.match(CHECKPOINT_SKILL, /\^\[a-z0-9\]\+\(\?:-\[a-z0-9\]\+\)\*\\\.md\$/,
       'the basename rule keeps NAME a plain slug inside single quotes');
@@ -186,6 +192,30 @@ describe('release and generated-doc contracts', () => {
       assert.deepEqual(committedNames(repo), ['docs/checkpoints/2026-10-26-1226.md']);
       assert.equal(runGit(repo, ['status', '--porcelain']), '');
     } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('ccheckpoint run from a linked worktree commits in the main folder only', () => {
+    const repo = makeCheckpointRepo('cah-checkpoint-wt-');
+    const linked = mkdtempSync(join(tmpdir(), 'cah-checkpoint-wt-linked-'));
+    rmSync(linked, { recursive: true, force: true });
+    try {
+      runGit(repo, ['worktree', 'add', '-q', '-b', 'side', linked, 'HEAD']);
+      const sideHead = runGit(linked, ['rev-parse', 'HEAD']);
+      writeFileSync(join(repo, 'docs', 'checkpoints', 'from-side.md'), 'from side\n');
+      const results = runCheckpointCommands(linked, 'from-side');
+
+      assert.ok(results.every((r) => r.status === 0), output(results));
+      assert.deepEqual(committedNames(repo), ['docs/checkpoints/from-side.md']);
+      assert.equal(runGit(linked, ['rev-parse', 'HEAD']), sideHead, 'the worktree branch is untouched');
+    } finally {
+      try {
+        runGit(repo, ['worktree', 'remove', '--force', linked]);
+      } catch {
+        // The worktree may not have been registered if setup failed.
+      }
+      rmSync(linked, { recursive: true, force: true });
       rmSync(repo, { recursive: true, force: true });
     }
   });
