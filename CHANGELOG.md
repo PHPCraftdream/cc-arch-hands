@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Checkpoints are made, read and committed only in the repository's main folder, for every harness: Claude `/checkpoint`, `/ccheckpoint`, `/resume`; Codex `$checkpoint`, `$ccheckpoint`, `$resume`; OpenCode and OMP `/checkpoint`, `/ccheckpoint`, `/checkpoint-resume`. In a linked worktree they refuse and say the worktree's work has to be carried into the main folder first, with all its changes, and checkpointed there; they never create or enter a worktree. The branch is not restricted. The shared commit helper (`commit-checkpoint.mjs`) enforces the same rule in code and skips a linked worktree. The Claude skill texts were also tightened without dropping rules.
+
+### Added
+
+- Shared template fragments: harness-neutral text lives once in `templates/shared/<name>.md` and is pulled into any Markdown template by a whole-line `{{include:<name>}}`. `Templates.skillTree` expands it, so every installer (Claude, Codex, OpenCode, OMP) and `--templates <dir>` get the same text; a missing fragment, an inline include or a nested include fails the install. The main-folder rule above is the first fragment.
+- Explicit [ccgp (cc-go-proxy)](https://github.com/PHPCraftdream/cc-go-proxy) support. A global `install`, `reinstall` or `uninstall` now also applies its commands, agents and skills phases to every ccgp profile folder (`<ccgp home>/claude/<name>` holding ccgp's `.ccgp-mirror.ktav`, for `CCGP_HOME`, `./.ccgp` and the default `<user config dir>/cc-go-proxy`), so running profiles get the change without a restart; ccgp itself copies from `~/.claude/` only when a profile starts. Same ownership rules as `~/.claude/`; bins stay shared in `~/.claude/cah-bin/`; project-local installs leave profiles alone. A default ccgp home outside the current home dir is ignored, so a sandboxed `HOME` never reaches real profiles. The new README section "ccgp support" also documents that the context gauge follows ccgp's model mapping (the routed backend model label and the per-profile window passed as `CLAUDE_CODE_AUTO_COMPACT_WINDOW`) and that the measured-context cache keeps sessions of different profiles apart.
+
 ## [0.18.0] - 2026-11-09
 
 ### Added

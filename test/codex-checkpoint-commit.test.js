@@ -71,16 +71,30 @@ describe('Codex ccheckpoint commit helper', () => {
     assert.equal(commit(outside, 'session.md', env).data.status, 'skipped');
   });
 
-  it('commits from a linked worktree and keeps its index clean', (t) => {
+  it('refuses a linked worktree and points at the main folder', (t) => {
     const dir = repo(t);
     const linked = join(dir, 'linked worktree');
     git(dir, 'worktree', 'add', '--detach', linked);
     mkdirSync(join(linked, 'docs', 'checkpoints'), { recursive: true });
     writeFileSync(join(linked, 'docs', 'checkpoints', 'linked.md'), '# linked\n');
+    const head = git(linked, 'rev-parse', 'HEAD');
     const result = commit(linked, 'linked.md');
     assert.equal(result.exit, 0, result.stderr);
+    assert.equal(result.data.status, 'skipped');
+    assert.match(result.data.reason, /^linked worktree: carry its work into the main folder /);
+    assert.equal(git(linked, 'rev-parse', 'HEAD'), head);
+    assert.equal(git(linked, 'status', '--porcelain', '--', 'docs/checkpoints/linked.md'), '?? docs/checkpoints/linked.md');
+  });
+
+  it('commits from a subdirectory of the main folder on any branch', (t) => {
+    const dir = repo(t);
+    git(dir, 'switch', '-q', '-c', 'feature');
+    mkdirSync(join(dir, 'sub'));
+    writeFileSync(join(dir, 'docs', 'checkpoints', 'feature.md'), '# feature\n');
+    const result = commit(join(dir, 'sub'), 'feature.md');
+    assert.equal(result.exit, 0, result.stderr);
     assert.equal(result.data.status, 'committed');
-    assert.equal(git(linked, 'status', '--porcelain', '--', 'docs/checkpoints/linked.md'), '');
+    assert.equal(git(dir, 'show', '-s', '--format=%s', 'HEAD'), 'checkpoint: feature');
   });
 
   it('does not touch a pre-existing Git index lock', (t) => {

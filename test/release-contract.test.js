@@ -10,7 +10,8 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { embeddedTemplates } from '../lib/templates.js';
 import { tmpdir } from 'node:os';
 
 const ROOT = new URL('..', import.meta.url);
@@ -23,11 +24,36 @@ function read(name) {
 }
 
 
-const CHECKPOINT_SKILL = read('templates/skills/ccheckpoint/SKILL.md');
-const RESUME_SKILL = read('templates/skills/resume/SKILL.md');
-// The published commit commands, one per line, with NAME as the stem placeholder.
-const CHECKPOINT_COMMANDS = CHECKPOINT_SKILL.match(/```bash\n([\s\S]*?)```/)[1]
-  .split('\n').map((line) => line.trim()).filter(Boolean);
+// Installed text: shared fragments expanded, exactly as every installer sees it.
+function installed(kind, name, leaf) {
+  const file = embeddedTemplates().skillTree(name, kind).find((entry) => entry.relPath === leaf);
+  return file.bytes.toString('utf8').replaceAll('\r\n', '\n');
+}
+
+const CHECKPOINT_SKILL = installed('skills', 'ccheckpoint', 'SKILL.md');
+const RESUME_SKILL = installed('skills', 'resume', 'SKILL.md');
+const MAIN_FOLDER_FRAGMENT = read('templates/shared/checkpoint-main-worktree.md').trimEnd();
+// Every checkpoint-family template that writes or reads checkpoints itself.
+const MAIN_FOLDER_TEMPLATES = [
+  ['skills', 'checkpoint', 'SKILL.md'], ['skills', 'resume', 'SKILL.md'],
+  ['codex-skills', 'checkpoint', 'SKILL.md'], ['codex-skills', 'resume', 'SKILL.md'],
+  ['opencode-skills', 'checkpoint', 'SKILL.md'], ['opencode-skills', 'ccheckpoint', 'SKILL.md'],
+  ['opencode-skills', 'checkpoint-resume', 'SKILL.md'],
+  ['opencode-commands', 'checkpoint', 'command.md'], ['opencode-commands', 'ccheckpoint', 'command.md'],
+  ['opencode-commands', 'checkpoint-resume', 'command.md'],
+  ['omp-commands', 'checkpoint', 'command.md'], ['omp-commands', 'checkpoint-resume', 'command.md'],
+];
+
+// The first ```bash block of a skill, one command per line.
+function bashCommands(skill) {
+  return skill.match(/```bash\n([\s\S]*?)```/)[1]
+    .split('\n').map((line) => line.trim()).filter(Boolean);
+}
+
+// The published commit commands, with NAME as the stem placeholder.
+const CHECKPOINT_COMMANDS = bashCommands(CHECKPOINT_SKILL);
+// The published main-folder check.
+const GUARD_COMMANDS = bashCommands(MAIN_FOLDER_FRAGMENT);
 const BASH = process.platform === 'win32'
   ? ['C:\\Program Files\\Git\\bin\\bash.exe', 'C:\\Program Files\\Git\\usr\\bin\\bash.exe']
     .find((candidate) => existsSync(candidate)) ?? 'bash'
@@ -150,10 +176,9 @@ describe('release and generated-doc contracts', () => {
     }
   });
 
-  it('ccheckpoint commits a new untracked checkpoint and works on a detached HEAD', () => {
+  it('ccheckpoint commits a new untracked checkpoint', () => {
     const repo = makeCheckpointRepo();
     try {
-      runGit(repo, ['switch', '--detach', '-q', 'HEAD']);
       writeFileSync(join(repo, 'docs', 'checkpoints', '2026-10-26-1226.md'), 'fresh\n');
       const results = runCheckpointCommands(repo, '2026-10-26-1226');
 
@@ -230,50 +255,64 @@ describe('release and generated-doc contracts', () => {
     }
   });
 
-  it('checkpoint, ccheckpoint, and resume resolve a linked worktree as the caller repo', () => {
-    assert.match(CHECKPOINT_SKILL, /git rev-parse --show-toplevel/);
-    assert.match(CHECKPOINT_SKILL, /linked worktree's `.git` file/);
-    assert.match(RESUME_SKILL, /git rev-parse --show-toplevel/);
-    assert.match(RESUME_SKILL, /linked worktree's `.git` file/);
-    assert.doesNotMatch(RESUME_SKILL, /if a `.git` directory exists in the current working directory or any parent/);
-    assert.match(RESUME_SKILL, /If the command fails or returns an empty path \(caller is outside any Git repository\), refuse and stop/);
-    assert.match(RESUME_SKILL, /never read `~\/\.claude\/checkpoints\/` or any other path shared across projects\/agents/);
+  it('every checkpoint template, in every harness, carries the one shared main-folder rule', () => {
+    assert.deepEqual(GUARD_COMMANDS, [
+      'git rev-parse --path-format=absolute --show-toplevel --git-dir --git-common-dir',
+    ]);
+    assert.match(MAIN_FOLDER_FRAGMENT, /fails or prints nothing → not a Git repository: refuse and stop/i);
+    assert.match(MAIN_FOLDER_FRAGMENT, /differs from line 3 \(`--git-common-dir`\) → linked worktree: refuse and stop/);
+    assert.match(MAIN_FOLDER_FRAGMENT, /carried into the main folder first, together with all its changes, and the checkpoint is then made there/);
+    assert.match(MAIN_FOLDER_FRAGMENT, /Never create or enter a worktree for a checkpoint/);
+    assert.match(MAIN_FOLDER_FRAGMENT, /any other path shared across projects\/agents/);
+    assert.doesNotMatch(MAIN_FOLDER_FRAGMENT, /~\/\.claude|TaskList|todo/, 'the shared rule stays harness-neutral');
+    for (const [kind, name, leaf] of MAIN_FOLDER_TEMPLATES) {
+      assert.ok(installed(kind, name, leaf).includes(MAIN_FOLDER_FRAGMENT), `${kind}/${name}`);
+    }
+    assert.match(CHECKPOINT_SKILL, /Invoke `Skill\('checkpoint'/);
+    assert.match(CHECKPOINT_SKILL, /Never enter a worktree\s+to make it pass/);
     assert.match(RESUME_SKILL, /Exact filename match \(with or without `\.md`\): take it/);
     assert.match(RESUME_SKILL, /sort every `\.md` in the directory by filesystem mtime descending/);
+  });
 
-    const parentRepo = makeCheckpointRepo('cah-ccheckpoint-linked-parent-');
-    const worktree = mkdtempSync(join(tmpdir(), 'cah-ccheckpoint-linked-worktree-'));
-    rmSync(worktree, { recursive: true, force: true });
+  it('the main-folder check tells the main folder on any branch from a linked worktree', () => {
+    const repo = makeCheckpointRepo('cah-checkpoint-guard-');
+    const linked = mkdtempSync(join(tmpdir(), 'cah-checkpoint-guard-linked-'));
+    rmSync(linked, { recursive: true, force: true });
+    const guard = (cwd) => spawnSync(BASH, ['-c', GUARD_COMMANDS[0]], { cwd, encoding: 'utf8' });
+    const lines = (result) => result.stdout.trim().split(/\r?\n/).filter(Boolean);
     try {
-      runGit(parentRepo, ['worktree', 'add', '-q', '-b', 'linked-contract', worktree, 'HEAD']);
-      assert.equal(readFileSync(join(worktree, '.git'), 'utf8').startsWith('gitdir: '), true);
-      assert.equal(samePath(runGit(worktree, ['rev-parse', '--show-toplevel']), worktree), true);
+      runGit(repo, ['switch', '-q', '-c', 'feature']);
+      const main = guard(join(repo, 'sub'));
+      assert.equal(main.status, 0, main.stderr);
+      const [top, gitDir, commonDir] = lines(main);
+      assert.equal(samePath(top, repo), true);
+      assert.equal(gitDir, commonDir, 'the main folder passes on any branch');
 
-      writeFileSync(join(parentRepo, 'docs', 'checkpoints', 'state.md'), 'parent must stay untouched\n');
-      writeFileSync(join(worktree, 'docs', 'checkpoints', 'state.md'), 'linked worktree update\n');
-      writeFileSync(join(worktree, 'unrelated.txt'), 'linked staged update\n');
-      runGit(worktree, ['add', '--', 'unrelated.txt']);
-      const parentHead = runGit(parentRepo, ['rev-parse', 'HEAD']);
+      runGit(repo, ['worktree', 'add', '-q', '-b', 'side', linked, 'HEAD']);
+      const side = guard(linked);
+      assert.equal(side.status, 0, side.stderr);
+      const [linkedTop, linkedGitDir, linkedCommonDir] = lines(side);
+      assert.equal(samePath(linkedTop, linked), true);
+      assert.notEqual(linkedGitDir, linkedCommonDir, 'a linked worktree is refused');
+      assert.equal(samePath(dirname(linkedCommonDir), repo), true, 'the refusal can name the main folder');
 
-      const results = runCheckpointCommands(worktree);
-
-      assert.ok(results.every((r) => r.status === 0), output(results));
-      assert.equal(runGit(parentRepo, ['rev-parse', 'HEAD']), parentHead);
-      assert.equal(readFileSync(join(parentRepo, 'docs', 'checkpoints', 'state.md'), 'utf8'), 'parent must stay untouched\n');
-      assert.equal(runGit(worktree, ['show', 'HEAD:docs/checkpoints/state.md']), 'linked worktree update');
-      assert.deepEqual(stagedNames(worktree), ['unrelated.txt']);
-
-      const resumeRepoRoot = runGit(worktree, ['rev-parse', '--show-toplevel']);
-      assert.equal(samePath(resumeRepoRoot, worktree), true);
-      assert.equal(readFileSync(join(resumeRepoRoot, 'docs', 'checkpoints', 'state.md'), 'utf8'), 'linked worktree update\n');
+      const outside = mkdtempSync(join(tmpdir(), 'cah-checkpoint-guard-outside-'));
+      try {
+        const env = { ...process.env, GIT_CEILING_DIRECTORIES: dirname(outside) };
+        const none = spawnSync('git', GUARD_COMMANDS[0].split(' ').slice(1), { cwd: outside, env, encoding: 'utf8' });
+        assert.notEqual(none.status, 0);
+        assert.equal(none.stdout.trim(), '');
+      } finally {
+        rmSync(outside, { recursive: true, force: true });
+      }
     } finally {
       try {
-        runGit(parentRepo, ['worktree', 'remove', '--force', worktree]);
+        runGit(repo, ['worktree', 'remove', '--force', linked]);
       } catch {
         // The worktree may not have been registered if setup failed.
       }
-      rmSync(worktree, { recursive: true, force: true });
-      rmSync(parentRepo, { recursive: true, force: true });
+      rmSync(linked, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true });
     }
   });
 

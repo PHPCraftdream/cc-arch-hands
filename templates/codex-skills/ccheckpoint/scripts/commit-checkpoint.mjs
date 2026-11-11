@@ -6,7 +6,7 @@ import {
   unlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 function git(args, cwd, env = process.env) {
   return execFileSync('git', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -36,9 +36,23 @@ function run(name) {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*\.md$/.test(name || '')) {
     throw new Error('checkpoint name must be a safe slug or timestamp .md basename');
   }
-  let root;
-  try { root = realpathSync(git(['rev-parse', '--show-toplevel'], process.cwd())); }
-  catch { return { status: 'skipped', reason: 'caller is outside a Git repository' }; }
+  let lines;
+  try {
+    lines = git(['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-dir', '--git-common-dir'],
+      process.cwd()).split(/\r?\n/);
+  } catch { return { status: 'skipped', reason: 'caller is outside a Git repository' }; }
+  const [top, gitDir, commonDir] = lines;
+  if (!top) return { status: 'skipped', reason: 'caller is outside a Git repository' };
+  // Git older than 2.31 echoes the unknown --path-format option instead of failing.
+  if (lines.length !== 3 || top.startsWith('--')) throw new Error('Git 2.31 or newer is required');
+  // Checkpoints live only in the main folder; a linked worktree has its own git dir.
+  if (realpathSync(gitDir) !== realpathSync(commonDir)) {
+    return {
+      status: 'skipped',
+      reason: `linked worktree: carry its work into the main folder ${dirname(realpathSync(commonDir))} and checkpoint there`,
+    };
+  }
+  const root = realpathSync(top);
 
   const directory = join(root, 'docs', 'checkpoints');
   const actualDirectory = realpathSync(directory);

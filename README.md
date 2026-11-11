@@ -30,6 +30,29 @@ Optional artifacts are installed only when requested:
 - **Codex skills** (<!--gen:count:codex-skills-->4<!--/gen-->) under `~/.codex/skills/`, via `--codex-skills`.
 - **OMP agents** and the agent-tag rule in global `APPEND_SYSTEM.md`, via `--omp-agents`. OMP uses Markdown definitions, not Codex TOML.
 
+### ccgp support
+
+`cah` explicitly supports [ccgp (cc-go-proxy)](https://github.com/PHPCraftdream/cc-go-proxy), the launcher that runs
+Claude Code through other providers (Codex, z.ai, …) and as separate Claude Code profiles, each with its own
+`CLAUDE_CONFIG_DIR`:
+
+- **Installs go straight into every ccgp profile folder.** A global `cah install`, `reinstall` or `uninstall` repeats
+  its commands, agents and skills phases in each ccgp profile folder it finds, so a running profile sees the change
+  at once, without a restart (ccgp itself copies from `~/.claude/` only when a profile starts). Profiles are the
+  folders `<ccgp home>/claude/<name>` that hold ccgp's copy manifest (`.ccgp-mirror.ktav`), for each ccgp home in
+  use: `CCGP_HOME`, a `.ccgp` folder in the current directory, and the default `<user config dir>/cc-go-proxy`
+  (`%APPDATA%` on Windows, `~/Library/Application Support` on macOS, `$XDG_CONFIG_HOME` or `~/.config` on Linux).
+  Ownership rules are the same as in `~/.claude/`: foreign files are never touched. ccgp's own copy at the next
+  start stays compatible: it re-copies the same files and prunes only what it copied. The companion bins stay in
+  the one shared `~/.claude/cah-bin/`, which profiles call by absolute path, and `settings.json` (the `/clock`
+  statusLine and hooks) still reaches a profile through ccgp's copy at its next start. Project-local installs
+  (`--local`, `--cwd`) do not touch ccgp profiles.
+- **The context gauge follows ccgp's model mapping.** In a ccgp session the statusLine and chat stamps show the
+  backend model an alias is routed to (see *Optional ccgp model labels* below), and the gauge uses the per-profile
+  context window ccgp passes as `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (e.g. `90.13% (831k/922k)`).
+- **Sessions of different profiles stay apart.** The measured-context cache is keyed by session and transcript, so
+  a ccgp copy of a resumed session never overwrites the original session's gauge.
+
 > **Since 0.4.0:** `cah install` copies the companion bins into
 > `~/.claude/cah-bin/` and `settings.json` references them by absolute path
 > (`node "<HOME>/.claude/cah-bin/bin/cah-status.js"`) rather than a bare PATH
@@ -509,9 +532,9 @@ Reusable capability packs Claude Code loads on demand. Each is invoked as
 
 | Skill | Purpose |
 |---|---|
-| `/checkpoint` | Persist current session state (active `/goal`, TaskList with `blockedBy`, recent decisions, open questions, repo state) to a markdown file under `docs/checkpoints/`. Usage: `/checkpoint` (auto-timestamped) or `/checkpoint <name>` (named, re-runs overwrite). |
-| `/ccheckpoint` | Same as `/checkpoint`, plus a local `git commit` of the checkpoint file it writes (skipped, not erred, when the target isn't inside a git repo). Usage: same as `/checkpoint`. |
-| `/resume` | Reload a checkpoint, rebuild the TaskList via TaskCreate, restate the goal as a copy-paste line, surface open questions. Usage: `/resume` (most recent), `/resume <name>` (exact or prefix), `/resume --list` (browse without restoring). |
+| `/checkpoint` | Persist current session state (active `/goal`, TaskList with `blockedBy`, recent decisions, open questions, repo state) to a markdown file under `docs/checkpoints/` of the repository's main folder; refuses in a linked worktree. Usage: `/checkpoint` (auto-timestamped) or `/checkpoint <name>` (named, re-runs overwrite). |
+| `/ccheckpoint` | Same as `/checkpoint`, plus a local `git commit` of the checkpoint file it writes (skipped wherever `/checkpoint` refuses; never a push). Usage: same as `/checkpoint`. |
+| `/resume` | Reload a checkpoint (main folder only, like `/checkpoint`), rebuild the TaskList via TaskCreate, restate the goal as a copy-paste line, surface open questions. Usage: `/resume` (most recent), `/resume <name>` (exact or prefix), `/resume --list` (browse without restoring). |
 | `/checkpoint-prune` | Delete checkpoints. Arg auto-detected: `<name>` (one file), `14d`/`48h` (older than), bare number (keep last N), no arg (all). Confirms before batch deletes; `--dry` reports only. Usage: `/checkpoint-prune`, `/checkpoint-prune 14d`, `/checkpoint-prune 10`, `/checkpoint-prune <name>`. |
 | `/triage` | TaskList hygiene — flag stale `in_progress`, orphan blockers, dead-end chains, trivial sibling clusters, completed clutter, duplicate subjects. Advisory by default; asks before mutating. Usage: `/triage` or `/triage --dry`. |
 | `/checkpoint-watch` | Per-project Stop hook that shows a one-time `[hint]` when context hits 90%, suggesting `/checkpoint`. `/checkpoint-watch --off` to remove, `--status` to inspect. |
@@ -550,7 +573,8 @@ switches, and long pauses. The flow:
 ```bash
 # In a session, before a context compact or before stepping away:
 /checkpoint pre-refactor       # writes docs/checkpoints/pre-refactor.md
-                               # (refuses outside a git repo — never a shared global path)
+                               # (main folder only: refuses outside a git repo
+                               #  or in a linked worktree)
 
 # Iteratively update the same named checkpoint as work progresses:
 /checkpoint pre-refactor       # overwrites the same file
@@ -607,7 +631,8 @@ sentinel-tagged entry.
 
 What `/resume` does:
 
-1. Locates the checkpoint directory (repo-local first, `~/.claude/` fallback).
+1. Locates `docs/checkpoints/` of the repository's main folder (no
+   `~/.claude/` fallback); refuses in a linked worktree.
 2. With `--list`: prints a table (name, size, mtime, title) and stops.
 3. Otherwise resolves the target file by exact-match or prefix-match
    (ambiguous prefix → asks, never silently picks).
@@ -855,7 +880,7 @@ cc-arch-hands/
 │   ├── cli-info.js              # `cah version` and `cah models --json`
 │   ├── sentinel.js              # new + legacy markers, ownership classifier
 │   ├── scope.js                 # global vs local target dir resolution
-│   ├── templates.js             # bundled / disk template abstraction
+│   ├── templates.js             # bundled / disk template abstraction + shared includes
 │   ├── fsutil.js                # readFileMaybe + orphan-prune helpers
 │   ├── fs-atomic-identity.js    # exact filesystem identity and snapshot helpers
 │   ├── fs-atomic-publication.js # generation-fenced no-overwrite publication
@@ -874,6 +899,7 @@ cc-arch-hands/
 ├── templates/
 │   ├── skills/                  # Claude Code skill templates
 │   │   └── <name>/SKILL.md
+│   ├── shared/                  # harness-neutral fragments pulled in by {{include:<name>}}
 │   └── codex-skills/            # cli-run, checkpoint, ccheckpoint, resume
 ├── test/
 │   ├── installer.test.js        # installer tests (node:test + node:assert)
