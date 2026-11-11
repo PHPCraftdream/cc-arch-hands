@@ -532,7 +532,7 @@ Reusable capability packs Claude Code loads on demand. Each is invoked as
 
 | Skill | Purpose |
 |---|---|
-| `/checkpoint` | Persist current session state (active `/goal`, TaskList with `blockedBy`, recent decisions, open questions, repo state) to a markdown file under `docs/checkpoints/` of the repository's main folder; refuses in a linked worktree. Usage: `/checkpoint` (auto-timestamped) or `/checkpoint <name>` (named, re-runs overwrite). |
+| `/checkpoint` | Persist current session state (active `/goal`, TaskList with `blockedBy`, recent decisions, open questions, repo state of the main folder and of every linked worktree) to a markdown file under `docs/checkpoints/` of the repository's main folder (also when the session runs in a linked worktree). Usage: `/checkpoint` (auto-timestamped) or `/checkpoint <name>` (named, re-runs overwrite). |
 | `/ccheckpoint` | Same as `/checkpoint`, plus a local `git commit` of the checkpoint file it writes (skipped wherever `/checkpoint` refuses; never a push). Usage: same as `/checkpoint`. |
 | `/resume` | Reload a checkpoint (main folder only, like `/checkpoint`), rebuild the TaskList via TaskCreate, restate the goal as a copy-paste line, surface open questions. Usage: `/resume` (most recent), `/resume <name>` (exact or prefix), `/resume --list` (browse without restoring). |
 | `/checkpoint-prune` | Delete checkpoints. Arg auto-detected: `<name>` (one file), `14d`/`48h` (older than), bare number (keep last N), no arg (all). Confirms before batch deletes; `--dry` reports only. Usage: `/checkpoint-prune`, `/checkpoint-prune 14d`, `/checkpoint-prune 10`, `/checkpoint-prune <name>`. |
@@ -573,8 +573,8 @@ switches, and long pauses. The flow:
 ```bash
 # In a session, before a context compact or before stepping away:
 /checkpoint pre-refactor       # writes docs/checkpoints/pre-refactor.md
-                               # (main folder only: refuses outside a git repo
-                               #  or in a linked worktree)
+                               # (always in the main folder, also from a linked
+                               #  worktree; refuses outside a git repo)
 
 # Iteratively update the same named checkpoint as work progresses:
 /checkpoint pre-refactor       # overwrites the same file
@@ -632,7 +632,7 @@ sentinel-tagged entry.
 What `/resume` does:
 
 1. Locates `docs/checkpoints/` of the repository's main folder (no
-   `~/.claude/` fallback); refuses in a linked worktree.
+   `~/.claude/` fallback); from a linked worktree it reads the main folder's.
 2. With `--list`: prints a table (name, size, mtime, title) and stops.
 3. Otherwise resolves the target file by exact-match or prefix-match
    (ambiguous prefix → asks, never silently picks).

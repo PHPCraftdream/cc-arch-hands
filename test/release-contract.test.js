@@ -260,8 +260,12 @@ describe('release and generated-doc contracts', () => {
       'git rev-parse --path-format=absolute --show-toplevel --git-dir --git-common-dir',
     ]);
     assert.match(MAIN_FOLDER_FRAGMENT, /fails or prints nothing → not a Git repository: refuse and stop/i);
-    assert.match(MAIN_FOLDER_FRAGMENT, /differs from line 3 \(`--git-common-dir`\) → linked worktree: refuse and stop/);
-    assert.match(MAIN_FOLDER_FRAGMENT, /carried into the main folder first, together with all its changes, and the checkpoint is then made there/);
+    assert.match(MAIN_FOLDER_FRAGMENT, /main folder \(its main worktree\) is the reference point for everything/);
+    assert.match(MAIN_FOLDER_FRAGMENT, /equals line 3 \(`--git-common-dir`\) → the caller is in the main folder/);
+    assert.match(MAIN_FOLDER_FRAGMENT, /linked worktree \(line 1\): `<repo-root>` is the parent directory of line 3/);
+    assert.match(MAIN_FOLDER_FRAGMENT, /Do not refuse, and do not move, merge or change anything in any worktree/);
+    assert.match(MAIN_FOLDER_FRAGMENT, /git -C <repo-root> worktree list/);
+    assert.match(MAIN_FOLDER_FRAGMENT, /for every linked worktree, its path, branch/);
     assert.match(MAIN_FOLDER_FRAGMENT, /Never create or enter a worktree for a checkpoint/);
     assert.match(MAIN_FOLDER_FRAGMENT, /any other path shared across projects\/agents/);
     assert.doesNotMatch(MAIN_FOLDER_FRAGMENT, /~\/\.claude|TaskList|todo/, 'the shared rule stays harness-neutral');
@@ -269,12 +273,13 @@ describe('release and generated-doc contracts', () => {
       assert.ok(installed(kind, name, leaf).includes(MAIN_FOLDER_FRAGMENT), `${kind}/${name}`);
     }
     assert.match(CHECKPOINT_SKILL, /Invoke `Skill\('checkpoint'/);
-    assert.match(CHECKPOINT_SKILL, /Never enter a worktree\s+to make it pass/);
+    assert.match(CHECKPOINT_SKILL, /git -C "<repo-root>" add/);
+    assert.match(CHECKPOINT_SKILL, /never enter a worktree for this/);
     assert.match(RESUME_SKILL, /Exact filename match \(with or without `\.md`\): take it/);
     assert.match(RESUME_SKILL, /sort every `\.md` in the directory by filesystem mtime descending/);
   });
 
-  it('the main-folder check tells the main folder on any branch from a linked worktree', () => {
+  it('the main-folder check finds the main folder on any branch and from a linked worktree', () => {
     const repo = makeCheckpointRepo('cah-checkpoint-guard-');
     const linked = mkdtempSync(join(tmpdir(), 'cah-checkpoint-guard-linked-'));
     rmSync(linked, { recursive: true, force: true });
@@ -293,8 +298,8 @@ describe('release and generated-doc contracts', () => {
       assert.equal(side.status, 0, side.stderr);
       const [linkedTop, linkedGitDir, linkedCommonDir] = lines(side);
       assert.equal(samePath(linkedTop, linked), true);
-      assert.notEqual(linkedGitDir, linkedCommonDir, 'a linked worktree is refused');
-      assert.equal(samePath(dirname(linkedCommonDir), repo), true, 'the refusal can name the main folder');
+      assert.notEqual(linkedGitDir, linkedCommonDir, 'a linked worktree has its own git dir');
+      assert.equal(samePath(dirname(linkedCommonDir), repo), true, 'the main folder is the parent of the common dir');
 
       const outside = mkdtempSync(join(tmpdir(), 'cah-checkpoint-guard-outside-'));
       try {

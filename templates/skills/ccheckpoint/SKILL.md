@@ -1,6 +1,6 @@
 ---
 name: ccheckpoint
-description: "Same as /checkpoint (main folder only, never a linked worktree), plus a local commit of just the checkpoint file it writes."
+description: "Same as /checkpoint (checkpoint kept in the repository's main folder, also when run from a linked worktree), plus a local commit of just the checkpoint file it writes."
 ---
 
 # ccheckpoint
@@ -18,22 +18,23 @@ with ordinary Git commands. Never push.
 ## Behavior
 
 1. Invoke `Skill('checkpoint', <the same argument, or none>)` from the same
-   caller working directory. If it refused (not a Git repository, or a linked
-   worktree), relay that and stop: nothing to commit. Never enter a worktree
-   to make it pass.
+   caller working directory. If it refused (not a Git repository), relay that
+   and stop: nothing to commit. In a linked worktree it still writes into the
+   main folder, so continue; never enter a worktree for this.
 2. Take the basename of the reported path, as data. It must match
    `^[a-z0-9]+(?:-[a-z0-9]+)*\.md$` and the file must be
    `<repo-root>/docs/checkpoints/<basename>`, with `<repo-root>` the main
    folder `/checkpoint` resolved. Its stem is `NAME`.
-3. Commit only that file: separate short Bash calls from the caller working
-   directory, `NAME` replaced by the stem. `:(top)` addresses the path from the
-   repository root, so this works from any subdirectory:
+3. Commit only that file in the main folder: separate short Bash calls,
+   `NAME` replaced by the stem, `<repo-root>` by the main folder's absolute
+   path (quoted). `-C` runs Git there even when the session is in a worktree;
+   `:(top)` addresses the path from the repository root:
 
    ```bash
-   git status --porcelain -- ':(top)docs/checkpoints/NAME.md'
-   git add -- ':(top)docs/checkpoints/NAME.md'
-   git commit --only -m 'checkpoint: NAME' -- ':(top)docs/checkpoints/NAME.md'
-   git rev-parse --short HEAD
+   git -C "<repo-root>" status --porcelain -- ':(top)docs/checkpoints/NAME.md'
+   git -C "<repo-root>" add -- ':(top)docs/checkpoints/NAME.md'
+   git -C "<repo-root>" commit --only -m 'checkpoint: NAME' -- ':(top)docs/checkpoints/NAME.md'
+   git -C "<repo-root>" rev-parse --short HEAD
    ```
 
    - Empty `git status` output → the file already matches `HEAD`: report
@@ -41,6 +42,7 @@ with ordinary Git commands. Never push.
    - `git add` says the path is ignored → report "not committed:
      docs/checkpoints/ is ignored". Never use `git add -f`.
    - Add the active commit-attribution trailers with an extra `-m`.
+   - From a worktree the commit lands on the branch checked out in the main folder; say so in the report.
    - `git commit --only` commits just this path; everything else stays staged
      as it was.
 

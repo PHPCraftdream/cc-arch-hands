@@ -71,19 +71,19 @@ describe('Codex ccheckpoint commit helper', () => {
     assert.equal(commit(outside, 'session.md', env).data.status, 'skipped');
   });
 
-  it('refuses a linked worktree and points at the main folder', (t) => {
+  it('run from a linked worktree, commits the file in the main folder only', (t) => {
     const dir = repo(t);
     const linked = join(dir, 'linked worktree');
     git(dir, 'worktree', 'add', '--detach', linked);
-    mkdirSync(join(linked, 'docs', 'checkpoints'), { recursive: true });
-    writeFileSync(join(linked, 'docs', 'checkpoints', 'linked.md'), '# linked\n');
-    const head = git(linked, 'rev-parse', 'HEAD');
+    writeFileSync(join(dir, 'docs', 'checkpoints', 'linked.md'), '# linked\n');
+    const linkedHead = git(linked, 'rev-parse', 'HEAD');
     const result = commit(linked, 'linked.md');
     assert.equal(result.exit, 0, result.stderr);
-    assert.equal(result.data.status, 'skipped');
-    assert.match(result.data.reason, /^linked worktree: carry its work into the main folder /);
-    assert.equal(git(linked, 'rev-parse', 'HEAD'), head);
-    assert.equal(git(linked, 'status', '--porcelain', '--', 'docs/checkpoints/linked.md'), '?? docs/checkpoints/linked.md');
+    assert.equal(result.data.status, 'committed');
+    assert.equal(git(dir, 'show', '-s', '--format=%s', 'HEAD'), 'checkpoint: linked');
+    assert.equal(git(dir, 'show', '--name-only', '--format=', 'HEAD'), 'docs/checkpoints/linked.md');
+    assert.equal(git(linked, 'rev-parse', 'HEAD'), linkedHead, 'the worktree HEAD is untouched');
+    assert.equal(existsSync(join(linked, 'docs', 'checkpoints', 'linked.md')), false, 'nothing is written into the worktree');
   });
 
   it('commits from a subdirectory of the main folder on any branch', (t) => {

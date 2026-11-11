@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Checkpoints are made, read and committed only in the repository's main folder, for every harness: Claude `/checkpoint`, `/ccheckpoint`, `/resume`; Codex `$checkpoint`, `$ccheckpoint`, `$resume`; OpenCode and OMP `/checkpoint`, `/ccheckpoint`, `/checkpoint-resume`. In a linked worktree they refuse and say the worktree's work has to be carried into the main folder first, with all its changes, and checkpointed there; they never create or enter a worktree. The branch is not restricted. The shared commit helper (`commit-checkpoint.mjs`) enforces the same rule in code and skips a linked worktree. The Claude skill texts were also tightened without dropping rules.
+- Checkpoints are made, read and committed only in the repository's main folder, for every harness: Claude `/checkpoint`, `/ccheckpoint`, `/resume`; Codex `$checkpoint`, `$ccheckpoint`, `$resume`; OpenCode and OMP `/checkpoint`, `/ccheckpoint`, `/checkpoint-resume`. Run from a linked worktree they write, read and commit in the main folder by absolute path (the main folder is the reference point: the repo state is taken from it and lists every linked worktree with its branch, status, last commit and what is done there) and never create or enter a worktree. The branch is not restricted. The shared commit helper (`commit-checkpoint.mjs`) resolves the main folder in code and commits there, also when run from a linked worktree. The Claude skill texts were also tightened without dropping rules.
 
 ### Added
 

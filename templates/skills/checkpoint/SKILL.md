@@ -1,6 +1,6 @@
 ---
 name: checkpoint
-description: "Persist session state — summary, active goal, TaskList with blockedBy, recent decisions, open questions, repo state — to docs/checkpoints/ in the repository's main folder (never a linked worktree). Use before auto-compact, a long pause, or a machine switch. Pairs with /resume."
+description: "Persist session state — summary, active goal, TaskList with blockedBy, recent decisions, open questions, repo state — to docs/checkpoints/ in the repository's main folder (also when run from a linked worktree). Use before auto-compact, a long pause, or a machine switch. Pairs with /resume."
 ---
 
 # checkpoint
@@ -27,7 +27,7 @@ Names are slugs (lowercase, hyphens, no spaces); `/resume pre-refactor` finds it
    - **TaskList** — call TaskList; record `id`, `status`, `subject`, `blockedBy`. Order: in_progress, pending, completed (latest 10), deleted as a count only.
    - **Decisions** — up to 5 recent material ones: what was chosen, what was rejected. None clearly visible → skip, never invent.
    - **Open questions** — unresolved items flagged as needing user input.
-   - **Repo state** — `git status --short` and `git log --oneline -5`.
+   - **Repo state** — as described above: the main folder first, then every linked worktree and what is done there.
 3. **Write** the file:
 
    ```markdown
@@ -54,12 +54,15 @@ Names are slugs (lowercase, hyphens, no spaces); `/resume pre-refactor` finds it
    - …
 
    ## Repo state
+   ### main folder <repo-root> [<branch>]
    ```
    <git status>
    ```
    ```
    <git log -5>
    ```
+   ### worktrees
+   - <path> [<branch>] — <what is done there>; <status: clean / N changed>; last <sha subject>  (this session)
    ```
 
 4. **Report** one line with the absolute path. Do not add the file to git.

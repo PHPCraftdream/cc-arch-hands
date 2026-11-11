@@ -1,6 +1,6 @@
 ---
 name: resume
-description: "Read the latest (or named) checkpoint written by /checkpoint from the repository's main folder (never a linked worktree), rebuild the TaskList via TaskCreate, restate the active goal, and surface open questions. Use after auto-compact, after a pause, or when starting a fresh session on the same work."
+description: "Read the latest (or named) checkpoint written by /checkpoint from the repository's main folder (also when run from a linked worktree), rebuild the TaskList via TaskCreate, restate the active goal, and surface open questions. Use after auto-compact, after a pause, or when starting a fresh session on the same work."
 ---
 
 # resume
@@ -30,4 +30,4 @@ The other half of `/checkpoint`: load a snapshot, restore what is missing, keep 
 5. **Restore tasks — decide yourself, never ask.** Call TaskList. TaskCreate only the snapshot's unfinished tasks whose `subject` is not already live, then set their `blockedBy` by `subject` match (IDs differ). Leave live tasks untouched. Nothing missing → one line "TaskList already up to date".
 6. **Goal:** if saved, print it as a fenced `/goal <text>` line for the user to paste; never set it yourself.
 7. **Print open questions and decisions** as short bullet lists.
-8. **Continue the work in this same turn**, here in the main folder: keep the `in_progress` task or start the lowest-id ready one. Ask only if an open question blocks every ready task.
+8. **Continue the work in this same turn**, in the folder the checkpoint names for it (the main folder or a listed worktree): keep the `in_progress` task or start the lowest-id ready one. Ask only if an open question blocks every ready task.
