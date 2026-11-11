@@ -20,7 +20,7 @@ Names are slugs (lowercase, hyphens, no spaces); `/resume pre-refactor` finds it
 
 ## Behavior
 
-1. **Guard** as above. Target: `<repo-root>/docs/checkpoints/<name>.md`, else `YYYY-MM-DD-HHMM.md`.
+1. **Guard** as above. Target: `<name>.md`, else `YYYY-MM-DD-HHMM.md`, in the checkpoint directory: `<repo-root>/docs/checkpoints/`, or the worktree fallback above.
 2. **Collect** (omit an absent item silently):
    - **Session summary** — 5–15 sentences in your own words: what the user is working on, what is done, what is in flight, live hypotheses, inspected files/URLs, active /loop or /babysit timers. This is what survives compact: write it for a stranger. Uncertain → say "unclear", don't smooth it over.
    - **Active goal** — a `/goal` Stop hook's condition, verbatim.

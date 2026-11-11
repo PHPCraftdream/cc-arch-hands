@@ -45,11 +45,15 @@ function run(name) {
   if (!top) return { status: 'skipped', reason: 'caller is outside a Git repository' };
   // Git older than 2.31 echoes the unknown --path-format option instead of failing.
   if (lines.length !== 3 || top.startsWith('--')) throw new Error('Git 2.31 or newer is required');
-  // Checkpoints live only in the main folder; from a linked worktree (own git dir) work there.
+  // Checkpoints live in the main folder; from a linked worktree (own git dir) work there,
+  // unless the session was confined to its worktree and wrote the checkpoint there instead.
   const common = realpathSync(commonDir);
   const linked = realpathSync(gitDir) !== common;
-  const root = linked ? dirname(common) : realpathSync(top);
-  if (linked) {
+  const own = realpathSync(top);
+  const fallback = linked && !existsSync(join(dirname(common), 'docs', 'checkpoints', name))
+    && existsSync(join(own, 'docs', 'checkpoints', name));
+  const root = linked && !fallback ? dirname(common) : own;
+  if (linked && !fallback) {
     let mainTop;
     try { mainTop = git(['rev-parse', '--show-toplevel'], root); } catch { mainTop = null; }
     if (!mainTop || realpathSync(mainTop) !== root) {

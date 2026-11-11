@@ -7,7 +7,7 @@ Arguments: $@
 
 OMP's built-in /resume switches sessions; this command instead restores checkpoint context.
 
-1. Run the Main folder only check below; stop if it refuses. Read only <repo-root>/docs/checkpoints/. Reject path traversal and checkpoints redirected outside that directory.
+1. Run the Main folder only check below; stop if it refuses. Read only the checkpoint directories its Reading checkpoints part names. Reject path traversal and checkpoints redirected outside those directories.
 2. --list lists Markdown checkpoints by filesystem mtime descending, with name, size and title; stop without restoring. Otherwise choose the most recently modified checkpoint without arguments, or prefer an exact name (with or without .md), then a unique prefix. Ask on ambiguous matches; report absence without inventing state.
 3. Read the chosen file and lead with its Session summary. Show unresolved questions, decisions, goal and any age warning (>7 days). Accept both Tasks and older TaskList sections.
 4. Call todo with op: view. Decide yourself, never ask how to merge: keep every live task unchanged and append only the unfinished saved items whose content is not already in the plan (todo init only when the plan is empty), in named phases, using unique stable verbatim contents. Preserve the saved order, strategy and dependencies in the plan/context. Reapply blocked status and its reason with todo block. Do not resurrect completed or abandoned tasks. OMP auto-selects one active item; do not pretend that it supports concurrent in_progress entries or Claude blockedBy IDs.

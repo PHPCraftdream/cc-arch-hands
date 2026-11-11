@@ -632,7 +632,7 @@ sentinel-tagged entry.
 What `/resume` does:
 
 1. Locates `docs/checkpoints/` of the repository's main folder (no
-   `~/.claude/` fallback); from a linked worktree it reads the main folder's.
+   `~/.claude/` fallback) plus `docs/checkpoints/` of every linked worktree, where a session confined to its worktree leaves a fallback checkpoint.
 2. With `--list`: prints a table (name, size, mtime, title) and stops.
 3. Otherwise resolves the target file by exact-match or prefix-match
    (ambiguous prefix → asks, never silently picks).

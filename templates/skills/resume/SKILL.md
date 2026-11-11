@@ -20,9 +20,9 @@ The other half of `/checkpoint`: load a snapshot, restore what is missing, keep 
 
 ## Behavior
 
-1. **Guard** as above; read only `<repo-root>/docs/checkpoints/`.
-2. **`--list`:** print name, size, mtime and first-line title, newest first. Stop.
-3. **Pick the file.** No argument: sort every `.md` in the directory by filesystem mtime descending, take the first. With an argument:
+1. **Guard** as above; read the checkpoint directories named under Reading checkpoints.
+2. **`--list`:** print folder, name, size, mtime and first-line title, newest first. Stop.
+3. **Pick the file.** No argument: sort every `.md` in those directories by filesystem mtime descending, take the first. With an argument:
    - Exact filename match (with or without `.md`): take it.
    - Otherwise prefix match; several → list them and ask.
    - None → say so and stop. Never invent state.

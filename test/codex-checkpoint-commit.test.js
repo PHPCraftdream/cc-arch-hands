@@ -86,6 +86,20 @@ describe('Codex ccheckpoint commit helper', () => {
     assert.equal(existsSync(join(linked, 'docs', 'checkpoints', 'linked.md')), false, 'nothing is written into the worktree');
   });
 
+  it('commits a fallback checkpoint in the worktree when the main folder has none', (t) => {
+    const dir = repo(t);
+    const linked = join(dir, 'confined worktree');
+    git(dir, 'worktree', 'add', '-q', '-b', 'confined', linked);
+    mkdirSync(join(linked, 'docs', 'checkpoints'), { recursive: true });
+    writeFileSync(join(linked, 'docs', 'checkpoints', 'confined.md'), '# confined\n');
+    const mainHead = git(dir, 'rev-parse', 'HEAD');
+    const result = commit(linked, 'confined.md');
+    assert.equal(result.exit, 0, result.stderr);
+    assert.equal(result.data.status, 'committed');
+    assert.equal(git(linked, 'show', '-s', '--format=%s', 'HEAD'), 'checkpoint: confined');
+    assert.equal(git(dir, 'rev-parse', 'HEAD'), mainHead, 'the main folder branch is untouched');
+  });
+
   it('commits from a subdirectory of the main folder on any branch', (t) => {
     const dir = repo(t);
     git(dir, 'switch', '-q', '-c', 'feature');

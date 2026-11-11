@@ -5,7 +5,7 @@ description: Create a project checkpoint and commit only that checkpoint locally
 
 # Ccheckpoint
 
-Follow the sibling `checkpoint` skill with the same optional name, from the same caller working directory. If it refuses or cannot produce a file, stop without a commit. The skill must produce `<repo-root>/docs/checkpoints/<safe-name>.md`; never accept a path outside that directory.
+Follow the sibling `checkpoint` skill with the same optional name, from the same caller working directory. If it refuses or cannot produce a file, stop without a commit. The skill must produce `<safe-name>.md` in the checkpoint directory it picked (the main folder's `docs/checkpoints/`, or the worktree's on the fallback); never accept a path outside that directory.
 
 After writing the checkpoint, invoke `node <this-skill-directory>/scripts/commit-checkpoint.mjs --name <safe-name>.md` from the caller's original working directory. Pass only the basename, never the user label or reported absolute path as shell source. The helper resolves the main folder (also from a linked worktree) and validates the repository and filename, skips when the checkpoint path is staged or another Git operation is active, commits through an isolated index, and leaves unrelated staged changes alone. It performs a local commit only; never push.
 

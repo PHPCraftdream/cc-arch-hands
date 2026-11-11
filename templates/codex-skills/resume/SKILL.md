@@ -5,7 +5,7 @@ description: Restore context from a project-scoped checkpoint written by checkpo
 
 # Resume
 
-Run the main-folder check below from the caller's original working directory; stop if it refuses. Read only `<repo-root>/docs/checkpoints/`.
+Run the main-folder check below from the caller's original working directory; stop if it refuses. Read only the checkpoint directories its Reading checkpoints part names.
 
 - `--list`: show each `.md` checkpoint's name, size, modification time, and first-line title, newest first. Stop without restoring.
 - No argument: choose the `.md` file with the newest filesystem modification time, including named checkpoints.

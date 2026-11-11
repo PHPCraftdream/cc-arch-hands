@@ -91,7 +91,7 @@ function mainFolder(cwd) {
 function runCheckpointCommands(cwd, stem = 'state', commands = CHECKPOINT_COMMANDS) {
   const results = [];
   for (const command of commands) {
-    const script = command.replaceAll('NAME', stem).replaceAll('<repo-root>', mainFolder(cwd));
+    const script = command.replaceAll('NAME', stem).replaceAll('<folder>', mainFolder(cwd));
     const result = spawnSync(BASH, ['-c', script], { cwd, encoding: 'utf8' });
     results.push(result);
     if (result.status !== 0) break;
@@ -147,10 +147,10 @@ describe('release and generated-doc contracts', () => {
 
   it('ccheckpoint publishes only ordinary Git commands', () => {
     assert.deepEqual(CHECKPOINT_COMMANDS, [
-      `git -C "<repo-root>" status --porcelain -- ':(top)docs/checkpoints/NAME.md'`,
-      `git -C "<repo-root>" add -- ':(top)docs/checkpoints/NAME.md'`,
-      `git -C "<repo-root>" commit --only -m 'checkpoint: NAME' -- ':(top)docs/checkpoints/NAME.md'`,
-      'git -C "<repo-root>" rev-parse --short HEAD',
+      `git -C "<folder>" status --porcelain -- ':(top)docs/checkpoints/NAME.md'`,
+      `git -C "<folder>" add -- ':(top)docs/checkpoints/NAME.md'`,
+      `git -C "<folder>" commit --only -m 'checkpoint: NAME' -- ':(top)docs/checkpoints/NAME.md'`,
+      'git -C "<folder>" rev-parse --short HEAD',
     ]);
     assert.match(CHECKPOINT_SKILL, /\^\[a-z0-9\]\+\(\?:-\[a-z0-9\]\+\)\*\\\.md\$/,
       'the basename rule keeps NAME a plain slug inside single quotes');
@@ -297,6 +297,9 @@ describe('release and generated-doc contracts', () => {
     assert.match(MAIN_FOLDER_FRAGMENT, /From the caller's directory run `git worktree list --porcelain`/);
     assert.match(MAIN_FOLDER_FRAGMENT, /Never work around such a refusal/);
     assert.match(MAIN_FOLDER_FRAGMENT, /"not readable from this session"/);
+    assert.match(MAIN_FOLDER_FRAGMENT, /the checkpoint directory becomes `<worktree>\/docs\/checkpoints\/`/);
+    assert.match(MAIN_FOLDER_FRAGMENT, /carry this file into <repo-root>\/docs\/checkpoints\//);
+    assert.match(MAIN_FOLDER_FRAGMENT, /for every linked worktree that `git worktree list --porcelain` lists, its `docs\/checkpoints\/`/);
     assert.match(MAIN_FOLDER_FRAGMENT, /Never create or enter a worktree for a checkpoint/);
     assert.match(MAIN_FOLDER_FRAGMENT, /any other path shared across projects\/agents/);
     assert.doesNotMatch(MAIN_FOLDER_FRAGMENT, /~\/\.claude|TaskList|todo/, 'the shared rule stays harness-neutral');
@@ -304,8 +307,8 @@ describe('release and generated-doc contracts', () => {
       assert.ok(installed(kind, name, leaf).includes(MAIN_FOLDER_FRAGMENT), `${kind}/${name}`);
     }
     assert.match(CHECKPOINT_SKILL, /Invoke `Skill\('checkpoint'/);
-    assert.match(CHECKPOINT_SKILL, /git -C "<repo-root>" add/);
-    assert.match(CHECKPOINT_SKILL, /never enter a worktree for this/);
+    assert.match(CHECKPOINT_SKILL, /git -C "<folder>" add/);
+    assert.match(CHECKPOINT_SKILL, /Never enter a worktree for this/);
     assert.match(CHECKPOINT_SKILL, /not committed: this session is confined to its\s+worktree/);
     assert.match(RESUME_SKILL, /Exact filename match \(with or without `\.md`\): take it/);
     assert.match(RESUME_SKILL, /sort every `\.md` in the directory by filesystem mtime descending/);
