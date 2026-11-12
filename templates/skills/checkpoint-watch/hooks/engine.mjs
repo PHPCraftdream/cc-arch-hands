@@ -2,6 +2,8 @@
 // in a project that enabled it, stop the agent, run /checkpoint, compact the
 // session, then /resume the checkpoint. Every prompt that would wake the
 // session meanwhile is held (dropped) and written into the checkpoint.
+// The same cycle also starts after N minutes of silence (`cahCheckpointIdle`,
+// local file over user file) once the context holds at least 200k tokens.
 // Pure logic: all I/O goes through the `$` each hook receives. Claude Code's
 // validator follows `$` only into top-level functions, so the engine state `w`
 // is passed explicitly instead of closed over.
@@ -18,6 +20,13 @@ export const HELD_TEXT_LIMIT = 50_000;
 // 1 h cache TTL) and reaches mods as trigger `auto`, like the threshold one.
 export const IDLE_MIN_MS = 30 * 60_000;
 export const IDLE_SKIP_REASON = 'checkpoint-watch: saving a checkpoint first; the session compacts right after it';
+export const IDLE_KEY = 'cahCheckpointIdle';
+export const IDLE_DEFAULT_MINUTES = 30;
+export const IDLE_MIN_MINUTES = 5;
+// Under Claude Code's own idle compaction (~54 min), so the checkpoint comes first.
+export const IDLE_MAX_MINUTES = 50;
+// Claude Code's own floor for compacting an idle session.
+export const IDLE_MIN_TOKENS = 200_000;
 const QUEUED_MEMORY = 50;
 // No checkpoint name in here: a turn that names it is taken for the cycle's own.
 export const COMPACT_INSTRUCTIONS = 'cah checkpoint-watch: the session state was just saved to a checkpoint '
@@ -38,6 +47,30 @@ const ORIGIN_LABELS = Object.freeze({
 export function modeOf(settings) {
   const mode = settings?.[SETTINGS_KEY]?.mode;
   return MODES.includes(mode) ? mode : null;
+}
+
+// undefined: the file says nothing about it (the next one decides);
+// null: switched off; else { mode, minutes }.
+export function idleOf(settings) {
+  const value = settings?.[IDLE_KEY];
+  if (!value || typeof value !== 'object') return undefined;
+  if (value.mode === 'off') return null;
+  if (!MODES.includes(value.mode)) return undefined;
+  const asked = value.minutes === null || value.minutes === '' ? NaN : Math.round(Number(value.minutes));
+  const minutes = Number.isFinite(asked)
+    ? Math.min(IDLE_MAX_MINUTES, Math.max(IDLE_MIN_MINUTES, asked)) : IDLE_DEFAULT_MINUTES;
+  return { mode: value.mode, minutes };
+}
+
+// The project's local file wins over the user's: a local `off` switches a global setting off.
+export async function idleConfig($) {
+  for (const source of ['local', 'user']) {
+    let settings;
+    try { settings = await $.settings.read({ source }); } catch { continue; }
+    const found = idleOf(settings);
+    if (found !== undefined) return found;
+  }
+  return null;
 }
 
 const pad = (n) => String(n).padStart(2, '0');
@@ -133,6 +166,11 @@ export function createWatchState({ threshold = THRESHOLD, limitMs = CYCLE_LIMIT_
     mainTurn: null,
     // When the last main-loop turn ended; null until one ends in this process.
     lastTurnEnd: null,
+    // The silence timer; idleSeq voids a timer whose settings read is still pending.
+    idleTimer: null,
+    idleSeq: 0,
+    // A cycle that the silence timer started failed: no new one until the context shrinks.
+    idleBlocked: false,
     cycle: null,
     // Prompts queued behind a running turn, by text: a held turn they start gets their origin.
     queued: new Map(),
@@ -163,6 +201,7 @@ function fail(w, $, reason, c) {
   w.cycle = null;
   c.timer?.cancel?.();
   w.suppressed = true;
+  if (c.trigger === 'idle') w.idleBlocked = true;
   say($, `stopped: ${reason}`);
   if (c.held.length === 0) return;
   const text = `checkpoint-watch stopped (${reason}). These events arrived while it ran and `
@@ -170,11 +209,13 @@ function fail(w, $, reason, c) {
   $.prompt.submit({ text }).catch(() => {});
 }
 
-function start(w, $, mode, abortTurn, why = `context reached ${w.threshold}%`) {
+function start(w, $, mode, abortTurn, why = `context reached ${w.threshold}%`, trigger = 'threshold') {
+  disarmIdle(w);
   const c = {
     phase: abortTurn ? 'stopping' : 'queued',
     name: checkpointName(Date.now()),
     mode,
+    trigger,
     held: [],
     ownTurn: null,
     file: null,
@@ -209,12 +250,49 @@ export function idleNow(w, now = Date.now()) {
 // Idle compaction in a project that turned the watch on: veto it and run the
 // cycle instead, whose own compaction (trigger `plugin`) follows the checkpoint.
 export async function idleCompact(w, $, e, next) {
-  if (e.agentId !== undefined || w.cycle || !idleNow(w)) return next(e);
+  if (e.agentId !== undefined || w.cycle || w.idleBlocked || !idleNow(w)) return next(e);
   let mode;
-  try { mode = modeOf(await $.settings.read({ source: 'local' })); } catch { return next(e); }
+  try {
+    mode = modeOf(await $.settings.read({ source: 'local' })) ?? (await idleConfig($))?.mode ?? null;
+  } catch { return next(e); }
   if (!mode || w.cycle || !idleNow(w)) return next(e);
-  start(w, $, mode, false, 'idle compaction is due');
+  start(w, $, mode, false, 'idle compaction is due', 'idle');
   return { skip: IDLE_SKIP_REASON };
+}
+
+function disarmIdle(w) {
+  w.idleSeq += 1;
+  w.idleTimer?.cancel?.();
+  w.idleTimer = null;
+}
+
+async function inGitRepo($) {
+  try { return (await $.process.run(['git', 'rev-parse', '--show-toplevel'])).exitCode === 0; } catch { return false; }
+}
+
+// Armed when a main-loop turn ends; the next turn or a cycle disarms it.
+export async function armIdle(w, $) {
+  disarmIdle(w);
+  const seq = w.idleSeq;
+  const config = await idleConfig($);
+  if (!config || seq !== w.idleSeq || w.cycle || w.mainTurn !== null) return;
+  const timer = $.clock.after(config.minutes * 60_000, () => {
+    Promise.resolve().then(() => idleFire(w, $, timer)).catch(() => {});
+  });
+  w.idleTimer = timer;
+}
+
+async function idleFire(w, $, timer) {
+  if (w.idleTimer !== timer) return;
+  w.idleTimer = null;
+  const config = await idleConfig($);
+  if (!config || w.cycle || w.mainTurn !== null) return;
+  let tokens;
+  try { tokens = (await $.session.usage()).context?.tokens; } catch { return; }
+  if (typeof tokens !== 'number' || tokens < IDLE_MIN_TOKENS) { w.idleBlocked = false; return; }
+  if (w.idleBlocked || !(await inGitRepo($))) return;
+  if (w.cycle || w.mainTurn !== null) return;
+  start(w, $, config.mode, false, `silent for ${config.minutes} min`, 'idle');
 }
 
 async function compact(w, $, c, attempt) {
@@ -255,6 +333,7 @@ function commitLater($, c) {
 // Runs as the /resume turn starts, before the model reads the checkpoint.
 async function finish(w, $, c) {
   w.cycle = null;
+  w.idleBlocked = false;
   c.timer?.cancel?.();
   const notes = [];
   if (c.held.length) {
@@ -315,6 +394,7 @@ export function registerCheckpointWatch(on, options = {}) {
   on('turn.start', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e);
     w.mainTurn = e.turnId;
+    disarmIdle(w);
     const c = w.cycle;
     let stray = false;
     if (c) {
@@ -358,6 +438,7 @@ export function registerCheckpointWatch(on, options = {}) {
     } else if (!c && e.reason === 'answer') {
       check(w, $, false).catch(() => {});
     }
+    if (!w.cycle) armIdle(w, $).catch(() => {});
     return result;
   });
 

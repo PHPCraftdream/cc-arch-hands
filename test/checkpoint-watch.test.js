@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import {
   registerCheckpointWatch, checkpointName, renderEvents, heldSection, findCheckpoint, ownTurn,
   COMPACT_INSTRUCTIONS, COMPACT_TRIES, COMPACT_RETRY_MS, DROP_REASON, HELD_TEXT_LIMIT,
-  IDLE_MIN_MS, IDLE_SKIP_REASON,
+  IDLE_MIN_MS, IDLE_SKIP_REASON, IDLE_MIN_TOKENS, idleOf,
 } from '../templates/skills/checkpoint-watch/hooks/engine.mjs';
 import { readWatchState, updateWatch, WatchSettingsError } from '../lib/checkpoint-watch.js';
 
@@ -39,6 +39,9 @@ function harness({ mode = 'checkpoint', percent = 95, git = defaultGit } = {}) {
   const calls = { abort: [], command: [], compact: [], submit: [], log: [], process: [], engineCompact: [] };
   const h = {
     percent,
+    tokens: 300_000,
+    // Per-source settings (local, user); a source not listed here reads `settings`.
+    bySource: null,
     settings: mode ? { cahCheckpointWatch: { mode } } : {},
     compact: async () => ({ messages: [], tokensBefore: 900_000, tokensAfter: 20_000 }),
     files, calls, timers,
@@ -46,10 +49,10 @@ function harness({ mode = 'checkpoint', percent = 95, git = defaultGit } = {}) {
   const $ = {
     plugin: { name: PLUGIN },
     session: {
-      usage: async () => ({ context: { percent: h.percent } }),
+      usage: async () => ({ context: { percent: h.percent, tokens: h.tokens } }),
       compact: async (args) => { calls.compact.push(args); return h.compact(args); },
     },
-    settings: { read: async () => h.settings },
+    settings: { read: async (args) => h.bySource?.[args?.source] ?? h.settings },
     turn: { abort: async ({ turnId }) => { calls.abort.push(turnId); } },
     command: {
       run: async (args) => { calls.command.push(args); return { text: '' }; },
@@ -95,6 +98,15 @@ function harness({ mode = 'checkpoint', percent = 95, git = defaultGit } = {}) {
       timer.fn();
     }
     throw new Error('timers never settled');
+  };
+  // The silence timer of `minutes`: fires it by hand (flush(upTo) would also fire the cycle's limit timer).
+  h.silenceTimers = (minutes) => timers.filter((t) => t.ms === minutes * 60_000);
+  h.fireSilence = async (minutes) => {
+    const timer = h.silenceTimers(minutes).find((t) => !t.done);
+    assert.ok(timer, `no live ${minutes}-minute silence timer`);
+    timer.done = true;
+    timer.fn();
+    await h.flush(0);
   };
   return h;
 }
@@ -218,6 +230,178 @@ describe('checkpoint-watch engine: idle compaction', () => {
     await h.emit('session.compact', { trigger: 'auto', messages: [] });
     assert.deepEqual(h.calls.engineCompact, ['auto']);
     assert.equal(h.w.cycle, null);
+  });
+});
+
+describe('checkpoint-watch engine: silence timer', () => {
+  const idleOn = (mode = 'checkpoint', minutes = 30) => ({ cahCheckpointIdle: { mode, minutes } });
+  // One finished answer; the context is below the 90% threshold.
+  async function answer(h, turnId = 'T1') {
+    h.percent = 40;
+    await h.emit('turn.start', { turnId, text: 'explain' });
+    await h.emit('turn.complete', { turnId, reason: 'answer' });
+    await h.flush(0);
+  }
+
+  it('starts the cycle after the configured minutes of silence, then resumes and commits', async () => {
+    const h = harness({ mode: null });
+    h.bySource = { local: idleOn('commit', 20), user: {} };
+    await answer(h);
+    assert.equal(h.silenceTimers(20).length, 1);
+    await h.fireSilence(20);
+    const name = h.w.cycle.name;
+    assert.equal(h.w.cycle.trigger, 'idle');
+    assert.deepEqual(h.calls.abort, []);
+    assert.deepEqual(h.calls.command, [{ command: 'checkpoint', args: name }]);
+    await runCheckpointTurn(h, name);
+    assert.deepEqual(h.calls.compact, [{ instructions: COMPACT_INSTRUCTIONS }]);
+    assert.deepEqual(h.calls.command.at(-1), { command: 'resume', args: name });
+    await h.emit('turn.start', { turnId: 'T4', text: `/resume ${name}` });
+    await h.flush(0);
+    assert.equal(h.w.cycle, null);
+    assert.ok(h.calls.process.some((argv) => argv.includes('commit')));
+    await h.emit('turn.complete', { turnId: 'T4', reason: 'answer' });
+    await h.flush(0);
+    assert.equal(h.silenceTimers(20).filter((t) => !t.done).length, 1, 'it is armed again after /resume');
+  });
+
+  it('arms nothing without a setting', async () => {
+    const h = harness({ mode: 'checkpoint' });
+    await answer(h);
+    assert.deepEqual(h.silenceTimers(30), []);
+    assert.equal(h.w.idleTimer, null);
+  });
+
+  it('a new turn resets the timer, and a stale timer does nothing', async () => {
+    const h = harness({ mode: null });
+    h.bySource = { local: idleOn(), user: {} };
+    await answer(h);
+    const first = h.silenceTimers(30)[0];
+    await h.emit('turn.start', { turnId: 'T2', text: 'more' });
+    assert.equal(first.done, true, 'the new turn cancels it');
+    first.fn();
+    await h.flush(0);
+    assert.equal(h.w.cycle, null, 'a cancelled timer that still runs is ignored');
+    await h.emit('turn.complete', { turnId: 'T2', reason: 'answer' });
+    await h.flush(0);
+    assert.equal(h.silenceTimers(30).filter((t) => !t.done).length, 1);
+  });
+
+  it('needs 200k tokens (inclusive) and no running turn', async () => {
+    const h = harness({ mode: null });
+    h.bySource = { local: idleOn(), user: {} };
+    await answer(h);
+    h.tokens = IDLE_MIN_TOKENS - 1;
+    await h.fireSilence(30);
+    assert.equal(h.w.cycle, null, 'one token short');
+    await answer(h, 'T2');
+    h.tokens = IDLE_MIN_TOKENS;
+    h.w.mainTurn = 'T9';
+    await h.fireSilence(30);
+    assert.equal(h.w.cycle, null, 'a turn is running');
+    h.w.mainTurn = null;
+    await answer(h, 'T3');
+    await h.fireSilence(30);
+    assert.equal(h.w.cycle.trigger, 'idle', 'exactly 200k is enough');
+  });
+
+  it('does nothing outside a Git repository', async () => {
+    const h = harness({
+      mode: null,
+      git: (argv) => (argv.includes('--show-toplevel') && !argv.includes('--git-common-dir')
+        ? { exitCode: 128, stdout: '', stderr: 'fatal: not a git repository' } : defaultGit(argv)),
+    });
+    h.bySource = { local: {}, user: idleOn() };
+    await answer(h);
+    await h.fireSilence(30);
+    assert.equal(h.w.cycle, null);
+    assert.deepEqual(h.calls.command, []);
+  });
+
+  it('the project setting wins over the user one, and a project off mutes it', async () => {
+    const h = harness({ mode: null });
+    h.bySource = { local: idleOn('checkpoint', 15), user: idleOn('commit', 40) };
+    await answer(h);
+    assert.equal(h.silenceTimers(15).length, 1);
+    assert.deepEqual(h.silenceTimers(40), []);
+
+    const g = harness({ mode: null });
+    g.bySource = { local: {}, user: idleOn('commit', 40) };
+    await answer(g);
+    assert.equal(g.silenceTimers(40).length, 1, 'the user setting applies where the project says nothing');
+
+    const m = harness({ mode: null });
+    m.bySource = { local: { cahCheckpointIdle: { mode: 'off' } }, user: idleOn('commit', 40) };
+    await answer(m);
+    assert.deepEqual(m.silenceTimers(40), []);
+    assert.equal(m.w.idleTimer, null);
+  });
+
+  it('reads the setting again when the timer runs out', async () => {
+    const h = harness({ mode: null });
+    h.bySource = { local: idleOn(), user: {} };
+    await answer(h);
+    h.bySource = { local: { cahCheckpointIdle: { mode: 'off' } }, user: {} };
+    await h.fireSilence(30);
+    assert.equal(h.w.cycle, null);
+  });
+
+  it('a failed silence cycle blocks the next one until the context shrinks', async () => {
+    const h = harness({ mode: null });
+    h.bySource = { local: idleOn(), user: {} };
+    await answer(h);
+    await h.fireSilence(30);
+    assert.equal(h.w.cycle.trigger, 'idle');
+    await h.emit('command.run', { command: 'checkpoint-watch-cancel', args: '' });
+    assert.equal(h.w.cycle, null);
+    assert.equal(h.w.idleBlocked, true);
+    const commands = h.calls.command.length;
+    await answer(h, 'T5');
+    await h.fireSilence(30);
+    assert.equal(h.calls.command.length, commands, 'blocked: no second cycle');
+    h.tokens = 10_000;
+    await answer(h, 'T6');
+    await h.fireSilence(30);
+    assert.equal(h.w.idleBlocked, false, 'a small context lifts the block');
+    h.tokens = 300_000;
+    await answer(h, 'T7');
+    await h.fireSilence(30);
+    assert.equal(h.calls.command.length, commands + 1);
+  });
+
+  it('the threshold cycle keeps working beside it and disarms the timer', async () => {
+    const h = harness({ mode: 'checkpoint' });
+    h.bySource = { local: { ...h.settings, ...idleOn() }, user: {} };
+    await answer(h);
+    const timer = h.silenceTimers(30)[0];
+    h.percent = 95;
+    await h.emit('turn.start', { turnId: 'T2', text: 'work' });
+    await h.emit('tool.call', { tool: 'Bash' });
+    await h.flush(0);
+    assert.equal(h.w.cycle.trigger, 'threshold');
+    assert.equal(timer.done, true);
+  });
+
+  it('vetoes Claude Code\'s idle compaction for a project that only has the silence setting', async () => {
+    const h = harness({ mode: null });
+    h.bySource = { local: idleOn('commit'), user: {} };
+    await answer(h);
+    h.w.lastTurnEnd = Date.now() - IDLE_MIN_MS;
+    const out = await h.emit('session.compact', { trigger: 'auto', messages: [] });
+    assert.deepEqual(out, { skip: IDLE_SKIP_REASON });
+    assert.equal(h.w.cycle.mode, 'commit');
+    assert.equal(h.w.cycle.trigger, 'idle');
+  });
+
+  it('idleOf: nothing, off, a mode, clamped minutes', () => {
+    assert.equal(idleOf({}), undefined);
+    assert.equal(idleOf({ cahCheckpointIdle: 'yes' }), undefined);
+    assert.equal(idleOf({ cahCheckpointIdle: { mode: 'sometimes' } }), undefined);
+    assert.equal(idleOf({ cahCheckpointIdle: { mode: 'off', minutes: 10 } }), null);
+    assert.deepEqual(idleOf({ cahCheckpointIdle: { mode: 'commit' } }), { mode: 'commit', minutes: 30 });
+    assert.deepEqual(idleOf({ cahCheckpointIdle: { mode: 'checkpoint', minutes: 2 } }), { mode: 'checkpoint', minutes: 5 });
+    assert.deepEqual(idleOf({ cahCheckpointIdle: { mode: 'checkpoint', minutes: 99 } }), { mode: 'checkpoint', minutes: 50 });
+    assert.deepEqual(idleOf({ cahCheckpointIdle: { mode: 'checkpoint', minutes: '25' } }), { mode: 'checkpoint', minutes: 25 });
   });
 });
 

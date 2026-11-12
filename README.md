@@ -22,7 +22,7 @@ install time.
 The artifacts:
 - **per-model slash-commands** (<!--gen:count:model-commands-->67<!--/gen-->) under `~/.claude/commands/`,
 - **per-model sub-agents** (<!--gen:count:model-commands-->67<!--/gen-->) under `~/.claude/agents/`,
-- **skills** (13) under `~/.claude/skills/`,
+- **skills** (15) under `~/.claude/skills/`,
 - **companion bins** under `~/.claude/cah-bin/` (since 0.4.0).
 
 Optional artifacts are installed only when requested:
@@ -511,7 +511,7 @@ plugin loading. No inference ran, so provider support for a given effort and a
 model-driven babysit wake are untested.
 
 
-### 4. Skills (13)
+### 4. Skills (15)
 
 Reusable capability packs Claude Code loads on demand. Each is invoked as
 `/skill-name` from a chat. Grouped by purpose:
@@ -541,6 +541,8 @@ Reusable capability packs Claude Code loads on demand. Each is invoked as
 | `/triage` | TaskList hygiene — flag stale `in_progress`, orphan blockers, dead-end chains, trivial sibling clusters, completed clutter, duplicate subjects. Advisory by default; asks before mutating. Usage: `/triage` or `/triage --dry`. |
 | `/checkpoint-watch` | Turns on, for this project only, the automatic cycle: at 90% context the checkpoint-watch mod stops the agent, runs `/checkpoint`, compacts and runs `/resume`; prompts that arrive meanwhile are held and written into the checkpoint. `--off` to turn it off, `--status` to inspect. See [below](#automatic-checkpoint-compact-and-resume-checkpoint-watch). |
 | `/ccheckpoint-watch` | Same cycle, plus a local commit of each checkpoint file (only that file; never a push). |
+| `/checkpoint-idle` | Turns on the same cycle for silence: after N minutes (default 30; 5–50) with no turn and 200k+ tokens of context the checkpoint-watch mod runs `/checkpoint`, compacts and runs `/resume`. This project by default, `--global` for every project (and every ccgp profile), `--off`, `--status`. See [below](#checkpoint-compact-and-resume-after-silence-checkpoint-idle). |
+| `/ccheckpoint-idle` | Same, plus a local commit of each checkpoint file (only that file; never a push). |
 | `/rewake` | Wakes a session whose turn an API error cut off (`Connection lost mid-response`, overloaded, server errors) and asks Claude to continue: waits 60 s, then up to 900 s, at most 6 tries. Global by default (plus every ccgp profile); `--here` for one project, `--off` to remove, `--status` to inspect. See [below](#wake-after-a-dropped-connection-rewake). |
 
 **Workspace HUD**
@@ -665,6 +667,43 @@ prompt; the next cycle waits until the context is below 90% again.
 `cah checkpoint-watch on|off` also removes the Stop hint hook that earlier
 releases wrote into the project's `.claude/settings.json`.
 
+### Checkpoint, compact and resume after silence (`/checkpoint-idle`)
+
+The same mod can run the cycle when you walk away. When a main-loop turn ends it
+starts a timer of N minutes (default 30, 5 to 50); a new turn or prompt resets
+it. When it runs out with no turn running, the context holds at least 200k
+tokens (Claude Code's own floor for idle compaction) and the folder is inside a
+Git repository, the mod runs steps 3–6 above: `/checkpoint`, compaction, held
+events, the commit (`/ccheckpoint-idle`) and `/resume`. A failed silence cycle
+blocks the next one until the context shrinks.
+
+Claude Code's own idle compaction (`idleCompaction`) fires about 54 minutes into
+the silence, only with the one-hour prompt cache, and has no setting for that
+delay; the silence timer comes first (at most 50 minutes), so the checkpoint is
+saved before anything is compacted. A project that turned on `/checkpoint-watch`
+or this cycle also gets Claude Code's idle compaction replaced by the same cycle
+if it still arrives.
+
+```
+/checkpoint-idle                  # this project, after 30 minutes
+/checkpoint-idle 20               # after 20 minutes
+/checkpoint-idle --global         # every project (a Git repository only) and every ccgp profile
+/checkpoint-idle --off            # off in this project; mutes a global setting here
+/checkpoint-idle --global --off   # remove the global setting
+/checkpoint-idle --status         # global, ccgp profiles, project, and what applies here
+/ccheckpoint-idle …               # the same, and each checkpoint is committed
+```
+
+The skills only run `cah checkpoint-idle on [--commit] [--minutes N] | off | status
+[--global|--local] [--cwd PATH]`, which writes `{ "cahCheckpointIdle": { "mode":
+"checkpoint" | "commit", "minutes": 30 } }` into the project's
+`.claude/settings.local.json` (personal, not committed) or, with `--global`, into
+`~/.claude/settings.json` and every ccgp profile's `settings.json`, under the
+shared settings lock. The project setting wins over the global one, and a project
+`off` (`{ "mode": "off" }`) mutes a global one. The mod reads it after every
+turn, so no restart is needed. With `--global` it applies to every folder; the
+mod still acts only inside a Git repository.
+
 ### Wake after a dropped connection (`/rewake`)
 
 When the connection drops while a response is already streaming, Claude Code ends the turn with
@@ -713,7 +752,7 @@ What `/resume` does:
 |---|---|---|
 | Slash-commands | <!--gen:count:model-commands-->67<!--/gen--> | `<scope>/.claude/commands/<name>.md` (only with `--commands`) |
 | Sub-agents | <!--gen:count:model-commands-->67<!--/gen--> | `<scope>/.claude/agents/<name>.md` |
-| Skills | 13 | `<scope>/.claude/skills/<name>/` |
+| Skills | 15 | `<scope>/.claude/skills/<name>/` |
 | Codex custom agents | <!--gen:count:codex-agents-->46<!--/gen--> | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
 | Codex skills | <!--gen:count:codex-skills-->4<!--/gen--> | `<scope>/.codex/skills/<name>/` (only with `--codex-skills`) |
 | OMP agents and tag rule | Full registry + rule | `~/.omp/agent/agents/<name>.md` and `~/.omp/agent/APPEND_SYSTEM.md` (only with `--omp-agents`; `--omp-profile NAME` selects `~/.omp/profiles/NAME/agent/`) |
@@ -792,7 +831,7 @@ npx cc-arch-hands install --opencode-commands      # optional: nine OpenCode com
 npx cc-arch-hands install --opencode               # optional: all OpenCode artifacts
 
 # --only takes install classes, individual skill names, or any mix.
-npx cc-arch-hands install --only skills                       # all 13 skills
+npx cc-arch-hands install --only skills                       # all 15 skills
 npx cc-arch-hands install --only commands                     # all per-model slash-commands
 npx cc-arch-hands install --only codex-agents                 # all Codex agents into ~/.codex/agents (opt-in)
 npx cc-arch-hands install --only codex-skills                 # Codex skills into ~/.codex/skills (opt-in)
@@ -810,8 +849,8 @@ npx cc-arch-hands install --only bins                         # companion bins (
                                                     #     sentinel.js)
 
 # One example per skill (every installable artefact has its own line).
-# clock and rewake auto-pull `bins` with a notice; ccheckpoint-watch auto-pulls
-# the checkpoint-watch skill, whose folder carries the mod.
+# clock and rewake auto-pull `bins` with a notice; ccheckpoint-watch and the two
+# idle skills auto-pull the checkpoint-watch skill, whose folder carries the mod.
 npx cc-arch-hands install --only repo-sight
 npx cc-arch-hands install --only babysit
 npx cc-arch-hands install --only babygoal
@@ -823,6 +862,8 @@ npx cc-arch-hands install --only resume
 npx cc-arch-hands install --only triage
 npx cc-arch-hands install --only checkpoint-watch             # skill + the checkpoint-watch mod
 npx cc-arch-hands install --only ccheckpoint-watch            # auto-pulls checkpoint-watch
+npx cc-arch-hands install --only checkpoint-idle              # auto-pulls checkpoint-watch
+npx cc-arch-hands install --only ccheckpoint-idle             # auto-pulls checkpoint-watch
 npx cc-arch-hands install --only clock                        # auto-pulls bins
 npx cc-arch-hands install --only rewake                       # auto-pulls bins
 
@@ -948,7 +989,7 @@ cc-arch-hands/
 ├── bin/cah-rewake.js            # StopFailure/Stop hook bin: wake a session an API error cut off
 ├── lib/
 │   ├── cli.js                   # dispatch, arg parsing (node:util parseArgs), --only resolver
-│   ├── manifest.js              # AllModelCommands (67 definitions), AllCodexAgents (46), AllSkills (13), SkillDeps, SkillSkillDeps
+│   ├── manifest.js              # AllModelCommands (67 definitions), AllCodexAgents (46), AllSkills (15), SkillDeps, SkillSkillDeps
 │   ├── codex-model-specs.js     # generated by `npm run sync:codex`: Codex context windows + accepted efforts
 │   ├── cli-info.js              # `cah version` and `cah models --json`
 │   ├── sentinel.js              # new + legacy markers, ownership classifier
