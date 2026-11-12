@@ -71,6 +71,10 @@ function fakeSource(root) {
     join(root, 'bin', 'cah-status-probe.js'),
     "#!/usr/bin/env node\nconsole.log('probe');\n",
   );
+  writeFileSync(
+    join(root, 'bin', 'cah-rewake.js'),
+    "#!/usr/bin/env node\nconsole.log('rewake');\n",
+  );
   writeFileSync(join(root, 'lib', 'transcript-stats.js'), 'export const x = 1;\n');
   writeFileSync(join(root, 'lib', 'update-check.js'), 'export const y = 1;\n');
   writeFileSync(join(root, 'lib', 'proxy-model.js'), 'export const proxy = 1;\n');

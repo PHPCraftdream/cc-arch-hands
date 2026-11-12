@@ -33,6 +33,8 @@ const CLOCK = readSkill(join(__dirname, '..', 'templates', 'skills', 'clock', 'S
 const SETTINGS_LOCK_URL = pathToFileURL(join(__dirname, '..', 'lib', 'settings-lock.js')).href;
 const WATCH = readSkill(
   join(__dirname, '..', 'templates', 'skills', 'checkpoint-watch', 'SKILL.md'));
+// checkpoint-watch no longer edits settings by hand: `cah checkpoint-watch` does
+// it through lib/checkpoint-watch.js under the same lock.
 
 describe('clock refresh interval contract', () => {
   it('publishes seconds and converts the legacy millisecond override', () => {
@@ -129,9 +131,9 @@ describe('published clock/checkpoint-watch settings instructions', () => {
       'node "<HOME>/.claude/cah-bin/bin/cah-stamp.js"',
       'node "<HOME>/.claude/cah-bin/bin/cah-status.js"',
     ]);
-    assert.deepEqual(commandLines(WATCH), [
-      'node "<HOME>/.claude/cah-bin/bin/cah-checkpoint-hint.js"',
-    ]);
+    assert.deepEqual(commandLines(WATCH), []);
+    assert.match(WATCH, /cah checkpoint-watch on --cwd "<cwd>"/);
+    assert.match(WATCH, /Never edit the settings files by hand/);
   });
 
   it('the published command line still runs through the platform shell for a safe spaced home', () => {
@@ -162,7 +164,7 @@ describe('published clock/checkpoint-watch settings instructions', () => {
       assert.equal(UNSAFE_STATUSLINE_CHARS.test(ch), false,
         `the library must treat ${JSON.stringify(ch)} as safe like the templates promise`);
     }
-    for (const [name, text] of [['clock', CLOCK], ['checkpoint-watch', WATCH]]) {
+    for (const [name, text] of [['clock', CLOCK]]) {
       const anchor = text.indexOf('check the expanded home path');
       assert.ok(anchor !== -1, `${name}: unsafe-path section missing`);
       const start = text.indexOf('```', anchor);
@@ -178,7 +180,7 @@ describe('published clock/checkpoint-watch settings instructions', () => {
   });
 
   it('prescribes the safe write protocol and no longer the fixed-name tmp+rename', () => {
-    for (const [name, text] of [['clock', CLOCK], ['checkpoint-watch', WATCH]]) {
+    for (const [name, text] of [['clock', CLOCK]]) {
       assert.match(text, /settings\.json\.tmp\.<random-suffix>/,
         `${name}: a unique per-invocation temp name must be prescribed`);
       assert.match(text, /Never write into a pre-existing `settings\.json\.tmp\*/ ,

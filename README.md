@@ -22,7 +22,7 @@ install time.
 The artifacts:
 - **per-model slash-commands** (<!--gen:count:model-commands-->67<!--/gen-->) under `~/.claude/commands/`,
 - **per-model sub-agents** (<!--gen:count:model-commands-->67<!--/gen-->) under `~/.claude/agents/`,
-- **skills** (11) under `~/.claude/skills/`,
+- **skills** (13) under `~/.claude/skills/`,
 - **companion bins** under `~/.claude/cah-bin/` (since 0.4.0).
 
 Optional artifacts are installed only when requested:
@@ -45,7 +45,8 @@ Claude Code through other providers (Codex, z.ai, …) and as separate Claude Co
   Ownership rules are the same as in `~/.claude/`: foreign files are never touched. ccgp's own copy at the next
   start stays compatible: it re-copies the same files and prunes only what it copied. The companion bins stay in
   the one shared `~/.claude/cah-bin/`, which profiles call by absolute path, and `settings.json` (the `/clock`
-  statusLine and hooks) still reaches a profile through ccgp's copy at its next start. Project-local installs
+  statusLine and hooks) still reaches a profile through ccgp's copy at its next start; `/rewake` (`cah rewake on`) writes its hooks into
+  every profile's `settings.json` at once. Project-local installs
   (`--local`, `--cwd`) do not touch ccgp profiles.
 - **The context gauge follows ccgp's model mapping.** In a ccgp session the statusLine and chat stamps show the
   backend model an alias is routed to (see *Optional ccgp model labels* below), and the gauge uses the per-profile
@@ -56,9 +57,9 @@ Claude Code through other providers (Codex, z.ai, …) and as separate Claude Co
 > **Since 0.4.0:** `cah install` copies the companion bins into
 > `~/.claude/cah-bin/` and `settings.json` references them by absolute path
 > (`node "<HOME>/.claude/cah-bin/bin/cah-status.js"`) rather than a bare PATH
-> name. This means `/clock` and `/checkpoint-watch` keep working even if the
+> name. This means `/clock` keeps working even if the
 > `cc-arch-hands` npm package is moved, relinked, or uninstalled. Re-running
-> `/clock` (or `/checkpoint-watch`) migrates a pre-0.4.0 bare-name command to
+> `/clock` migrates a pre-0.4.0 bare-name command to
 > the new absolute path automatically.
 
 The installed companion tree also contains a managed `package.json` with
@@ -74,9 +75,10 @@ and only then replace executable leaves. This dependency-first closure keeps a n
 executable from becoming visible before its complete sibling dependency chain.
 
 The companion runtime bins:
-- **`cah-checkpoint-hint`** — Stop hook bin invoked by `/checkpoint-watch`. Emits one `[hint] Context at 90%…` per session when context fills past 90%.
+- **`cah-checkpoint-hint`** — Stop hook bin of the pre-mod `/checkpoint-watch` (one `[hint] Context at 90%…` per session). Still shipped for projects that keep the old hook; `cah checkpoint-watch on|off` removes that hook.
 - **`cah-status`** — statusLine command invoked by `/clock`. Renders `<model> [effort] · X.XX% (Nk/Mk)` with a usage bar and, for Pro/Max accounts, the 5-hour and weekly quota use with reset info (`5h N% →48м · wk N% →сб 27.06 16:19`). The bracketed effort code matches the slash-command suffix convention — `[l]/[m]/[h]/[x]/[xx]` for low/medium/high/xhigh/max; omitted for models without effort support (Haiku). Refreshes every 60 s (`refreshInterval: 60`, in seconds) and on every turn boundary.
 - **`cah-stamp`** — Stop hook bin invoked by `/clock` on both `Stop` AND `PostToolUse`. Emits an `HH:MM:SS · model · X.XX% · 5h N% · wk N%` line as a `systemMessage` (no effort suffix or bars; compact text). Two safeguards prevent scrollback spam: **per-message dedup** (every assistant entry of the same turn shares an API `requestId` — if we already stamped this turn, the next hook of the same turn is suppressed) and a **session-scoped time-throttle safety net** (default 10 s, configurable via `CAH_STAMP_MIN_INTERVAL_MS`). A newer-version notice is Stop-only, even when PostToolUse already deduped the turn.
+- **`cah-rewake`** — `StopFailure` + `Stop` hook bin wired by `/rewake` (`cah rewake on`). Wakes a session whose turn an API error cut off; see [Wake after a dropped connection](#wake-after-a-dropped-connection-rewake).
 - **`cah-status-probe`** — diagnostic statusLine bin armed by `cah probe statusline start`. Captures the raw stdin envelope to a JSONL log so you can inspect exactly which fields Claude Code delivers on your account (added in 0.4.1).
 
 **Квоты `/clock`.** В statusLine показываются использование квоты и время сброса: `wk 67% →сб 27.06 16:19`; время сброса — локальное. Если в Claude-сессии временно отсутствует `five_hour`, панель повторно использует последнее измерение той же сессии до 5 минут и только пока его reset ещё впереди; Codex-модели и другие сессии не наследуют чужой 5h-квотомер. Старые и истёкшие измерения не показываются.
@@ -440,7 +442,7 @@ The heartbeat is session-only, expires after seven days, and stops on session
 switching, branch navigation or shutdown. It cannot revive a closed OMP process
 or promise recovery from provider connectivity failures. Checkpoint restoration
 does not automatically re-arm it. `/clock` and `/checkpoint-watch` are not
-installed for OMP: their current statusLine/hook implementations are Claude-only.
+installed for OMP: their statusLine, hook and mod implementations are Claude-only.
 
 
 ### Optional OpenCode artifacts
@@ -509,7 +511,7 @@ plugin loading. No inference ran, so provider support for a given effort and a
 model-driven babysit wake are untested.
 
 
-### 4. Skills (11)
+### 4. Skills (13)
 
 Reusable capability packs Claude Code loads on demand. Each is invoked as
 `/skill-name` from a chat. Grouped by purpose:
@@ -537,7 +539,9 @@ Reusable capability packs Claude Code loads on demand. Each is invoked as
 | `/resume` | Reload a checkpoint (main folder only, like `/checkpoint`), rebuild the TaskList via TaskCreate, restate the goal as a copy-paste line, surface open questions. Usage: `/resume` (most recent), `/resume <name>` (exact or prefix), `/resume --list` (browse without restoring). |
 | `/checkpoint-prune` | Delete checkpoints. Arg auto-detected: `<name>` (one file), `14d`/`48h` (older than), bare number (keep last N), no arg (all). Confirms before batch deletes; `--dry` reports only. Usage: `/checkpoint-prune`, `/checkpoint-prune 14d`, `/checkpoint-prune 10`, `/checkpoint-prune <name>`. |
 | `/triage` | TaskList hygiene — flag stale `in_progress`, orphan blockers, dead-end chains, trivial sibling clusters, completed clutter, duplicate subjects. Advisory by default; asks before mutating. Usage: `/triage` or `/triage --dry`. |
-| `/checkpoint-watch` | Per-project Stop hook that shows a one-time `[hint]` when context hits 90%, suggesting `/checkpoint`. `/checkpoint-watch --off` to remove, `--status` to inspect. |
+| `/checkpoint-watch` | Turns on, for this project only, the automatic cycle: at 90% context the checkpoint-watch mod stops the agent, runs `/checkpoint`, compacts and runs `/resume`; prompts that arrive meanwhile are held and written into the checkpoint. `--off` to turn it off, `--status` to inspect. See [below](#automatic-checkpoint-compact-and-resume-checkpoint-watch). |
+| `/ccheckpoint-watch` | Same cycle, plus a local commit of each checkpoint file (only that file; never a push). |
+| `/rewake` | Wakes a session whose turn an API error cut off (`Connection lost mid-response`, overloaded, server errors) and asks Claude to continue: waits 60 s, then up to 900 s, at most 6 tries. Global by default (plus every ccgp profile); `--here` for one project, `--off` to remove, `--status` to inspect. See [below](#wake-after-a-dropped-connection-rewake). |
 
 **Workspace HUD**
 
@@ -614,20 +618,80 @@ automatically; that decision stays with you — unless you use
 with ordinary `git add` + `git commit --only` (unrelated staged changes stay
 staged; never a push).
 
-`cah` also installs `/checkpoint-watch` globally, but invoking it in a project
-writes a Stop hook into *that project's* `.claude/settings.json` (never the
-global one). On each turn the hook reads the session transcript, takes the
-latest assistant message's `usage.input_tokens`, and compares it to the actual
-valid `context_window.context_window_size` from the hook envelope or matching
-status cache when available. If neither is available, it falls back to the
-model limit (1M for Opus/Fable/Sonnet 5 and 5.5/Haiku 5.5, 200K for older Sonnet/Haiku), honoring
-`CLAUDE_CODE_DISABLE_1M_CONTEXT`. When usage first
-crosses 90% it emits a single `systemMessage` — a plain-ASCII `[hint]` line
-suggesting `/checkpoint` — and records a per-session marker so it never fires
-twice. The 90% threshold is a soft suggestion, not a forced action: the agent
-keeps working and you decide when to actually checkpoint. Foreign hooks in
-`settings.json` are never touched; `/checkpoint-watch --off` removes only our
-sentinel-tagged entry.
+### Automatic checkpoint, compact and resume (`/checkpoint-watch`)
+
+Claude Code hooks cannot start a compaction; a Claude Code mod (a plugin hooks
+module) can. The `checkpoint-watch` skill folder ships one
+(`.claude-plugin/plugin.json` + `hooks/`), which Claude Code 2.1.287 or later
+loads from `~/.claude/skills/checkpoint-watch/` as `cah-checkpoint-watch@skills-dir`
+in every terminal session. It acts only in a project that turned it on:
+`/checkpoint-watch` (or `cah checkpoint-watch on --cwd <project>`) writes
+`{ "cahCheckpointWatch": { "mode": "checkpoint" } }` into that project's
+`.claude/settings.local.json` (personal, not committed), `/ccheckpoint-watch`
+(`on --commit`) the mode `commit`. It refuses a folder outside a Git repository
+and is never global.
+
+Once the main loop's context reaches 90% (checked after each of its tool calls
+and at the end of each answer) the mod:
+
+1. stops the running turn;
+2. holds every prompt that would wake the session — messages you type, finished
+   background tasks, scheduled and `/loop` ticks, hook wake-ups, peer and
+   channel messages: each is dropped and recorded with its time, origin and full
+   text; a prompt already queued that starts a turn is stopped and recorded too;
+3. runs `/checkpoint watch-<date>-<time>`;
+4. compacts the session (`$.session.compact`; where the host refuses it, the
+   `/compact` command);
+5. appends the held events to the checkpoint as `## Held events` and, in
+   `commit` mode, commits only that file (`git commit --only`; Claude Code runs
+   the mod's Git with repository hooks off; an ignored `docs/checkpoints/` is
+   reported, never force-added);
+6. runs `/resume watch-<date>-<time>`: user messages among the held events are
+   acted on first, finished tasks are taken as results, stale ticks are skipped.
+
+Claude Code's idle compaction (`idleCompaction`, on by default: a 200k+ token
+session left idle about 54 minutes is compacted before its one-hour prompt cache
+expires) gets the same cycle. It reaches mods as an `auto` compaction, like the
+threshold one, so the mod takes an `auto` compaction that comes with no turn
+running and at least 30 minutes after the last answer for the idle one: it
+vetoes it (`{ skip }`) and runs steps 3–6, the checkpoint first while the cache
+is still warm, then its own compaction. Threshold, manual, plugin and
+precompute compactions pass through untouched.
+
+A cycle that fails (no checkpoint written, the checkpoint turn interrupted, the
+compaction skipped, 20 minutes without a result) or is cancelled with
+`/checkpoint-watch-cancel` ends the hold and sends what it held back as one
+prompt; the next cycle waits until the context is below 90% again.
+`cah checkpoint-watch on|off` also removes the Stop hint hook that earlier
+releases wrote into the project's `.claude/settings.json`.
+
+### Wake after a dropped connection (`/rewake`)
+
+When the connection drops while a response is already streaming, Claude Code ends the turn with
+`API Error: Connection lost mid-response. The response above may be incomplete.` and does not retry it (a retry
+could repeat actions that already ran); the session then sits idle until you type. `/rewake` (or `cah rewake on`)
+adds two hooks running the `cah-rewake` bin:
+
+- **`StopFailure`**, with `async` and `asyncRewake`: after a turn ends on an API error the bin waits 60 s, 120 s,
+  240 s, 480 s, then 900 s, and exits 2. Claude Code then wakes the idle session with a message asking Claude to
+  continue the interrupted work and to check a half-applied action before repeating it. At most 6 tries in a row
+  per session.
+- **`Stop`**, with `async`: a turn that completes normally resets the counter.
+
+No wake happens when the session moved on during the wait (you typed, a turn ran), and none for errors a wake
+cannot fix: authentication, billing, invalid request, unknown model, the output-token cap, and `rate_limit` (Claude
+Code resumes usage limits itself). Every event goes to `~/.claude/cah-bin/cache/rewake.log`; `cah rewake status`
+shows where the hooks are enabled and the last events, including the error type Claude Code reported.
+
+The default target is `~/.claude/settings.json` plus the `settings.json` of every ccgp profile, so profiles get the
+hooks at once instead of only at their next start (when ccgp copies `settings.json`); `--local`/`--cwd`
+(`/rewake --here`) target one project.
+Only our sentinel-tagged hooks (`cah-hook:v1`, `cah-name: rewake`) are added or removed, under the shared
+settings lock, and a `settings.json` that changed meanwhile is never overwritten. A session that is already running
+may keep the hooks it loaded at start: if `/hooks` does not list them, restart it.
+
+`StopFailure` output is documented as ignored; waking through `asyncRewake` with exit code 2 works in practice
+(verified by others on Claude Code 2.1.308) but is not documented, so a future Claude Code may change it.
 
 What `/resume` does:
 
@@ -649,7 +713,7 @@ What `/resume` does:
 |---|---|---|
 | Slash-commands | <!--gen:count:model-commands-->67<!--/gen--> | `<scope>/.claude/commands/<name>.md` (only with `--commands`) |
 | Sub-agents | <!--gen:count:model-commands-->67<!--/gen--> | `<scope>/.claude/agents/<name>.md` |
-| Skills | 11 | `<scope>/.claude/skills/<name>/` |
+| Skills | 13 | `<scope>/.claude/skills/<name>/` |
 | Codex custom agents | <!--gen:count:codex-agents-->46<!--/gen--> | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
 | Codex skills | <!--gen:count:codex-skills-->4<!--/gen--> | `<scope>/.codex/skills/<name>/` (only with `--codex-skills`) |
 | OMP agents and tag rule | Full registry + rule | `~/.omp/agent/agents/<name>.md` and `~/.omp/agent/APPEND_SYSTEM.md` (only with `--omp-agents`; `--omp-profile NAME` selects `~/.omp/profiles/NAME/agent/`) |
@@ -728,14 +792,14 @@ npx cc-arch-hands install --opencode-commands      # optional: nine OpenCode com
 npx cc-arch-hands install --opencode               # optional: all OpenCode artifacts
 
 # --only takes install classes, individual skill names, or any mix.
-npx cc-arch-hands install --only skills                       # all 11 skills
+npx cc-arch-hands install --only skills                       # all 13 skills
 npx cc-arch-hands install --only commands                     # all per-model slash-commands
 npx cc-arch-hands install --only codex-agents                 # all Codex agents into ~/.codex/agents (opt-in)
 npx cc-arch-hands install --only codex-skills                 # Codex skills into ~/.codex/skills (opt-in)
 npx cc-arch-hands install --only omp-agents                   # OMP agents + APPEND_SYSTEM.md rule (opt-in)
 npx cc-arch-hands install --only omp-commands                 # nine OMP workflow commands + runtime (opt-in)
 npx cc-arch-hands install --only bins                         # companion bins (cah-status, cah-stamp,
-                                                    #   cah-checkpoint-hint, cah-status-probe,
+                                                    #   cah-checkpoint-hint (legacy), cah-status-probe, cah-rewake,
                                                     #   + shared lib leaves: transcript-stats.js,
                                                     #     update-check.js, proxy-model.js, rate-limits-cache.js,
                                                     #     lease-lock.js, marker-capacity-ops.js,
@@ -746,7 +810,8 @@ npx cc-arch-hands install --only bins                         # companion bins (
                                                     #     sentinel.js)
 
 # One example per skill (every installable artefact has its own line).
-# clock and checkpoint-watch auto-pull `bins` with a notice.
+# clock and rewake auto-pull `bins` with a notice; ccheckpoint-watch auto-pulls
+# the checkpoint-watch skill, whose folder carries the mod.
 npx cc-arch-hands install --only repo-sight
 npx cc-arch-hands install --only babysit
 npx cc-arch-hands install --only babygoal
@@ -756,18 +821,20 @@ npx cc-arch-hands install --only ccheckpoint
 npx cc-arch-hands install --only checkpoint-prune
 npx cc-arch-hands install --only resume
 npx cc-arch-hands install --only triage
-npx cc-arch-hands install --only checkpoint-watch             # auto-pulls bins
+npx cc-arch-hands install --only checkpoint-watch             # skill + the checkpoint-watch mod
+npx cc-arch-hands install --only ccheckpoint-watch            # auto-pulls checkpoint-watch
 npx cc-arch-hands install --only clock                        # auto-pulls bins
+npx cc-arch-hands install --only rewake                       # auto-pulls bins
 
 # Comma-separated combos work as expected.
-npx cc-arch-hands install --only clock,checkpoint-watch       # two skills (auto-pulls bins once)
+npx cc-arch-hands install --only clock,rewake                 # two skills (auto-pulls bins once)
 npx cc-arch-hands install --only babysit,babygoal,task        # task-list trio
 npx cc-arch-hands install --only commands,clock               # mix class + skill name
 
 # reinstall and uninstall accept the same --only selector.
 # reinstall does uninstall + install with the same args, so subset is honoured.
 # uninstall is explicit-only — it never auto-pulls deps (so you can drop
-# clock without losing the bins that checkpoint-watch needs).
+# clock without losing the bins that rewake needs).
 npx cc-arch-hands reinstall --only clock                      # uninstall + install of just the clock skill
 npx cc-arch-hands reinstall --commands                        # reinstall only the per-model slash-commands
 npx cc-arch-hands reinstall --codex-agents                    # reinstall only Codex agents
@@ -792,6 +859,11 @@ npx cc-arch-hands models --json                    # manifest as one JSON line: 
 npx cc-arch-hands probe statusline start           # diagnostic: capture raw statusLine envelope
 npx cc-arch-hands probe statusline stop            # restore + print captured envelope
 npx cc-arch-hands probe statusline status          # is the probe armed?
+
+npx cc-arch-hands rewake on                         # wake sessions an API error cut off (global + ccgp profiles)
+npx cc-arch-hands rewake on --cwd .                 # only this project
+npx cc-arch-hands rewake status                     # where it is on, last logged events
+npx cc-arch-hands rewake off                        # remove our hooks only
 ```
 
 `cah probe statusline` atomically rewires `settings.statusLine` to a
@@ -873,9 +945,10 @@ cc-arch-hands/
 ├── bin/cah-status.js            # statusLine bin: model · ctx% + 5h/wk on Pro/Max (#!/usr/bin/env node)
 ├── bin/cah-stamp.js             # Stop+PostToolUse bin: chat audit-trail line (#!/usr/bin/env node)
 ├── bin/cah-status-probe.js      # diagnostic statusLine bin used by `cah probe statusline`
+├── bin/cah-rewake.js            # StopFailure/Stop hook bin: wake a session an API error cut off
 ├── lib/
 │   ├── cli.js                   # dispatch, arg parsing (node:util parseArgs), --only resolver
-│   ├── manifest.js              # AllModelCommands (67 definitions), AllCodexAgents (46), AllSkills (11), SkillDeps
+│   ├── manifest.js              # AllModelCommands (67 definitions), AllCodexAgents (46), AllSkills (13), SkillDeps, SkillSkillDeps
 │   ├── codex-model-specs.js     # generated by `npm run sync:codex`: Codex context windows + accepted efforts
 │   ├── cli-info.js              # `cah version` and `cah models --json`
 │   ├── sentinel.js              # new + legacy markers, ownership classifier
@@ -895,10 +968,15 @@ cc-arch-hands/
 │   ├── codex-skills.js          # optional Codex skill installation
 │   ├── codex-mcp-config.js      # marked [mcp_servers.cli-run] block in Codex config.toml
 │   ├── binstall.js              # copy companion bins into ~/.claude/cah-bin/ (// cah-bin:v1)
-│   └── probe.js                 # enable/disable cah-status-probe via settings.json edits
+│   ├── probe.js                 # enable/disable cah-status-probe via settings.json edits
+│   ├── rewake.js                # add/remove the cah-rewake hooks in a settings.json
+│   ├── cli-rewake.js            # `cah rewake on|off|status` (global + ccgp profiles, or one project)
+│   ├── checkpoint-watch.js      # turn the checkpoint-watch mod on/off in one project's settings.local.json
+│   └── cli-checkpoint-watch.js  # `cah checkpoint-watch on [--commit]|off|status`
 ├── templates/
 │   ├── skills/                  # Claude Code skill templates
-│   │   └── <name>/SKILL.md
+│   │   ├── <name>/SKILL.md
+│   │   └── checkpoint-watch/hooks/  # the checkpoint-watch mod (engine.mjs + register.mjs)
 │   ├── shared/                  # harness-neutral fragments pulled in by {{include:<name>}}
 │   └── codex-skills/            # cli-run, checkpoint, ccheckpoint, resume
 ├── test/
@@ -909,7 +987,9 @@ cc-arch-hands/
 │   ├── stamp.test.js            # cah-stamp bin tests (incl. throttle, rate_limits cache)
 │   ├── transcript-stats.test.js # transcript-stats helper unit tests (incl. makeBar)
 │   ├── checkpoint-hint.test.js  # cah-checkpoint-hint bin tests
-│   └── probe.test.js            # lib/probe.js enable/disable/readLog tests
+│   ├── probe.test.js            # lib/probe.js enable/disable/readLog tests
+│   ├── rewake.test.js           # cah-rewake bin + `cah rewake` settings wiring
+│   └── checkpoint-watch.test.js # checkpoint-watch mod engine (fake $), settings wiring, `cah checkpoint-watch`
 ├── .github/workflows/ci.yml    # CI: npm test on 3 OS × 3 Node versions
 ├── install.sh / install.bat     # quick install wrappers
 ├── reinstall.sh / reinstall.bat # uninstall + install

@@ -157,21 +157,29 @@ describe('resolveDeps', () => {
     assert.equal(r.notices.length, 1);
     assert.match(r.notices[0], /auto-added 'bins'.*clock/);
   });
-  it('auto-adds bins when checkpoint-watch is selected by name', () => {
+  it('checkpoint-watch needs no bins: its mod ships inside the skill tree', () => {
     const r = resolveDeps({ classes: [], skills: ['checkpoint-watch'] });
-    assert.ok(r.classes.includes('bins'));
-    assert.match(r.notices[0], /checkpoint-watch/);
+    assert.deepEqual(r.classes, []);
+    assert.deepEqual(r.notices, []);
+  });
+  it('auto-adds the checkpoint-watch skill when ccheckpoint-watch is selected by name', () => {
+    const r = resolveDeps({ classes: [], skills: ['ccheckpoint-watch'] });
+    assert.deepEqual(r.skills, ['ccheckpoint-watch', 'checkpoint-watch']);
+    assert.match(r.notices[0], /auto-added skill 'checkpoint-watch' (required by: ccheckpoint-watch)/);
+    const both = resolveDeps({ classes: [], skills: ['ccheckpoint-watch', 'checkpoint-watch'] });
+    assert.deepEqual(both.notices, []);
   });
   it('does not add bins when already present', () => {
     const r = resolveDeps({ classes: ['bins'], skills: ['clock'] });
     assert.deepEqual(r.notices, []);
   });
 
-  it('triggers from whole "skills" class too — clock/checkpoint-watch are inside', () => {
+  it('triggers from whole "skills" class too — clock/rewake are inside', () => {
     const r = resolveDeps({ classes: ['skills'], skills: [] });
     assert.ok(r.classes.includes('bins'));
     assert.match(r.notices[0], /clock/);
-    assert.match(r.notices[0], /checkpoint-watch/);
+    assert.match(r.notices[0], /rewake/);
+    assert.doesNotMatch(r.notices[0], /checkpoint-watch/);
   });
 
   it('classes returned in canonical order', () => {
