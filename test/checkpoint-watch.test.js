@@ -550,6 +550,74 @@ describe('checkpoint-watch engine: a cycle that stops', () => {
   });
 });
 
+describe('checkpoint-watch engine: /checkpoint-now', () => {
+  it('registers both commands when the session starts', async () => {
+    const registered = [];
+    const hooks = {};
+    registerCheckpointWatch((event, matcher, hook) => { hooks[event] ??= hook ?? matcher; });
+    const $ = { command: { register: async (spec) => registered.push(spec.name) } };
+    await hooks['session.start']($, {}, async (x) => x);
+    assert.deepEqual(registered, ['checkpoint-watch-cancel', 'checkpoint-now', 'ccheckpoint-now']);
+  });
+
+  it('runs checkpoint, compact, resume at once, with the watch off and a small context', async () => {
+    const h = harness({ mode: null, percent: 5 });
+    const out = await h.emit('command.run', { command: 'checkpoint-now', args: '' });
+    const name = h.w.cycle.name;
+    assert.match(name, /^now-\d{4}-\d{2}-\d{2}-\d{6}$/);
+    assert.match(out.text, new RegExp(name));
+    await h.flush(0);
+    assert.deepEqual(h.calls.abort, []);
+    assert.deepEqual(h.calls.command, [{ command: 'checkpoint', args: name }]);
+    await runCheckpointTurn(h, name);
+    assert.deepEqual(h.calls.compact, [{ instructions: COMPACT_INSTRUCTIONS }]);
+    assert.deepEqual(h.calls.command.at(-1), { command: 'resume', args: name });
+    await h.emit('turn.start', { turnId: 'T4', text: `/resume ${name}` });
+    await h.flush(0);
+    assert.equal(h.w.cycle, null);
+    assert.equal(h.calls.process.some((argv) => argv.includes('commit')), false, 'no commit step');
+  });
+
+  it('/ccheckpoint-now commits the checkpoint file after the compaction', async () => {
+    const h = harness({ mode: null, percent: 5 });
+    await h.emit('command.run', { command: 'ccheckpoint-now', args: '' });
+    const name = h.w.cycle.name;
+    await h.flush(0);
+    await runCheckpointTurn(h, name);
+    await h.emit('turn.start', { turnId: 'T4', text: `/resume ${name}` });
+    await h.flush(0);
+    assert.ok(h.calls.process.some((argv) => argv.includes('commit')));
+    assert.ok(h.calls.log.some((line) => line.includes(`checkpoint ${name}: committed abc1234`)));
+  });
+
+  it('holds prompts that arrive while it runs, like the other cycles', async () => {
+    const h = harness({ mode: null, percent: 5 });
+    await h.emit('command.run', { command: 'checkpoint-now', args: '' });
+    const out = await h.emit('prompt.submit', { text: 'and also this', origin: { kind: 'composer' } });
+    assert.deepEqual(out, { drop: DROP_REASON });
+    assert.equal(h.w.cycle.held.length, 1);
+  });
+
+  it('refuses outside a Git repository and while a cycle runs', async () => {
+    const h = harness({ mode: null, git: () => ({ exitCode: 128, stdout: '', stderr: 'fatal' }) });
+    const outside = await h.emit('command.run', { command: 'checkpoint-now', args: '' });
+    assert.match(outside.text, /not a Git repository/);
+    assert.equal(h.w.cycle, null);
+    const g = harness({ mode: null });
+    await g.emit('command.run', { command: 'checkpoint-now', args: '' });
+    const again = await g.emit('command.run', { command: 'ccheckpoint-now', args: '' });
+    assert.match(again.text, /already running/);
+  });
+
+  it('a failed run does not hold back the 90% cycle', async () => {
+    const h = harness({ percent: 5 });
+    await h.emit('command.run', { command: 'checkpoint-now', args: '' });
+    await h.flush(LIMIT_MS);
+    assert.equal(h.w.cycle, null);
+    assert.equal(h.w.suppressed, false);
+  });
+});
+
 describe('checkpoint-watch engine: helpers', () => {
   it('names checkpoints by local date and time', () => {
     assert.equal(checkpointName(new Date(2026, 10, 11, 9, 5, 7).getTime()), 'watch-2026-11-11-090507');

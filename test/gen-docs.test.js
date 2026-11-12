@@ -17,6 +17,7 @@ const CLAUDE = readFileSync(join(__dirname, '..', 'CLAUDE.md'), 'utf8');
 
 const EXPECTED_RUNTIME_BINS = [
   'bin/cah-checkpoint-hint.js',
+  'bin/cah-nobg.js',
   'bin/cah-rewake.js',
   'bin/cah-stamp.js',
   'bin/cah-status-probe.js',
@@ -94,7 +95,7 @@ describe('gen-docs --check', () => {
 
     assert.deepEqual(runtimeBins, EXPECTED_RUNTIME_BINS);
     assert.deepEqual(sharedLibLeaves, EXPECTED_SHARED_LIB_LEAVES);
-    assert.equal(runtimeBins.length, 5);
+    assert.equal(runtimeBins.length, 6);
 
     const installSectionStart = CLAUDE.indexOf('companion runtime bins and their shared library leaves');
     const installSectionEnd = CLAUDE.indexOf('`~/.claude/cah-bin/`', installSectionStart);

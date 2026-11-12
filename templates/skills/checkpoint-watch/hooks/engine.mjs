@@ -12,6 +12,8 @@ export const SETTINGS_KEY = 'cahCheckpointWatch';
 export const MODES = Object.freeze(['checkpoint', 'commit']);
 export const THRESHOLD = 90;
 export const CANCEL_COMMAND = 'checkpoint-watch-cancel';
+// The mod's slash commands that run the cycle on demand, whatever the on/off settings say.
+export const NOW_COMMANDS = Object.freeze({ 'checkpoint-now': 'checkpoint', 'ccheckpoint-now': 'commit' });
 export const CYCLE_LIMIT_MS = 20 * 60_000;
 export const COMPACT_TRIES = 10;
 export const COMPACT_RETRY_MS = 2000;
@@ -75,9 +77,9 @@ export async function idleConfig($) {
 
 const pad = (n) => String(n).padStart(2, '0');
 
-export function checkpointName(ms) {
+export function checkpointName(ms, prefix = 'watch') {
   const d = new Date(ms);
-  return `watch-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-`
+  return `${prefix}-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-`
     + `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
 
@@ -200,7 +202,7 @@ function fail(w, $, reason, c) {
   if (!c || w.cycle !== c) return;
   w.cycle = null;
   c.timer?.cancel?.();
-  w.suppressed = true;
+  if (c.trigger !== 'manual') w.suppressed = true;
   if (c.trigger === 'idle') w.idleBlocked = true;
   say($, `stopped: ${reason}`);
   if (c.held.length === 0) return;
@@ -213,7 +215,7 @@ function start(w, $, mode, abortTurn, why = `context reached ${w.threshold}%`, t
   disarmIdle(w);
   const c = {
     phase: abortTurn ? 'stopping' : 'queued',
-    name: checkpointName(Date.now()),
+    name: checkpointName(Date.now(), trigger === 'manual' ? 'now' : 'watch'),
     mode,
     trigger,
     held: [],
@@ -258,6 +260,17 @@ export async function idleCompact(w, $, e, next) {
   if (!mode || w.cycle || !idleNow(w)) return next(e);
   start(w, $, mode, false, 'idle compaction is due', 'idle');
   return { skip: IDLE_SKIP_REASON };
+}
+
+// /checkpoint-now and /ccheckpoint-now: the whole cycle at once, whatever the
+// context size, inside a Git repository; a running cycle is left alone.
+export async function runNow(w, $, mode) {
+  const busy = { text: 'checkpoint-watch: a cycle is already running' };
+  if (w.cycle) return busy;
+  if (!(await inGitRepo($))) return { text: 'checkpoint-watch: not a Git repository, nothing to checkpoint into' };
+  if (w.cycle) return busy;
+  start(w, $, mode, false, 'asked by the user', 'manual');
+  return { text: `checkpoint-watch: saving checkpoint ${w.cycle.name}, then compacting and resuming` };
 }
 
 function disarmIdle(w) {
@@ -373,8 +386,19 @@ export function registerCheckpointWatch(on, options = {}) {
       description: 'checkpoint-watch: stop a running checkpoint/compact cycle and deliver what it held',
       immediate: true,
     }).catch(() => {});
+    for (const [name, mode] of Object.entries(NOW_COMMANDS)) {
+      await $.command.register({
+        name,
+        description: mode === 'commit'
+          ? 'checkpoint, compact and resume now, then commit the checkpoint file (checkpoint-watch mod)'
+          : 'checkpoint, compact and resume now (checkpoint-watch mod)',
+      }).catch(() => {});
+    }
     return next(e);
   });
+
+  on('command.run', { command: 'checkpoint-now' }, ($) => runNow(w, $, NOW_COMMANDS['checkpoint-now']));
+  on('command.run', { command: 'ccheckpoint-now' }, ($) => runNow(w, $, NOW_COMMANDS['ccheckpoint-now']));
 
   on('command.run', { command: 'checkpoint-watch-cancel' }, async ($) => {
     if (!w.cycle) return { text: 'checkpoint-watch: no cycle is running' };

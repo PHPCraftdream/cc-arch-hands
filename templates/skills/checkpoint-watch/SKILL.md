@@ -32,6 +32,13 @@ same cycle: when an `auto` compaction comes with no turn running and at least
 30 minutes after the last answer, the mod vetoes it and runs steps 3–6, the
 checkpoint first and its own compaction right after.
 
+The mod also registers two slash commands that run steps 3–6 at once, whatever
+the context size and without turning the watch on: `/checkpoint-now` (no commit)
+and `/ccheckpoint-now` (with the commit step). They need a Git repository, take
+no argument and name the checkpoint `now-<date>-<time>`; a failed run does not
+hold back the 90% cycle. They are commands of the mod, not skills: nothing to
+install beyond this skill.
+
 A cycle that fails (no checkpoint written, the checkpoint turn interrupted, the
 compaction skipped, no result after 20 minutes) or is cancelled with
 `/checkpoint-watch-cancel` stops the hold and sends what it held back to the

@@ -35,88 +35,14 @@ The codebase has two layers: a thin CLI (`lib/cli.js`) that does arg parsing and
 
 **Templates.** `lib/templates.js` resolves skill trees from either the bundled `templates/` directory (relative to package root via `import.meta.url`) or from an arbitrary disk path via `--templates <dir>`.
 
-**Shared fragments.** Behaviour common to every harness (Claude, Codex, OpenCode, OMP) is written once in `templates/shared/<name>.md` and pulled into a Markdown template with a line holding only `{{include:<name>}}`. `Templates.skillTree` expands it, so every installer gets the same text. A missing fragment, an inline include or a nested include throws. Fragments must stay harness-neutral (no `TaskList`, `todo`, `~/.claude` …): harness-specific wording stays in the template around the include. `test/templates-include.test.js` fails on an unused or unresolved fragment. Change shared behaviour in the fragment, never by editing each harness copy.
+**Shared fragments.** Behaviour common to every harness (Claude, Codex, OpenCode, OMP) is written once in `templates/shared/<name>.md` and pulled into a Markdown template with a line holding only `{{include:<name>}}`. `Templates.skillTree` expands it, so every installer gets the same text. A missing fragment, an inline include or a nested include throws. Fragments must stay harness-neutral (no `TaskList`, `todo`, `~/.claude` …): harness-specific wording stays in the template around the include. `test/templates-include.test.js` fails on an unused or unresolved fragment.
 
-**The checkpoint-watch mod.** `templates/skills/checkpoint-watch/` is both a skill and a Claude Code plugin: `.claude-plugin/plugin.json` + `hooks/hooks.json` → `hooks/register.mjs` → `hooks/engine.mjs`. Claude Code loads a `~/.claude/skills/<name>/` folder holding a plugin manifest as `<name>@skills-dir` (here `cah-checkpoint-watch@skills-dir`) while its `SKILL.md` stays a skill, so the ordinary skills installer ships the mod, ccgp profiles included. The engine acts only in a project whose `.claude/settings.local.json` holds `cahCheckpointWatch.mode` (`checkpoint` | `commit`), written by `cah checkpoint-watch on [--commit]` (`lib/cli-checkpoint-watch.js` → `lib/checkpoint-watch.js`, shared settings lock + CAS); `/checkpoint-watch` and `/ccheckpoint-watch` only run that command. The cycle: abort the main turn at ≥90% → hold (drop + record) every non-own `prompt.submit` and abort stray main-loop turns → `$.command.run` `/checkpoint <name>` → `$.session.compact` → append `## Held events`, commit in `commit` mode → `$.command.run` `/resume <name>`. Claude Code's idle compaction reaches mods as trigger `auto`, like the threshold one; the engine takes an `auto` `session.compact` with no main turn running and ≥30 min (`IDLE_MIN_MS`) since the last main turn ended for the idle one, answers `{ skip }` and starts the same cycle. The cycle also starts from the engine's own silence timer (`armIdle`/`idleFire`): armed when a main turn ends, disarmed by the next turn or a cycle, fired only with no turn running, ≥200k tokens (`IDLE_MIN_TOKENS`) and inside a Git repository; a failed silence cycle sets `idleBlocked` until the context shrinks. Its switch is the separate `cahCheckpointIdle` key (`{ mode, minutes }`, 5–50 min), read through `$.settings.read` from the project's local file first and the user file second (a local `{ mode: "off" }` mutes a global one); `cah checkpoint-idle on|off|status` (`lib/cli-checkpoint-idle.js` → `lib/checkpoint-idle.js`, targets from `lib/settings-targets.js`) writes it, and the `/checkpoint-idle` and `/ccheckpoint-idle` skills only run that command. `lib/checkpoint-idle.js` mirrors the engine's `idleOf()` (the engine cannot import `lib/`); a test keeps them equal. Mod code has no Node built-ins and Claude Code's validator follows `# CLAUDE.md
+**The checkpoint-watch mod.** `templates/skills/checkpoint-watch/` is both a skill and a Claude Code plugin: `.claude-plugin/plugin.json` + `hooks/hooks.json` → `hooks/register.mjs` → `hooks/engine.mjs`. Claude Code loads a `~/.claude/skills/<name>/` folder holding a plugin manifest as `<name>@skills-dir` (here `cah-checkpoint-watch@skills-dir`) while its `SKILL.md` stays a skill, so the ordinary skills installer ships the mod, ccgp profiles included. The engine acts only in a project whose `.claude/settings.local.json` holds `cahCheckpointWatch.mode` (`checkpoint` | `commit`), written by `cah checkpoint-watch on [--commit]` (`lib/cli-checkpoint-watch.js` → `lib/checkpoint-watch.js`, shared settings lock + CAS); `/checkpoint-watch` and `/ccheckpoint-watch` only run that command. The cycle: abort the main turn at ≥90% → hold (drop + record) every non-own `prompt.submit` and abort stray main-loop turns → `$.command.run` `/checkpoint <name>` → `$.session.compact` → append `## Held events`, commit in `commit` mode → `$.command.run` `/resume <name>`. Claude Code's idle compaction reaches mods as trigger `auto`, like the threshold one; the engine takes an `auto` `session.compact` with no main turn running and ≥30 min (`IDLE_MIN_MS`) since the last main turn ended for the idle one, answers `{ skip }` and starts the same cycle. The cycle also starts from the engine's own silence timer (`armIdle`/`idleFire`): armed when a main turn ends, disarmed by the next turn or a cycle, fired only with no turn running, ≥200k tokens (`IDLE_MIN_TOKENS`) and inside a Git repository; a failed silence cycle sets `idleBlocked` until the context shrinks. The mod also registers `/checkpoint-now` and `/ccheckpoint-now` (`NOW_COMMANDS`, `runNow`): the same cycle at once, trigger `manual`, name `now-…`, no settings and no token floor, Git repository required; they are mod commands, not skills. Its switch is the separate `cahCheckpointIdle` key (`{ mode, minutes }`, 5–50 min), read through `$.settings.read` from the project's local file first and the user file second (a local `{ mode: "off" }` mutes a global one); `cah checkpoint-idle on|off|status` (`lib/cli-checkpoint-idle.js` → `lib/checkpoint-idle.js`, targets from `lib/settings-targets.js`) writes it, and the `/checkpoint-idle` and `/ccheckpoint-idle` skills only run that command. `lib/checkpoint-idle.js` mirrors the engine's `idleOf()` (the engine cannot import `lib/`); a test keeps them equal. Mod code has no Node built-ins and Claude Code's validator follows `$` only into top-level functions, so engine state is passed explicitly (`w`); `claude plugin validate <installed folder>` must pass. `test/checkpoint-watch.test.js` drives the engine with a fake `$`.
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-## What this is
-
-`cah` (cc-arch-hands) — a Node.js CLI that installs/removes/inspects Claude Code per-model slash-commands, sub-agents, and skills under `~/.claude/` (global) or `<cwd>/.claude/` (local). Zero runtime dependencies — only Node.js built-ins (`node:fs`, `node:path`, `node:os`, `node:util`, `node:test`).
-
-The npm package also ships **four bins** on PATH: `cah` (the main CLI, also aliased as `cc-arch-hands`), `cah-checkpoint-hint` (Stop hook of the pre-mod `/checkpoint-watch`, kept for projects that still have it), `cah-status` (statusLine command used by `/clock`), and `cah-stamp` (Stop hook used by `/clock` for the chat audit trail).
-
-## Build & test
-
-```bash
-node bin/cah.js install             # run directly
-npm test                            # run the full test suite
-node --test test/installer.test.js  # run a single test file
-```
-
-Dev-loop for template editing:
-```bash
-node bin/cah.js install --templates ./templates --only skills --cwd /tmp/sandbox
-```
-
-## Architecture
-
-The codebase has two layers: a thin CLI (`lib/cli.js`) that does arg parsing and dispatch, and the installer modules (`lib/*.js`) that own all side effects.
-
-**Manifest-driven generation.** The 67 current Claude model definitions live in `lib/manifest.js` as `AllModelCommands`; each renders one command body and one agent body, for 134 installed bodies total. Both Claude commands and Claude agents are rendered parametrically at install time from this single registry. The current `AllCodexAgents` registry contains 46 optional Codex agents, installed only with `--codex-agents`. Every record also carries its model's `contextWindow` (Claude and Codex) and `maxContextWindow` (Codex); the Codex windows and accepted efforts come from the generated `lib/codex-model-specs.js`.
-
-**Skills are static trees.** Each skill is a directory under `templates/skills/<name>/`. The `AllSkills` array in `lib/manifest.js` is the registry. Adding a skill = drop a directory + append the name.
-
-**Sentinel-based ownership.** Every file `cah` writes carries a sentinel — an HTML comment for markdown (`<!-- cah-model-command:v1 -->`, etc.) or a line comment for the copied bin files (`// cah-bin:v1`). Install/uninstall/list use `string.includes()` on file content to classify files as mine/legacy/foreign/missing. Foreign files are never touched. Legacy sentinels (`<!-- crush-model-command:v1 -->`, `<!-- crush-model-agent:v1 -->`) from the crush fork are recognized and migrated on install.
-
-**Scope resolution.** `lib/scope.js` resolves target directories. Default is `--global` (`~/.claude/`). `--local` (strict mode) refuses to create `.claude/` if it doesn't already exist. `--cwd PATH` implies local scope at that path.
-
-**Templates.** `lib/templates.js` resolves skill trees from either the bundled `templates/` directory (relative to package root via `import.meta.url`) or from an arbitrary disk path via `--templates <dir>`.
-
-**Shared fragments.** Behaviour common to every harness (Claude, Codex, OpenCode, OMP) is written once in `templates/shared/<name>.md` and pulled into a Markdown template with a line holding only `{{include:<name>}}`. `Templates.skillTree` expands it, so every installer gets the same text. A missing fragment, an inline include or a nested include throws. Fragments must stay harness-neutral (no `TaskList`, `todo`, `~/.claude` …): harness-specific wording stays in the template around the include. `test/templates-include.test.js` fails on an unused or unresolved fragment.  only into top-level functions, so engine state is passed explicitly (`w`); `claude plugin validate <installed folder>` must pass. `test/checkpoint-watch.test.js` drives the engine with a fake `# CLAUDE.md
-
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
-## What this is
-
-`cah` (cc-arch-hands) — a Node.js CLI that installs/removes/inspects Claude Code per-model slash-commands, sub-agents, and skills under `~/.claude/` (global) or `<cwd>/.claude/` (local). Zero runtime dependencies — only Node.js built-ins (`node:fs`, `node:path`, `node:os`, `node:util`, `node:test`).
-
-The npm package also ships **four bins** on PATH: `cah` (the main CLI, also aliased as `cc-arch-hands`), `cah-checkpoint-hint` (Stop hook of the pre-mod `/checkpoint-watch`, kept for projects that still have it), `cah-status` (statusLine command used by `/clock`), and `cah-stamp` (Stop hook used by `/clock` for the chat audit trail).
-
-## Build & test
-
-```bash
-node bin/cah.js install             # run directly
-npm test                            # run the full test suite
-node --test test/installer.test.js  # run a single test file
-```
-
-Dev-loop for template editing:
-```bash
-node bin/cah.js install --templates ./templates --only skills --cwd /tmp/sandbox
-```
-
-## Architecture
-
-The codebase has two layers: a thin CLI (`lib/cli.js`) that does arg parsing and dispatch, and the installer modules (`lib/*.js`) that own all side effects.
-
-**Manifest-driven generation.** The 67 current Claude model definitions live in `lib/manifest.js` as `AllModelCommands`; each renders one command body and one agent body, for 134 installed bodies total. Both Claude commands and Claude agents are rendered parametrically at install time from this single registry. The current `AllCodexAgents` registry contains 46 optional Codex agents, installed only with `--codex-agents`. Every record also carries its model's `contextWindow` (Claude and Codex) and `maxContextWindow` (Codex); the Codex windows and accepted efforts come from the generated `lib/codex-model-specs.js`.
-
-**Skills are static trees.** Each skill is a directory under `templates/skills/<name>/`. The `AllSkills` array in `lib/manifest.js` is the registry. Adding a skill = drop a directory + append the name.
-
-**Sentinel-based ownership.** Every file `cah` writes carries a sentinel — an HTML comment for markdown (`<!-- cah-model-command:v1 -->`, etc.) or a line comment for the copied bin files (`// cah-bin:v1`). Install/uninstall/list use `string.includes()` on file content to classify files as mine/legacy/foreign/missing. Foreign files are never touched. Legacy sentinels (`<!-- crush-model-command:v1 -->`, `<!-- crush-model-agent:v1 -->`) from the crush fork are recognized and migrated on install.
-
-**Scope resolution.** `lib/scope.js` resolves target directories. Default is `--global` (`~/.claude/`). `--local` (strict mode) refuses to create `.claude/` if it doesn't already exist. `--cwd PATH` implies local scope at that path.
-
-**Templates.** `lib/templates.js` resolves skill trees from either the bundled `templates/` directory (relative to package root via `import.meta.url`) or from an arbitrary disk path via `--templates <dir>`.
-
-**Shared fragments.** Behaviour common to every harness (Claude, Codex, OpenCode, OMP) is written once in `templates/shared/<name>.md` and pulled into a Markdown template with a line holding only `{{include:<name>}}`. `Templates.skillTree` expands it, so every installer gets the same text. A missing fragment, an inline include or a nested include throws. Fragments must stay harness-neutral (no `TaskList`, `todo`, `~/.claude` …): harness-specific wording stays in the template around the include. `test/templates-include.test.js` fails on an unused or unresolved fragment. .
-
-**Companion bins.** Five companion runtime bins are installed under the shared bin root:
+**Companion bins.** Six companion runtime bins are installed under the shared bin root:
 the legacy `/checkpoint-watch` hook → `cah-checkpoint-hint`, `/clock` → `cah-status`
 (statusLine) + `cah-stamp` (Stop+PostToolUse hook), the opt-in probe →
-`cah-status-probe`, and `/rewake` → `cah-rewake` (async `StopFailure` hook with
+`cah-status-probe`, `/nobg` → `cah-nobg` (a `PreToolUse` hook on `Bash` that denies a command detaching a job: bare `&`, `nohup`, `setsid`, `disown`, `coproc`, `screen -d`, also inside `$(…)`, `bash -c '…'` and `eval`; one quote-aware scan, no shell grammar, fail-open; written by `cah nobg on|off|status` → `lib/cli-nobg.js` → `lib/nobg.js`, global scope covers every ccgp profile), and `/rewake` → `cah-rewake` (async `StopFailure` hook with
 `asyncRewake` that backs off and exits 2 to wake a session an API error cut
 off, plus an async `Stop` hook that resets its per-session counter). `cah-rewake`
 imports no local module. Its hooks are written by `cah rewake on|off|status`
@@ -227,8 +153,12 @@ never exposed before its complete mirrored dependency chain is present.
 | `lib/cli-checkpoint-watch.js` | `cah checkpoint-watch on [--commit]` / `off` / `status` `[--cwd PATH]`; refuses a folder outside a Git repository |
 | `lib/checkpoint-idle.js` | `updateIdle` / `readIdleState` / `idleIn` — the `cahCheckpointIdle` key (`enable` with mode and minutes, `mute`, `disable`) in one settings file, via the shared `editSettings` of `lib/checkpoint-watch.js` |
 | `lib/cli-checkpoint-idle.js` | `cah checkpoint-idle on [--commit] [--minutes N]` / `off` / `status` `[--global\|--local] [--cwd PATH]`: project default, `--global` = `~/.claude` + every ccgp profile |
-| `lib/cli-settings-commands.js` | `SettingsCommands` — `rewake`, `checkpoint-watch` and `checkpoint-idle` keyed by subcommand name; `lib/cli.js` dispatches to it from its `default` branch (keeps `cli.js` under the 1000-line limit) |
+| `lib/cli-settings-commands.js` | `SettingsCommands` — `rewake`, `checkpoint-watch`, `checkpoint-idle` and `nobg` keyed by subcommand name; `lib/cli.js` dispatches to it from its `default` branch (keeps `cli.js` under the 1000-line limit) |
 | `lib/settings-targets.js` | `settingsTargets` — the settings.json files for `--global` (user + ccgp profiles) or `--local`/`--cwd`; shared by `cah rewake` and `cah checkpoint-idle` |
+| `lib/sentinel-hooks.js` | `createHookEditor` — add/update/remove a sentinel-tagged (`cah-hook:v1`, `cah-name`) hook set in one settings.json under the shared lock with CAS publish; `rewake.js` and `nobg.js` are thin wrappers around it |
+| `bin/cah-nobg.js` | `PreToolUse` Bash hook: `findDetached(command)` returns the deny reason (bare `&` unless a later `wait` reaps it, `nohup`/`setsid`/`disown`/`coproc`/`daemonize`/`systemd-run`/`screen -d`/`tmux -d` in command position, recursing into `$(…)`, backticks, `bash -c`, `eval`), the hook answers `permissionDecision: deny`; any error allows |
+| `lib/nobg.js` | `updateNobg` / `readNobgState` — the one `PreToolUse` `Bash` hook of `cah-nobg` (`cah-name: nobg`) |
+| `lib/cli-nobg.js` | `cah nobg on` / `off` / `status`, with `--global` (user + ccgp profiles), `--local` or `--cwd PATH` |
 | `lib/rewake.js` | `updateRewake` / `readRewakeState` — add/remove the sentinel-tagged (`cah-hook:v1`, `cah-name: rewake`) StopFailure/Stop hooks in one settings.json with lock + CAS publish |
 | `lib/cli-rewake.js` | `cah rewake on` / `off` / `status`, with `--global`, `--local` or `--cwd PATH`: global = `~/.claude/settings.json` + every ccgp profile |
 | `lib/probe.js` | `enableProbe` / `disableProbe` / `readProbeLog` / `probeStatus` — atomic settings.json swap to wire `cah-status-probe` as the statusLine bin, with a sidecar backup file |

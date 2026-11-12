@@ -5,7 +5,8 @@ workshop: per-model slash-commands, per-model delegated sub-agents, and
 skills. Requires Node.js >=24 and has zero runtime dependencies — only
 Node.js built-ins.
 
-```bash
+```
+├── bin/cah-nobg.js              # PreToolUse Bash hook bin: deny a command that detaches a jobbash
 npx cc-arch-hands install        # that's it — installs commands, agents & skills into ~/.claude/
 ```
 
@@ -22,7 +23,7 @@ install time.
 The artifacts:
 - **per-model slash-commands** (<!--gen:count:model-commands-->67<!--/gen-->) under `~/.claude/commands/`,
 - **per-model sub-agents** (<!--gen:count:model-commands-->67<!--/gen-->) under `~/.claude/agents/`,
-- **skills** (15) under `~/.claude/skills/`,
+- **skills** (16) under `~/.claude/skills/`,
 - **companion bins** under `~/.claude/cah-bin/` (since 0.4.0).
 
 Optional artifacts are installed only when requested:
@@ -79,6 +80,7 @@ The companion runtime bins:
 - **`cah-status`** — statusLine command invoked by `/clock`. Renders `<model> [effort] · X.XX% (Nk/Mk)` with a usage bar and, for Pro/Max accounts, the 5-hour and weekly quota use with reset info (`5h N% →48м · wk N% →сб 27.06 16:19`). The bracketed effort code matches the slash-command suffix convention — `[l]/[m]/[h]/[x]/[xx]` for low/medium/high/xhigh/max; omitted for models without effort support (Haiku). Refreshes every 60 s (`refreshInterval: 60`, in seconds) and on every turn boundary.
 - **`cah-stamp`** — Stop hook bin invoked by `/clock` on both `Stop` AND `PostToolUse`. Emits an `HH:MM:SS · model · X.XX% · 5h N% · wk N%` line as a `systemMessage` (no effort suffix or bars; compact text). Two safeguards prevent scrollback spam: **per-message dedup** (every assistant entry of the same turn shares an API `requestId` — if we already stamped this turn, the next hook of the same turn is suppressed) and a **session-scoped time-throttle safety net** (default 10 s, configurable via `CAH_STAMP_MIN_INTERVAL_MS`). A newer-version notice is Stop-only, even when PostToolUse already deduped the turn.
 - **`cah-rewake`** — `StopFailure` + `Stop` hook bin wired by `/rewake` (`cah rewake on`). Wakes a session whose turn an API error cut off; see [Wake after a dropped connection](#wake-after-a-dropped-connection-rewake).
+- **`cah-nobg`** — `PreToolUse` hook bin for the Bash tool wired by `/nobg` (`cah nobg on`). Denies a command that detaches a job; see [No detached shell jobs](#no-detached-shell-jobs-nobg).
 - **`cah-status-probe`** — diagnostic statusLine bin armed by `cah probe statusline start`. Captures the raw stdin envelope to a JSONL log so you can inspect exactly which fields Claude Code delivers on your account (added in 0.4.1).
 
 **Квоты `/clock`.** В statusLine показываются использование квоты и время сброса: `wk 67% →сб 27.06 16:19`; время сброса — локальное. Если в Claude-сессии временно отсутствует `five_hour`, панель повторно использует последнее измерение той же сессии до 5 минут и только пока его reset ещё впереди; Codex-модели и другие сессии не наследуют чужой 5h-квотомер. Старые и истёкшие измерения не показываются.
@@ -511,7 +513,7 @@ plugin loading. No inference ran, so provider support for a given effort and a
 model-driven babysit wake are untested.
 
 
-### 4. Skills (15)
+### 4. Skills (16)
 
 Reusable capability packs Claude Code loads on demand. Each is invoked as
 `/skill-name` from a chat. Grouped by purpose:
@@ -543,6 +545,7 @@ Reusable capability packs Claude Code loads on demand. Each is invoked as
 | `/ccheckpoint-watch` | Same cycle, plus a local commit of each checkpoint file (only that file; never a push). |
 | `/checkpoint-idle` | Turns on the same cycle for silence: after N minutes (default 30; 5–50) with no turn and 200k+ tokens of context the checkpoint-watch mod runs `/checkpoint`, compacts and runs `/resume`. This project by default, `--global` for every project (and every ccgp profile), `--off`, `--status`. See [below](#checkpoint-compact-and-resume-after-silence-checkpoint-idle). |
 | `/ccheckpoint-idle` | Same, plus a local commit of each checkpoint file (only that file; never a push). |
+| `/nobg` | Forbids detached shell jobs: a `PreToolUse` hook on Bash denies a command with a bare `&`, `nohup`, `setsid`, `disown`, `coproc` or `screen -d`, also inside `$(…)`, `bash -c '…'` and `eval`, and tells the agent to use `run_in_background: true`. Global by default (plus every ccgp profile); `--here` for one project, `--off` to remove, `--status` to inspect. See [below](#no-detached-shell-jobs-nobg). |
 | `/rewake` | Wakes a session whose turn an API error cut off (`Connection lost mid-response`, overloaded, server errors) and asks Claude to continue: waits 60 s, then up to 900 s, at most 6 tries. Global by default (plus every ccgp profile); `--here` for one project, `--off` to remove, `--status` to inspect. See [below](#wake-after-a-dropped-connection-rewake). |
 
 **Workspace HUD**
@@ -660,6 +663,12 @@ vetoes it (`{ skip }`) and runs steps 3–6, the checkpoint first while the cach
 is still warm, then its own compaction. Threshold, manual, plugin and
 precompute compactions pass through untouched.
 
+The mod also registers `/checkpoint-now` and `/ccheckpoint-now`, which run steps
+3–6 at once: whatever the context size, with the watch off, inside a Git
+repository, no argument (the checkpoint is `now-<date>-<time>`). The second one
+adds the commit step. They are commands of the mod, not skills, so they come with
+the `checkpoint-watch` skill; a failed run does not hold back the 90% cycle.
+
 A cycle that fails (no checkpoint written, the checkpoint turn interrupted, the
 compaction skipped, 20 minutes without a result) or is cancelled with
 `/checkpoint-watch-cancel` ends the hold and sends what it held back as one
@@ -703,6 +712,27 @@ shared settings lock. The project setting wins over the global one, and a projec
 `off` (`{ "mode": "off" }`) mutes a global one. The mod reads it after every
 turn, so no restart is needed. With `--global` it applies to every folder; the
 mod still acts only inside a Git repository.
+
+### No detached shell jobs (`/nobg`)
+
+A command that ends in `&` (`server &`) starts a job that outlives the tool call: it ignores SIGINT, nothing
+tracks it, it survives a timeout or a closed session as an orphan, and the next call often starts a second copy.
+Claude Code has no setting against it (`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` only turns off its own
+`run_in_background`), so `/nobg` (or `cah nobg on`) adds one `PreToolUse` hook on `Bash` that runs the
+`cah-nobg` bin and denies the call, telling the agent to run the command in the foreground or use the Bash tool's
+`run_in_background: true`. It catches, with one quote-aware scan and no shell grammar:
+
+- a bare `&` (`a &`, `a & b`, `( a; b ) &`, `a &> log &`);
+- `nohup`, `setsid`, `disown`, `coproc`, `daemonize`, `systemd-run`, `screen -d…` and `tmux … -d` in command
+  position, also behind `sudo`, `env`, `time`, `timeout 5`, `VAR=x`, `if`/`do`/`{`;
+- the same inside `$(…)`, backticks, double-quoted substitutions, `bash -c '…'`, `sh -c "…"` and `eval …`.
+
+Left alone: `&&`, `||`, `|&`, `&>`, `2>&1`, an `&` in single quotes, a comment, a heredoc body, `$(( ))`, and a
+command that reaps its jobs with a `wait` after the last `&`. Anything the bin cannot read allows the call.
+
+Global by default (`~/.claude/settings.json` plus every ccgp profile); `--local`/`--cwd` (`/nobg --here`) target one
+project. Only the sentinel-tagged hook (`cah-hook:v1`, `cah-name: nobg`) is added or removed, under the shared
+settings lock. It runs for subagents too; a running session may keep the hooks it loaded at start.
 
 ### Wake after a dropped connection (`/rewake`)
 
@@ -752,7 +782,7 @@ What `/resume` does:
 |---|---|---|
 | Slash-commands | <!--gen:count:model-commands-->67<!--/gen--> | `<scope>/.claude/commands/<name>.md` (only with `--commands`) |
 | Sub-agents | <!--gen:count:model-commands-->67<!--/gen--> | `<scope>/.claude/agents/<name>.md` |
-| Skills | 15 | `<scope>/.claude/skills/<name>/` |
+| Skills | 16 | `<scope>/.claude/skills/<name>/` |
 | Codex custom agents | <!--gen:count:codex-agents-->46<!--/gen--> | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
 | Codex skills | <!--gen:count:codex-skills-->4<!--/gen--> | `<scope>/.codex/skills/<name>/` (only with `--codex-skills`) |
 | OMP agents and tag rule | Full registry + rule | `~/.omp/agent/agents/<name>.md` and `~/.omp/agent/APPEND_SYSTEM.md` (only with `--omp-agents`; `--omp-profile NAME` selects `~/.omp/profiles/NAME/agent/`) |
@@ -831,14 +861,14 @@ npx cc-arch-hands install --opencode-commands      # optional: nine OpenCode com
 npx cc-arch-hands install --opencode               # optional: all OpenCode artifacts
 
 # --only takes install classes, individual skill names, or any mix.
-npx cc-arch-hands install --only skills                       # all 15 skills
+npx cc-arch-hands install --only skills                       # all 16 skills
 npx cc-arch-hands install --only commands                     # all per-model slash-commands
 npx cc-arch-hands install --only codex-agents                 # all Codex agents into ~/.codex/agents (opt-in)
 npx cc-arch-hands install --only codex-skills                 # Codex skills into ~/.codex/skills (opt-in)
 npx cc-arch-hands install --only omp-agents                   # OMP agents + APPEND_SYSTEM.md rule (opt-in)
 npx cc-arch-hands install --only omp-commands                 # nine OMP workflow commands + runtime (opt-in)
 npx cc-arch-hands install --only bins                         # companion bins (cah-status, cah-stamp,
-                                                    #   cah-checkpoint-hint (legacy), cah-status-probe, cah-rewake,
+                                                    #   cah-checkpoint-hint (legacy), cah-status-probe, cah-rewake, cah-nobg,
                                                     #   + shared lib leaves: transcript-stats.js,
                                                     #     update-check.js, proxy-model.js, rate-limits-cache.js,
                                                     #     lease-lock.js, marker-capacity-ops.js,
@@ -849,7 +879,7 @@ npx cc-arch-hands install --only bins                         # companion bins (
                                                     #     sentinel.js)
 
 # One example per skill (every installable artefact has its own line).
-# clock and rewake auto-pull `bins` with a notice; ccheckpoint-watch and the two
+# clock, rewake and nobg auto-pull `bins` with a notice; ccheckpoint-watch and the two
 # idle skills auto-pull the checkpoint-watch skill, whose folder carries the mod.
 npx cc-arch-hands install --only repo-sight
 npx cc-arch-hands install --only babysit
@@ -864,6 +894,7 @@ npx cc-arch-hands install --only checkpoint-watch             # skill + the chec
 npx cc-arch-hands install --only ccheckpoint-watch            # auto-pulls checkpoint-watch
 npx cc-arch-hands install --only checkpoint-idle              # auto-pulls checkpoint-watch
 npx cc-arch-hands install --only ccheckpoint-idle             # auto-pulls checkpoint-watch
+npx cc-arch-hands install --only nobg                         # auto-pulls bins
 npx cc-arch-hands install --only clock                        # auto-pulls bins
 npx cc-arch-hands install --only rewake                       # auto-pulls bins
 
@@ -902,6 +933,10 @@ npx cc-arch-hands probe statusline stop            # restore + print captured en
 npx cc-arch-hands probe statusline status          # is the probe armed?
 
 npx cc-arch-hands rewake on                         # wake sessions an API error cut off (global + ccgp profiles)
+npx cc-arch-hands nobg on                           # deny detached shell jobs (global + ccgp profiles)
+npx cc-arch-hands nobg on --cwd .                   # only this project
+npx cc-arch-hands nobg status                       # where it is on
+npx cc-arch-hands nobg off                          # remove our hook only
 npx cc-arch-hands rewake on --cwd .                 # only this project
 npx cc-arch-hands rewake status                     # where it is on, last logged events
 npx cc-arch-hands rewake off                        # remove our hooks only
@@ -989,7 +1024,7 @@ cc-arch-hands/
 ├── bin/cah-rewake.js            # StopFailure/Stop hook bin: wake a session an API error cut off
 ├── lib/
 │   ├── cli.js                   # dispatch, arg parsing (node:util parseArgs), --only resolver
-│   ├── manifest.js              # AllModelCommands (67 definitions), AllCodexAgents (46), AllSkills (15), SkillDeps, SkillSkillDeps
+│   ├── manifest.js              # AllModelCommands (67 definitions), AllCodexAgents (46), AllSkills (16), SkillDeps, SkillSkillDeps
 │   ├── codex-model-specs.js     # generated by `npm run sync:codex`: Codex context windows + accepted efforts
 │   ├── cli-info.js              # `cah version` and `cah models --json`
 │   ├── sentinel.js              # new + legacy markers, ownership classifier
@@ -1002,6 +1037,9 @@ cc-arch-hands/
 │   ├── marker-capacity-stage.js  # bounded marker transaction staging/recovery
 │   ├── marker-capacity-recovery.js # generation-aware transaction retirement/recovery
 │   ├── fs-atomic.js             # atomic publication, identity, quarantine helpers
+│   ├── sentinel-hooks.js        # add/update/remove a sentinel-tagged hook set in a settings.json (lock + CAS)
+│   ├── nobg.js                  # the cah-nobg PreToolUse hook in a settings.json
+│   ├── cli-nobg.js              # `cah nobg on|off|status` (global + ccgp profiles, or one project)
 │   ├── transcript-stats.js      # shared: stats, formatStatusLine, makeBar, reset formatters
 │   ├── commands.js              # render + install + remove (67 .md bodies)
 │   ├── agents.js                # render + install + remove (67 .md bodies)
@@ -1019,6 +1057,7 @@ cc-arch-hands/
 │   │   ├── <name>/SKILL.md
 │   │   └── checkpoint-watch/hooks/  # the checkpoint-watch mod (engine.mjs + register.mjs)
 │   ├── shared/                  # harness-neutral fragments pulled in by {{include:<name>}}
+│   ├── nobg.test.js             # cah-nobg detection + `cah nobg` settings wiring
 │   └── codex-skills/            # cli-run, checkpoint, ccheckpoint, resume
 ├── test/
 │   ├── installer.test.js        # installer tests (node:test + node:assert)
