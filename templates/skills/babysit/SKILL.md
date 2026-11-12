@@ -46,7 +46,7 @@ Copy the block below into the `prompt` argument of CronCreate **as-is**, includi
 
 The TaskList defines remaining work, not execution state; /goal is not consulted. User stops and changes of direction take priority. Respect scope and permissions; leave other agents' tasks alone.
 
-1. Read the TaskList. If no owned pending or in_progress tasks remain, find your cron via CronList by this prompt's first line, delete it via CronDelete, and end the tick.
+1. Read the TaskList. If no owned pending or in_progress tasks remain, find your cron via CronList by this prompt's first line, delete it via CronDelete, and end the tick. Deleting your own job is the only cron action a tick takes: never create, replace or recreate a babysit job from a tick.
 
 2. Establish execution state from tool results and notifications, distinguishing last-known from currently confirmed state. in_progress, TaskUpdate, a commit, a cron, or repeating an old result does not prove a live executor. Reconfirm inherited executors after a session restart. A terminal result closes that executor; do not report it as running again without evidence of a new launch. A finished watcher does not establish the observed operation's state. Distinguish running, queued, waiting, blocked, and unknown; if current state cannot be established, use unknown. Use the supported verification mechanism; do not launch duplicates or replace completion notifications with manual polling. If queued/waiting state persists unusually long, inspect available evidence of the delay and report its confirmed cause or that it is unknown; do not label waiting as execution or restart work merely because it is delayed.
 
@@ -68,7 +68,8 @@ Keep reports brief: actual results or the precise reason for waiting or blockage
 ## Important
 
 - **The timer is a recovery fallback, not a pacing gate.** An active session continues actionable work without waiting for the next tick.
-- A cron stores a copy of the tick prompt: editing this file does not update existing jobs. Recreate an existing babysit job to apply the new logic.
+- **One job, created once.** Never `CronDelete` and `CronCreate` a babysit job on your own to change its interval, to apply a newer tick prompt, to "refresh" it or to re-arm it. Only the user's explicit request in words ("recreate babysit with 5m") permits replacing it: then delete the old job and create exactly one new one in the same step. A job that auto-expired after 7 days no longer exists, so arming a new one is plain step 2.
+- A cron stores a copy of the tick prompt: editing this file does not update existing jobs. Step 1 reports the difference and stops; the job is replaced only on the user's request, as above.
 - The skill loader does not execute the cron for you. **Reading this file is not the same as installing the cron.** Don't move on until step 3 above has logged a confirmed `<job-id>`.
 - This skill changes neither the goal nor the plan — it only nudges existing work forward. New tasks come from `/task` or `/babygoal`. List hygiene comes from `/triage`.
 - If `CronList` shows the TaskList is empty of your work but other agents' tasks are still alive — leave their tasks alone, but do call CronDelete on your own job. It's not yours to babysit.

@@ -20,7 +20,7 @@ The first argument is an optional interval (e.g. `5m`, `1h`). Everything else is
 
 By the time this turn ends, the following must be **observable in tool output**, not just narrated:
 
-- `CronList` shows a recurring job whose prompt starts with `# babysit tick` and whose cron expression matches the interval from step 1.
+- `CronList` shows exactly one recurring job whose prompt starts with `# babysit tick`. A job that already existed counts, whatever its interval or saved prompt: it is kept, never deleted or recreated to match the interval from step 1 (`/babysit` reports a mismatch; the user decides).
 - `TaskList` shows the **leaf tasks of the decomposition**, not an umbrella wrapper:
   - **Single-context strategy** → at least one leaf task with status `in_progress`.
   - **Sequential sub-agents** → all decomposed tasks present; the first one `in_progress`, the rest `pending` with correct `blockedBy`.
@@ -90,9 +90,10 @@ This contract exists because two failure modes are extremely common:
 
 Before ending any response from this skill, **run exactly these two tool calls** and inspect their output:
 
-1. **`CronList`.** Does the returned list contain a recurring job whose prompt starts with `# babysit tick` and whose cron expression matches the interval from step 1?
-   - **No** → the babysit invocation in 5a did not actually install the cron (most likely you read the skill text and skipped the actual `CronCreate`). Re-invoke `Skill('babysit', '<interval>')` and this time follow its "On invocation" steps to the letter — including the `CronCreate` and the second `CronList` confirmation. If that still doesn't produce a job, fall back to calling `CronCreate` directly from this file: build the off-minute cron expression for the interval and pass the tick prompt text from the babysit SKILL.md verbatim.
-   - **Yes** → check passed.
+1. **`CronList`.** Does the returned list contain a recurring job whose prompt starts with `# babysit tick`? Its interval and saved prompt do not matter.
+   - **None** → the babysit invocation in 5a did not actually install the cron (most likely you read the skill text and skipped the actual `CronCreate`). Re-invoke `Skill('babysit', '<interval>')` and this time follow its "On invocation" steps to the letter — including the `CronCreate` and the second `CronList` confirmation. If that still doesn't produce a job, fall back to calling `CronCreate` directly from this file: build the off-minute cron expression for the interval and pass the tick prompt text from the babysit SKILL.md verbatim.
+   - **One** → check passed, even if its interval differs from step 1. Never call `CronDelete` or a second `CronCreate` here: report the existing job and its interval in one line.
+   - **Several** → report their ids and stop; the user removes the extras.
 
 2. **`TaskList`.** Look at the returned tasks against the strategy you chose in step 3:
    - **Single-context** → at least one leaf task is `in_progress`.
