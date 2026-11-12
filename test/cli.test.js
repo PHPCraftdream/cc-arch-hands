@@ -165,7 +165,7 @@ describe('resolveDeps', () => {
   it('auto-adds the checkpoint-watch skill when ccheckpoint-watch is selected by name', () => {
     const r = resolveDeps({ classes: [], skills: ['ccheckpoint-watch'] });
     assert.deepEqual(r.skills, ['ccheckpoint-watch', 'checkpoint-watch']);
-    assert.match(r.notices[0], /auto-added skill 'checkpoint-watch' (required by: ccheckpoint-watch)/);
+    assert.match(r.notices[0], /auto-added skill 'checkpoint-watch' \(required by: ccheckpoint-watch\)/);
     const both = resolveDeps({ classes: [], skills: ['ccheckpoint-watch', 'checkpoint-watch'] });
     assert.deepEqual(both.notices, []);
   });
