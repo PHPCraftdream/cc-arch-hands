@@ -227,6 +227,7 @@ never exposed before its complete mirrored dependency chain is present.
 | `lib/cli-checkpoint-watch.js` | `cah checkpoint-watch on [--commit]` / `off` / `status` `[--cwd PATH]`; refuses a folder outside a Git repository |
 | `lib/checkpoint-idle.js` | `updateIdle` / `readIdleState` / `idleIn` — the `cahCheckpointIdle` key (`enable` with mode and minutes, `mute`, `disable`) in one settings file, via the shared `editSettings` of `lib/checkpoint-watch.js` |
 | `lib/cli-checkpoint-idle.js` | `cah checkpoint-idle on [--commit] [--minutes N]` / `off` / `status` `[--global\|--local] [--cwd PATH]`: project default, `--global` = `~/.claude` + every ccgp profile |
+| `lib/cli-settings-commands.js` | `SettingsCommands` — `rewake`, `checkpoint-watch` and `checkpoint-idle` keyed by subcommand name; `lib/cli.js` dispatches to it from its `default` branch (keeps `cli.js` under the 1000-line limit) |
 | `lib/settings-targets.js` | `settingsTargets` — the settings.json files for `--global` (user + ccgp profiles) or `--local`/`--cwd`; shared by `cah rewake` and `cah checkpoint-idle` |
 | `lib/rewake.js` | `updateRewake` / `readRewakeState` — add/remove the sentinel-tagged (`cah-hook:v1`, `cah-name: rewake`) StopFailure/Stop hooks in one settings.json with lock + CAS publish |
 | `lib/cli-rewake.js` | `cah rewake on` / `off` / `status`, with `--global`, `--local` or `--cwd PATH`: global = `~/.claude/settings.json` + every ccgp profile |
