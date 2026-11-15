@@ -165,6 +165,17 @@ describe('cah checkpoint-idle', () => {
     assert.deepEqual(read(s.local), { [IDLE_KEY]: { mode: 'commit', minutes: 30 } }, 'the project keeps its own setting');
   });
 
+  it('status under a ccgp profile reports that profile\'s setting as the effective one', (t) => {
+    const s = setup(t);
+    writeFileSync(s.work, JSON.stringify({ [IDLE_KEY]: { mode: 'commit', minutes: 15 } }));
+    const status = spawnSync(process.execPath, [cli, 'checkpoint-idle', 'status', '--cwd', s.project], {
+      cwd: s.home, encoding: 'utf8', timeout: DEFAULT_CLI_TIMEOUT_MS,
+      env: { ...process.env, HOME: s.home, USERPROFILE: s.home, CCGP_HOME: join(s.profile, '..', '..'), CLAUDE_CONFIG_DIR: s.profile },
+    });
+    assert.equal(status.status, 0, status.stderr);
+    assert.match(status.stdout, /^effective here: on, mode commit, 15 min \(from ccgp profile work\)$/m);
+  });
+
   it('a project off with no global setting just drops the key', (t) => {
     const s = setup(t);
     s.run('on', '--cwd', s.project);
