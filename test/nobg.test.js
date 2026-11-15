@@ -29,30 +29,68 @@ describe('cah-nobg: what it denies', () => {
     ['a redirect then &', 'server > log 2>&1 &'],
     ['&> then &', 'server &>/dev/null &'],
     ['an unquoted URL with &', 'curl http://x/?a=1&b=2'],
-    ['nohup', 'nohup ./run.sh > out.log'],
-    ['nohup behind sudo and env', 'sudo -E env FOO=1 nohup ./run.sh'],
-    ['nohup behind timeout', 'timeout 30 nohup ./run.sh'],
-    ['a variable then setsid', 'FOO=1 setsid ./run.sh'],
-    ['setsid after &&', 'cd app && setsid ./run.sh'],
-    ['nohup in an if body', 'if true; then nohup ./run.sh; fi'],
-    ['disown', 'long_task; disown'],
-    ['coproc', 'coproc worker { ./run.sh; }'],
-    ['screen -dm', 'screen -dmS job ./run.sh'],
-    ['tmux new -d', 'tmux new-session -d -s job ./run.sh'],
+    ['nohup', 'nohup ./run.sh > out.log', 'nohup'],
+    ['nohup behind sudo and env', 'sudo -E env FOO=1 nohup ./run.sh', 'nohup'],
+    ['nohup behind timeout', 'timeout 30 nohup ./run.sh', 'nohup'],
+    ['a variable then setsid', 'FOO=1 setsid ./run.sh', 'setsid'],
+    ['setsid after &&', 'cd app && setsid ./run.sh', 'setsid'],
+    ['nohup in an if body', 'if true; then nohup ./run.sh; fi', 'nohup'],
+    ['disown', 'long_task; disown', 'disown'],
+    ['coproc', 'coproc worker { ./run.sh; }', 'coproc'],
+    ['screen -dm', 'screen -dmS job ./run.sh', 'screen -dmS'],
+    ['tmux new -d', 'tmux new-session -d -s job ./run.sh', 'tmux new-session -d'],
     ['& inside $( )', 'echo $(sleep 5 &)'],
     ['& inside a backtick substitution', 'echo `sleep 5 &`'],
     ['& inside a double-quoted substitution', 'echo "pid: $(sleep 5 & echo $!)"'],
     ['& inside bash -c', "bash -c 'server &'"],
     ['& inside sh -c with flags', 'sh -ec "server &"'],
-    ['nohup inside bash -c', "bash -lc 'nohup ./run.sh'"],
+    ['nohup inside bash -c', "bash -lc 'nohup ./run.sh'", 'nohup'],
     ['bash -c behind a wrapper', "sudo docker exec c sh -c 'server &'"],
     ['& inside eval', 'eval "server &"'],
     ['nested -c', `bash -c "sh -c 'server &'"`],
     ['& after a wait that came first', 'wait; server &'],
+    ['a quoted shell path with -c', '"C:/Program Files/Git/bin/bash.exe" -c "server &"'],
+    ['bash.exe -c', 'bash.exe -c "server &"'],
+    ['a quoted nohup', '"nohup" ./run.sh', 'nohup'],
+    ['an escaped nohup', '\\nohup ./run.sh', 'nohup'],
+    ['nohup behind sudo -u user', 'sudo -u www nohup ./run.sh', 'nohup'],
+    ['nohup behind env -u VAR', 'env -u X nohup ./run.sh', 'nohup'],
+    ['nohup behind timeout -s SIG N', 'timeout -s KILL 30 nohup ./run.sh', 'nohup'],
+    ['nohup behind nice -n N', 'nice -n 5 nohup ./run.sh', 'nohup'],
+    ['nohup behind command', 'command nohup ./run.sh', 'nohup'],
+    ['nohup behind xargs', 'ls | xargs -n 1 nohup ./run.sh', 'nohup'],
+    ['env -S with a detaching string', "env -S 'server &'"],
+    ['a heredoc fed to bash', 'bash <<EOF\nserver &\nEOF'],
+    ['a quoted heredoc fed to sh -s', "sh -s <<'EOF'\nnohup server\nEOF", 'nohup'],
+    ['Windows start', 'start "" server.exe', 'start'],
+    ['cmd /c start', 'cmd //c start /b server.exe', 'cmd /c start'],
+    ['PowerShell Start-Process', 'powershell -Command "Start-Process server.exe"', 'Start-Process'],
+    ['pwsh Start-Job', 'pwsh -c Start-Job { ./run.ps1 }', 'Start-Job'],
+    ['at', 'echo ./run.sh | at now', 'at'],
+    ['tmux behind a socket option', 'tmux -L work new -d ./run.sh', 'tmux new -d'],
+    ['screen -d -m as two flags', 'screen -d -m ./run.sh', 'screen -m'],
+    ['wait only in a comment', 'server & echo ok # ; wait'],
+    ['wait only in quotes', "server & echo '; wait '"],
+    ['a job of a subshell that ended before the wait', '(server &); wait'],
+    ['a background job in a function', 'f() { server & }; f'],
+    ['2>&1 then &', 'make 2>&1 &'],
+    ['& after arithmetic', '(( y = x << 2 ))\nserver &'],
+    ['a case pattern does not hide a command in its body', 'case $x in start) nohup run;; esac', 'nohup'],
+    ['sudo with combined options', 'sudo -Eu www nohup ./run.sh', 'nohup'],
+    ['find -exec sh -c', "find . -name '*.sh' -exec sh -c 'server &' ;"],
+    ['a heredoc piped to bash', "cat <<'EOF' | bash\nserver &\nEOF"],
+    ['flock running a shell', "flock /tmp/l sh -c 'server &'"],
+    ['start /b', 'start /b server.exe', 'start'],
+    ['at with a time and a file', 'at 5pm -f job.sh', 'at'],
+    ['unquoted Start-Process', 'powershell Start-Process server.exe', 'Start-Process'],
+    ['a detacher after quoted assignments', 'FOO=1 BAR="x" nohup ./run.sh', 'nohup'],
+    ['a substitution in a parameter default', 'echo ${x:-$(server &)}'],
+    ['batch', 'echo ./run.sh | batch', 'batch'],
   ];
-  for (const [name, command] of denied) {
+  // A third element names the detaching word; without one the reason is the bare &.
+  for (const [name, command, word] of denied) {
     it(`denies ${name}`, () => {
-      assert.ok(findDetached(command), command);
+      assert.equal(findDetached(command), word ? detachedWord(word) : DENY_AMPERSAND, command);
     });
   }
 
@@ -88,6 +126,35 @@ describe('cah-nobg: what it leaves alone', () => {
     ['a quoted & that is not code', "git commit -m 'fix a & b'"],
     ['screen without -d', 'screen -ls'],
     ['an empty command', ''],
+    ['an arithmetic command', 'if (( x & 1 )); then echo odd; fi'],
+    [';& in case', 'case $x in a) echo a ;& b) echo b ;; esac'],
+    ['bash -c as grep arguments', "ps aux | grep bash -c 'a & b'"],
+    ['tmux attach -d', 'tmux attach -d -t main'],
+    ['screen -dr', 'screen -dr main'],
+    ['a heredoc for a -c script', "bash -c 'cat' <<EOF\na & b\nEOF"],
+    ['a heredoc with a \\EOF delimiter', 'cat <<\\EOF\na & b\nEOF'],
+    ['npm start', 'npm start'],
+    ['Start-Process with -Wait', 'powershell -Command "Start-Process setup.exe -Wait"'],
+    ['jobs reaped inside their subshell', '(a & b & wait)'],
+    ['an ANSI-C quoted &', "echo $'a\\'b & c'"],
+    ['xargs running a plain command', 'ls | xargs -n 1 echo'],
+    ['a quoted value glued to an assignment', 'MODE="batch" python train.py'],
+    ['a single-quoted assignment value', "ACTION='start' ./ctl.sh"],
+    ['case patterns named like detachers', 'case "$1" in\n  start)\n    ./run.sh ;;\n  stop)\n    ./stop.sh ;;\nesac'],
+    ['an alternative case pattern', 'case $1 in a|start) echo a;; esac'],
+    ['a function named start', 'start() { ./run.sh; }\nstart'],
+    ['a relative script named start', './bin/start --port 80'],
+    ['unquoted Start-Process with -Wait', 'powershell Start-Process setup.exe -Wait'],
+    ['a shell script fed data by a heredoc', 'bash check.sh <<EOF\na & b\nEOF'],
+    ['a heredoc piped to a shell with a script', 'cat <<EOF | bash check.sh\na & b\nEOF'],
+    ['a heredoc piped to a tool', 'cat <<EOF | grep x\nserver &\nEOF'],
+    ['a parameter expansion', 'echo ${s//&/and}'],
+    ['a quoted command path with spaces', '"C:/Program Files/nodejs/node.exe" build.js'],
+    ['the word start as an argument', 'echo start'],
+    ['upstart start', 'start nginx'],
+    ['at without a time', 'at -l'],
+    ['a case statement then other commands', 'case $x in start) echo a;; esac; echo done'],
+    ['a substitution reaped by wait', 'x=`server &`; wait'],
   ];
   for (const [name, command] of allowed) {
     it(`allows ${name}`, () => {
@@ -159,6 +226,21 @@ describe('nobg settings wiring', () => {
     assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { model: 'x', hooks: { PreToolUse: [foreign] } });
     assert.equal(updateNobg(path, 'disable'), 'not-enabled');
     assert.equal(readNobgState(path, BIN), 'disabled');
+  });
+
+  it('sees an edited matcher as stale and keeps a CRLF file CRLF', (t) => {
+    const dir = sandbox(t);
+    const path = join(dir, 'settings.json');
+    writeFileSync(path, '{\r\n  "model": "x"\r\n}\r\n');
+    assert.equal(updateNobg(path, 'enable', { binPath: BIN }), 'enabled');
+    const written = readFileSync(path, 'utf8');
+    assert.equal(written.replace(/\r\n/g, '').includes('\n'), false, 'no bare LF');
+    const edited = JSON.parse(written);
+    edited.hooks.PreToolUse[0].matcher = 'Edit';
+    writeFileSync(path, JSON.stringify(edited, null, 2));
+    assert.equal(readNobgState(path, BIN), 'stale');
+    assert.equal(updateNobg(path, 'enable', { binPath: BIN }), 'updated');
+    assert.equal(JSON.parse(readFileSync(path, 'utf8')).hooks.PreToolUse[0].matcher, 'Bash');
   });
 
   it('creates a missing file and refuses invalid JSON or an unsafe bin path', (t) => {

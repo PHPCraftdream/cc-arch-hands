@@ -1,6 +1,6 @@
 ---
 name: nobg
-description: "Forbid detached shell jobs so no process escapes the tool call: a PreToolUse hook on Bash denies a command with a bare `&`, `nohup`, `setsid`, `disown`, `coproc` or `screen -d` (also inside `$(…)`, `bash -c '…'`, `eval`) and tells the agent to run in the foreground or use `run_in_background: true`. Default global (~/.claude/settings.json plus every ccgp profile); `--here` for this project, `--off` to remove, `--status` to inspect."
+description: "Forbid detached shell jobs so no process escapes the tool call: a PreToolUse hook on Bash denies a command with a bare `&`, `nohup`, `setsid`, `disown`, `coproc`, `screen -dm`, Windows `start` or `Start-Process` (also inside `$(…)`, `bash -c '…'`, `eval`, a heredoc fed to a shell) and tells the agent to run in the foreground or use `run_in_background: true`. Default global (~/.claude/settings.json plus every ccgp profile); `--here` for this project, `--off` to remove, `--status` to inspect."
 ---
 
 # nobg
@@ -15,16 +15,22 @@ tool with `run_in_background: true` (tracked, stoppable, reported when done).
 
 What it catches, with one quote-aware scan and no shell grammar:
 
-- a bare `&`: `a &`, `a & b`, `( a; b ) &`, `a &> log &`;
-- `nohup`, `setsid`, `disown`, `coproc`, `daemonize`, `systemd-run`,
-  `screen -d…`, `tmux … -d` in command position (also behind `sudo`, `env`,
-  `time`, `timeout 5`, `VAR=x`, `if`/`do`/`{`);
+- a bare `&`: `a &`, `a & b`, `( a; b ) &`, `a &> log &`, unless a later
+  `wait` of the same (sub)shell reaps it (a `wait` in a comment, in quotes or
+  after the subshell ended does not count);
+- `nohup`, `setsid`, `disown`, `coproc`, `daemonize`, `systemd-run`, `at`,
+  `batch`, Windows `start`, `screen -dm`, `tmux new … -d` in command position,
+  also quoted, as `name.exe`, and behind `sudo -u user`, `env -u VAR`,
+  `timeout -s SIG 5`, `nice -n 5`, `command`, `xargs -n 1`, `VAR=x`,
+  `if`/`do`/`{`;
+- `cmd /c start …`, PowerShell `Start-Process`/`Start-Job` without `-Wait`;
 - the same inside `$(…)`, backticks, double-quoted substitutions,
-  `bash -c '…'`, `sh -c "…"` and `eval …`.
+  `bash -c '…'`, `sh -c "…"`, `env -S '…'`, `eval …` and a heredoc fed to a
+  shell (`bash <<EOF`).
 
-Left alone: `&&`, `||`, `|&`, `&>`, `2>&1`, an `&` in single quotes, a comment,
-a heredoc body, `$(( ))`, and a command that reaps its jobs with a `wait` after
-the last `&`. A command the bin cannot read is allowed.
+Left alone: `&&`, `||`, `|&`, `&>`, `2>&1`, `;&` in `case`, an `&` in quotes, a
+comment, a plain heredoc body, `$(( ))`, `(( ))`, `tmux attach -d`, `screen -dr`.
+A command the bin cannot read is allowed.
 
 ## Usage
 
