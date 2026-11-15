@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import {
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readdirSync,
   rmdirSync,
   unlinkSync,
@@ -14,12 +13,12 @@ import {
 import { spawn } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
 import { join, dirname, basename } from 'node:path';
-import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { isNewerVersion, getLatestVersion, cachedLatestVersion, CURRENT_VERSION } from '../lib/update-check.js';
 import { isOlderThan, mtimeMsForAge, sameDirectoryIdentity, sameFileIdentity, writeFileAtomic } from '../lib/fsutil.js';
 import { sameStatIdentity } from '../lib/fs-atomic-identity.js';
 import { runWorker, waitForPath } from '../test-support/process-batches.js';
+import { tempDir } from '../test-support/cli-sandbox.js';
 import { symlinkOrSkip } from '../test-support/symlink.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -194,13 +193,10 @@ describe('isNewerVersion', () => {
 });
 
 describe('getLatestVersion caching', () => {
-  function isolatedCachePath() {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-update-check-'));
-    return join(dir, 'update-check.json');
-  }
+  const isolatedCachePath = (t) => join(tempDir(t, 'cah-update-check'), 'update-check.json');
 
-  it('terminates a deterministically hung worker before rejecting', async () => {
-    const cachePath = isolatedCachePath();
+  it('terminates a deterministically hung worker before rejecting', async (t) => {
+    const cachePath = isolatedCachePath(t);
     const started = Date.now();
     await assert.rejects(
       runUpdateWorker(cachePath, Date.now(), join(dirname(cachePath), 'unused-fetch.json'), {}, {
@@ -213,16 +209,16 @@ describe('getLatestVersion caching', () => {
     assert.ok(Date.now() - started < 2_000, 'hung worker must be bounded');
   });
 
-  it('returns the cached value directly when within the TTL window (no network call)', () => {
-    const cachePath = isolatedCachePath();
+  it('returns the cached value directly when within the TTL window (no network call)', (t) => {
+    const cachePath = isolatedCachePath(t);
     const now = 1_000_000;
     writeFileSync(cachePath, JSON.stringify({ latestVersion: '9.9.9', checkedAt: now }));
     const result = getLatestVersion(cachePath, 24 * 60 * 60 * 1000, now + 1000);
     assert.equal(result, '9.9.9');
   });
 
-  it('does not overwrite a pre-existing foreign .tmp file while refreshing', () => {
-    const cachePath = isolatedCachePath();
+  it('does not overwrite a pre-existing foreign .tmp file while refreshing', (t) => {
+    const cachePath = isolatedCachePath(t);
     const tempPath = `${cachePath}.tmp`;
     const foreignTemp = '{"foreign":true}\n';
     writeFileSync(tempPath, foreignTemp);
@@ -241,7 +237,7 @@ describe('getLatestVersion caching', () => {
   });
 
   it('does not follow a pre-existing .tmp symlink while refreshing JSON', (t) => {
-    const cachePath = isolatedCachePath();
+    const cachePath = isolatedCachePath(t);
     const tempPath = `${cachePath}.tmp`;
     const victimPath = `${cachePath}.victim`;
     const victim = '{"victim":"untouched"}\n';
@@ -263,15 +259,15 @@ describe('getLatestVersion caching', () => {
     assert.equal(published.latestVersion, '9.9.9');
   });
 
-  it('returns null on a cold cache when the fetch fails, without throwing', () => {
-    const cachePath = isolatedCachePath();
+  it('returns null on a cold cache when the fetch fails, without throwing', (t) => {
+    const cachePath = isolatedCachePath(t);
     assert.equal(getLatestVersion(cachePath, 24 * 60 * 60 * 1000, Date.now(), {
       fetchLatestVersion: () => null,
     }), null);
   });
 
-  it('serializes stale refreshes: a slow failed fetch consumes the TTL once', async () => {
-    const cachePath = isolatedCachePath();
+  it('serializes stale refreshes: a slow failed fetch consumes the TTL once', async (t) => {
+    const cachePath = isolatedCachePath(t);
     const dir = dirname(cachePath);
     const now = 2_000_000;
     writeFileSync(cachePath, JSON.stringify({ latestVersion: '8.8.8', checkedAt: 0 }));
@@ -304,8 +300,8 @@ describe('getLatestVersion caching', () => {
     });
   });
 
-  it('keeps a successful publisher when a concurrent slow fetch fails', async () => {
-    const cachePath = isolatedCachePath();
+  it('keeps a successful publisher when a concurrent slow fetch fails', async (t) => {
+    const cachePath = isolatedCachePath(t);
     const dir = dirname(cachePath);
     const now = 3_000_000;
     writeFileSync(cachePath, JSON.stringify({ latestVersion: '8.8.8', checkedAt: 0 }));
@@ -348,8 +344,8 @@ describe('getLatestVersion caching', () => {
     });
   });
 
-  it('does not publish a failed fetch over a fresher success', async () => {
-    const cachePath = isolatedCachePath();
+  it('does not publish a failed fetch over a fresher success', async (t) => {
+    const cachePath = isolatedCachePath(t);
     const dir = dirname(cachePath);
     const now = 4_000_000;
     writeFileSync(cachePath, JSON.stringify({ latestVersion: '8.8.8', checkedAt: 0 }));
@@ -370,8 +366,8 @@ describe('getLatestVersion caching', () => {
     });
   });
 
-  it('recovers a refresh lock left by a crashed process', async () => {
-    const cachePath = isolatedCachePath();
+  it('recovers a refresh lock left by a crashed process', async (t) => {
+    const cachePath = isolatedCachePath(t);
     const dir = dirname(cachePath);
     const now = 5_000_000;
     writeFileSync(cachePath, JSON.stringify({ latestVersion: '8.8.8', checkedAt: 0 }));
@@ -397,8 +393,8 @@ describe('getLatestVersion caching', () => {
     assert.equal(existsSync(lockPath), false);
   });
 
-  it('reclaims a fresh lock when its recorded owner is already dead', async () => {
-    const cachePath = isolatedCachePath();
+  it('reclaims a fresh lock when its recorded owner is already dead', async (t) => {
+    const cachePath = isolatedCachePath(t);
     const dir = dirname(cachePath);
     const now = 5_500_000;
     writeFileSync(cachePath, JSON.stringify({ latestVersion: '8.8.8', checkedAt: 0 }));
@@ -424,8 +420,8 @@ describe('getLatestVersion caching', () => {
     assert.equal(existsSync(lockPath), false);
   });
 
-  it('reclaims a lock past the absolute lease even when its PID is live', async () => {
-    const cachePath = isolatedCachePath();
+  it('reclaims a lock past the absolute lease even when its PID is live', async (t) => {
+    const cachePath = isolatedCachePath(t);
     const dir = dirname(cachePath);
     const now = 6_000_000;
     writeFileSync(cachePath, JSON.stringify({ latestVersion: '8.8.8', checkedAt: 0 }));
@@ -444,8 +440,8 @@ describe('getLatestVersion caching', () => {
     assert.equal(existsSync(lockPath), false);
   });
 
-  it('recovers an abandoned fence without displacing its live owner', async () => {
-    const cachePath = isolatedCachePath();
+  it('recovers an abandoned fence without displacing its live owner', async (t) => {
+    const cachePath = isolatedCachePath(t);
     const dir = dirname(cachePath);
     const now = 6_500_000;
     writeFileSync(cachePath, JSON.stringify({ latestVersion: '8.8.8', checkedAt: 0 }));
@@ -468,8 +464,8 @@ describe('getLatestVersion caching', () => {
     assert.equal(existsSync(fetched), false);
   });
 
-  it('quarantines unexpected abandoned fence contents once and reacquires safely', async () => {
-    const cachePath = isolatedCachePath();
+  it('quarantines unexpected abandoned fence contents once and reacquires safely', async (t) => {
+    const cachePath = isolatedCachePath(t);
     const dir = dirname(cachePath);
     const now = 6_750_000;
     writeFileSync(cachePath, JSON.stringify({ latestVersion: '8.8.8', checkedAt: 0 }));
@@ -500,8 +496,8 @@ describe('getLatestVersion caching', () => {
     assert.deepEqual(readdirSync(quarantineDir), [basename(fencePath)]);
   });
 
-  it('uses a bounded collision slot when the deterministic quarantine name is occupied', async () => {
-    const cachePath = isolatedCachePath();
+  it('uses a bounded collision slot when the deterministic quarantine name is occupied', async (t) => {
+    const cachePath = isolatedCachePath(t);
     const dir = dirname(cachePath);
     const now = 6_875_000;
     writeFileSync(cachePath, JSON.stringify({ latestVersion: '8.8.8', checkedAt: 0 }));
@@ -538,8 +534,8 @@ describe('getLatestVersion caching', () => {
     assert.deepEqual(readdirSync(quarantineDir).filter((name) => name.startsWith('.slot-')), ['.slot-0']);
   });
 
-  it('fences a stale A/live B/contender C reclaim race', async () => {
-    const cachePath = isolatedCachePath();
+  it('fences a stale A/live B/contender C reclaim race', async (t) => {
+    const cachePath = isolatedCachePath(t);
     const dir = dirname(cachePath);
     const now = 7_000_000;
     writeFileSync(cachePath, JSON.stringify({ latestVersion: '8.8.8', checkedAt: 0 }));
@@ -593,8 +589,8 @@ describe('getLatestVersion caching', () => {
     assert.equal(readdirSync(dir).some((name) => name.startsWith('update-check.json.lock.stale-')), false);
   });
 
-  it('does not overwrite a concurrent cache winner after the final reread', async () => {
-    const cachePath = isolatedCachePath();
+  it('does not overwrite a concurrent cache winner after the final reread', async (t) => {
+    const cachePath = isolatedCachePath(t);
     const dir = dirname(cachePath);
     const now = 8_000_000;
     writeFileSync(cachePath, JSON.stringify({ latestVersion: '8.8.8', checkedAt: 0 }));
@@ -618,8 +614,8 @@ describe('getLatestVersion caching', () => {
 });
 
 describe('cachedLatestVersion', () => {
-  it('reads the cached version, fresh or stale, and never fetches', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-update-cached-'));
+  it('reads the cached version, fresh or stale, and never fetches', (t) => {
+    const dir = tempDir(t, 'cah-update-cached');
     const path = join(dir, 'update-check.json');
     assert.equal(cachedLatestVersion(path), null);
     writeFileSync(path, JSON.stringify({ latestVersion: '9.9.9', checkedAt: 0 }));
@@ -628,8 +624,6 @@ describe('cachedLatestVersion', () => {
     assert.equal(cachedLatestVersion(path), null);
     writeFileSync(path, '{ broken');
     assert.equal(cachedLatestVersion(path), null);
-    unlinkSync(path);
-    rmdirSync(dir);
   });
 });
 

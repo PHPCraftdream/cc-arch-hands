@@ -14,6 +14,7 @@ import {
   makeBar,
   toDisplayName,
 } from '../lib/transcript-stats.js';
+import { withEnv } from './env.js';
 
 // These cases assert the default (English) reset times whatever the developer's shell holds.
 delete process.env.CAH_LOCALE;
@@ -97,15 +98,10 @@ describe('modelLimit', () => {
   });
 
   it('honors CLAUDE_CODE_DISABLE_1M_CONTEXT only for model-name fallback', () => {
-    const old = process.env.CLAUDE_CODE_DISABLE_1M_CONTEXT;
-    try {
-      process.env.CLAUDE_CODE_DISABLE_1M_CONTEXT = '1';
+    withEnv({ CLAUDE_CODE_DISABLE_1M_CONTEXT: '1' }, () => {
       assert.equal(modelLimit('claude-opus-5'), 200_000);
       assert.equal(contextWindowLimit('claude-opus-5', 1_000_000), 1_000_000);
-    } finally {
-      if (old === undefined) delete process.env.CLAUDE_CODE_DISABLE_1M_CONTEXT;
-      else process.env.CLAUDE_CODE_DISABLE_1M_CONTEXT = old;
-    }
+    });
   });
 
   it('accepts only finite positive actual context sizes', () => {
@@ -286,22 +282,8 @@ describe('reset time language (CAH_LOCALE)', () => {
   const now = new Date(2024, 5, 1, 10, 0, 0);
   const fiveHour = new Date(2024, 5, 1, 13, 25, 0).toISOString();
 
-  function withLocale(values, check) {
-    const names = ['CAH_LOCALE', 'CAH_WEEKDAY_LOCALE'];
-    const saved = names.map((name) => process.env[name]);
-    for (const name of names) {
-      if (values[name] === undefined) delete process.env[name];
-      else process.env[name] = values[name];
-    }
-    try {
-      check();
-    } finally {
-      names.forEach((name, i) => {
-        if (saved[i] === undefined) delete process.env[name];
-        else process.env[name] = saved[i];
-      });
-    }
-  }
+  const withLocale = (values, check) =>
+    withEnv({ CAH_LOCALE: undefined, CAH_WEEKDAY_LOCALE: undefined, ...values }, check);
 
   it('is English by default', () => {
     withLocale({}, () => {

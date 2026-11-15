@@ -1,29 +1,14 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { cliCaller, tempDir } from '../test-support/cli-sandbox.js';
 import { DEFAULT_CLI_TIMEOUT_MS } from '../test-support/process-batches.js';
 import { OmpCommands, OmpCommandRuntimeFiles, SetForOmpCommand } from '../lib/omp-commands.js';
 
-const cli = fileURLToPath(new URL('../bin/cah.js', import.meta.url));
-function sandbox(t) {
-  const home = mkdtempSync(join(tmpdir(), 'cah-omp-commands-'));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
-  return home;
-}
-function call(home, ...args) {
-  return spawnSync(process.execPath, [cli, ...args], {
-    env: { ...process.env, HOME: home, USERPROFILE: home }, encoding: 'utf8', timeout: DEFAULT_CLI_TIMEOUT_MS,
-  });
-}
-function ok(home, ...args) {
-  const result = call(home, ...args);
-  assert.equal(result.status, 0, result.stderr);
-  return result;
-}
+const { call, ok } = cliCaller();
+const sandbox = (t) => tempDir(t, 'cah-omp-commands');
 function list(home, ...args) {
   return ok(home, 'list', '--json', ...args).stdout.trim().split('\n').map(JSON.parse);
 }

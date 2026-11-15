@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { chmodSync, closeSync, mkdirSync, openSync, writeSync, utimesSync, writeFileSync, readFileSync, readdirSync, statSync, lstatSync, rmdirSync, existsSync, symlinkSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
-import { tmpDir, waitForPath, runSkillWorker } from './installer-test-helpers.js';
+import { tmpDir, waitForPath, runSkillWorker, withSkills } from './installer-test-helpers.js';
 import { runWorker } from './process-batches.js';
 import { SentinelSkill } from '../lib/sentinel.js';
 import { AllModelCommands, AllSkills } from '../lib/manifest.js';
@@ -38,11 +38,7 @@ describe('removeSkills', { concurrency: false }, () => {
     const dir = tmpDir();
     const scope = new Scope({ cwd: dir });
 
-    const origSkills = [...AllSkills];
-    AllSkills.length = 0;
-    AllSkills.push('foreignskill');
-
-    try {
+    withSkills(['foreignskill'], () => {
       const destDir = join(dir, '.claude', 'skills', 'foreignskill');
       mkdirSync(destDir, { recursive: true });
       const foreignBody = 'not ours';
@@ -52,10 +48,7 @@ describe('removeSkills', { concurrency: false }, () => {
       assert.equal(removed, 0);
       assert.deepEqual(skipped, ['foreignskill']);
       assert.equal(readFileSync(join(destDir, SKILL_MANIFEST_LEAF), 'utf8'), foreignBody);
-    } finally {
-      AllSkills.length = 0;
-      AllSkills.push(...origSkills);
-    }
+    });
   });
 
   it('missing is no-op', () => {

@@ -1,14 +1,15 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync,
+  existsSync, mkdirSync, readdirSync, readFileSync, rmSync,
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { captureRegularFileSnapshot, writeFileAtomic } from '../lib/fs-atomic.js';
 import { publishWithFence, recoverPublicationFence } from '../lib/fs-atomic-publication.js';
+import { tempDir } from '../test-support/cli-sandbox.js';
+import { withEnv } from '../test-support/env.js';
 import { runWorker, waitForPath } from '../test-support/process-batches.js';
 
 function runWrite(dest, interlock, payload, expected = true) {
@@ -44,8 +45,8 @@ function runWrite(dest, interlock, payload, expected = true) {
 }
 
 describe('conditional atomic publication', () => {
-  it('keeps the old leaf visible until atomic rename, then publishes new', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-conditional-'));
+  it('keeps the old leaf visible until atomic rename, then publishes new', async (t) => {
+    const dir = tempDir(t, 'cah-conditional');
     const dest = join(dir, 'leaf');
     const interlock = join(dir, 'interlock');
     writeFileSync(dest, 'B\n');
@@ -62,8 +63,8 @@ describe('conditional atomic publication', () => {
     assert.equal(existsSync(`${dest}.cah-owned-publish`), false);
   });
 
-  it('aborts when the expected leaf changes in place before rename', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-conditional-'));
+  it('aborts when the expected leaf changes in place before rename', async (t) => {
+    const dir = tempDir(t, 'cah-conditional');
     const dest = join(dir, 'leaf');
     const interlock = join(dir, 'interlock');
     writeFileSync(dest, 'B\n');
@@ -78,8 +79,8 @@ describe('conditional atomic publication', () => {
     assert.equal(readFileSync(dest, 'utf8'), 'mutated old\n');
   });
 
-  it('does not overwrite C when the expected leaf was missing', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-conditional-'));
+  it('does not overwrite C when the expected leaf was missing', async (t) => {
+    const dir = tempDir(t, 'cah-conditional');
     const dest = join(dir, 'missing-leaf');
     const interlock = join(dir, 'interlock');
 
@@ -93,8 +94,8 @@ describe('conditional atomic publication', () => {
     assert.equal(readFileSync(dest, 'utf8'), 'C\n');
   });
 
-  it('cannot overwrite a successor that appears after the generation fence moves the old leaf', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-conditional-'));
+  it('cannot overwrite a successor that appears after the generation fence moves the old leaf', (t) => {
+    const dir = tempDir(t, 'cah-conditional');
     const dest = join(dir, 'leaf');
     writeFileSync(dest, 'B\n');
     const snapshot = captureRegularFileSnapshot(dest);
@@ -113,8 +114,8 @@ describe('conditional atomic publication', () => {
     assert.equal(existsSync(`${dest}.cah-owned-publish`), false);
   });
 
-  it('recovers a proof fence left after the atomic replacement boundary', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-conditional-recovery-'));
+  it('recovers a proof fence left after the atomic replacement boundary', (t) => {
+    const dir = tempDir(t, 'cah-conditional-recovery');
     const dest = join(dir, 'leaf');
     writeFileSync(dest, 'old\n');
     const before = captureRegularFileSnapshot(dest);
@@ -134,8 +135,8 @@ describe('conditional atomic publication', () => {
     assert.equal(existsSync(`${dest}.cah-owned-publish`), false);
   });
 
-  it('reclaims an occupied proof-write fence before a successor publishes', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-conditional-fence-'));
+  it('reclaims an occupied proof-write fence before a successor publishes', (t) => {
+    const dir = tempDir(t, 'cah-conditional-fence');
     const dest = join(dir, 'leaf');
     writeFileSync(dest, 'old\n');
     mkdirSync(`${dest}.cah-owned-publish`);
@@ -147,8 +148,8 @@ describe('conditional atomic publication', () => {
     assert.equal(existsSync(`${dest}.cah-owned-publish`), false);
   });
 
-  it('selects the complete abandoned proof when proof replacement crashed', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-conditional-two-proof-'));
+  it('selects the complete abandoned proof when proof replacement crashed', (t) => {
+    const dir = tempDir(t, 'cah-conditional-two-proof');
     const dest = join(dir, 'leaf');
     writeFileSync(dest, 'old\n');
     const before = captureRegularFileSnapshot(dest);
@@ -174,8 +175,8 @@ describe('conditional atomic publication', () => {
     assert.equal(existsSync(fence), false);
   });
 
-  it('recovers a canonical proof beside a partial proof staging file', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-conditional-partial-proof-'));
+  it('recovers a canonical proof beside a partial proof staging file', (t) => {
+    const dir = tempDir(t, 'cah-conditional-partial-proof');
     const dest = join(dir, 'leaf');
     writeFileSync(dest, 'old\n');
     const before = captureRegularFileSnapshot(dest);
@@ -196,8 +197,8 @@ describe('conditional atomic publication', () => {
     assert.equal(existsSync(fence), false);
   });
 
-  it('lets a verified lifecycle successor recover a live-PID publication', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-conditional-generation-'));
+  it('lets a verified lifecycle successor recover a live-PID publication', (t) => {
+    const dir = tempDir(t, 'cah-conditional-generation');
     const dest = join(dir, 'leaf');
     const leasePath = join(dir, 'lifecycle.lock');
     mkdirSync(leasePath);
@@ -227,8 +228,8 @@ describe('conditional atomic publication', () => {
     assert.equal(existsSync(`${dest}.cah-owned-publish`), false);
   });
 
-  it('keeps the original publication error when the unwind re-inspection throws', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-conditional-unwind-'));
+  it('keeps the original publication error when the unwind re-inspection throws', (t) => {
+    const dir = tempDir(t, 'cah-conditional-unwind');
     const dest = join(dir, 'leaf');
     const tempPath = join(dir, 'temp-src');
     writeFileSync(tempPath, 'new\n');
@@ -272,16 +273,15 @@ describe('conditional atomic publication', () => {
     assert.equal(existsSync(fence), false);
   });
 
-  it('keeps the original publication error when the unwind abort itself throws', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-conditional-abort-'));
+  it('keeps the original publication error when the unwind abort itself throws', (t) => {
+    const dir = tempDir(t, 'cah-conditional-abort');
     const dest = join(dir, 'leaf');
     const tempPath = join(dir, 'temp-src');
     writeFileSync(tempPath, 'new\n');
     const tempSnapshot = captureRegularFileSnapshot(tempPath);
     const fence = `${dest}.cah-owned-publish`;
 
-    process.env.CAH_TEST_ONLY = '1';
-    try {
+    withEnv({ CAH_TEST_ONLY: '1', CAH_TEST_ONLY_ABORT_PUBLICATION_FAILURE: undefined }, () => {
       assert.throws(() => publishWithFence(
         dest, tempPath, tempSnapshot.expectedDestination.identity,
         { exists: false, identity: null },
@@ -296,10 +296,7 @@ describe('conditional atomic publication', () => {
           },
         },
       ), (error) => error.message === 'test-only forward publication failure');
-    } finally {
-      delete process.env.CAH_TEST_ONLY_ABORT_PUBLICATION_FAILURE;
-      delete process.env.CAH_TEST_ONLY;
-    }
+    });
 
     // A throwing abort counts as attempted: the caller's original error must
     // surface, not a replacement from the unwind, and no recovery-required
@@ -308,16 +305,15 @@ describe('conditional atomic publication', () => {
     assert.equal(existsSync(fence), true, 'a throwing abort must not have cleaned the fence');
   });
 
-  it('keeps the original publication error when a partially-completed unwind abort throws', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-conditional-abort-late-'));
+  it('keeps the original publication error when a partially-completed unwind abort throws', (t) => {
+    const dir = tempDir(t, 'cah-conditional-abort-late');
     const dest = join(dir, 'leaf');
     const tempPath = join(dir, '.cah-tmp-src');
     writeFileSync(tempPath, 'new\n');
     const tempSnapshot = captureRegularFileSnapshot(tempPath);
     const fence = `${dest}.cah-owned-publish`;
 
-    process.env.CAH_TEST_ONLY = '1';
-    try {
+    withEnv({ CAH_TEST_ONLY: '1', CAH_TEST_ONLY_ABORT_PUBLICATION_FAILURE_LATE: undefined }, () => {
       assert.throws(() => publishWithFence(
         dest, tempPath, tempSnapshot.expectedDestination.identity,
         { exists: false, identity: null },
@@ -332,10 +328,7 @@ describe('conditional atomic publication', () => {
           },
         },
       ), (error) => error.message === 'test-only forward publication failure');
-    } finally {
-      delete process.env.CAH_TEST_ONLY_ABORT_PUBLICATION_FAILURE_LATE;
-      delete process.env.CAH_TEST_ONLY;
-    }
+    });
 
     // The late injection fires after exactTemp()'s snapshot inspection but
     // before the temp unlink, so the abort is partially completed. Even so the
@@ -350,16 +343,11 @@ describe('conditional atomic publication', () => {
     assert.equal(recoverPublicationFence(dest), true);
     writeFileSync(tempPath, 'new\n');
     const retrySnapshot = captureRegularFileSnapshot(tempPath);
-    process.env.CAH_TEST_ONLY = '1';
-    try {
-      const publication = publishWithFence(
-        dest, tempPath, retrySnapshot.expectedDestination.identity,
-        { exists: false, identity: null },
-      );
-      assert.equal(publication.published, true);
-    } finally {
-      delete process.env.CAH_TEST_ONLY;
-    }
+    const publication = withEnv({ CAH_TEST_ONLY: '1' }, () => publishWithFence(
+      dest, tempPath, retrySnapshot.expectedDestination.identity,
+      { exists: false, identity: null },
+    ));
+    assert.equal(publication.published, true);
     assert.equal(readFileSync(dest, 'utf8'), 'new\n');
     assert.equal(existsSync(tempPath), false);
     assert.equal(existsSync(fence), false);

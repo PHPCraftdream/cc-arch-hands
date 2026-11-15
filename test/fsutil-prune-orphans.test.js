@@ -6,7 +6,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pruneOrphanDirs, pruneOrphans } from '../lib/fsutil.js';
 import { SetForSkill } from '../lib/sentinel.js';
+import { withEnv } from '../test-support/env.js';
 
+const INJECT_UNLINK_ENOENT = { CAH_TEST_ONLY: '1', CAH_TEST_ONLY_FSUTIL_UNLINK_ENOENT: '1' };
 const CONTENT = '<!-- cah-skill:v1 -->\nmanaged\n';
 
 function fixture(t) {
@@ -96,27 +98,20 @@ describe('prune final-unlink ENOENT', () => {
     const orphanDir = join(root, 'zzz-orphan');
     mkdirSync(orphanDir);
     writeFileSync(join(orphanDir, 'SKILL.md'), '<!-- cah-skill:v1 -->\nmanaged\n');
-    const priorTest = process.env.CAH_TEST_ONLY;
-    const priorInject = process.env.CAH_TEST_ONLY_FSUTIL_UNLINK_ENOENT;
-    process.env.CAH_TEST_ONLY = '1';
-    process.env.CAH_TEST_ONLY_FSUTIL_UNLINK_ENOENT = '1';
     try {
-      const result = pruneOrphanDirs(root, new Set(), 'SKILL.md', SetForSkill);
-      // The injected ENOENT is "already removed": the payload stays in the
-      // deterministic quarantine slot, so the removal reports preserved
-      // (payload kept) instead of throwing raw ENOENT.
-      assert.equal(result.pruned, 0);
-      assert.ok(result.preserved.includes('zzz-orphan'),
-        `expected preserved, got ${JSON.stringify({ pruned: result.pruned, preserved: result.preserved })}`);
-      assert.ok(existsSync(join(orphanDir, 'SKILL.md.cah-owned-remove', 'payload')),
-        'the quarantined payload must be conserved, not dropped');
-      assert.ok(result.recovery.includes('zzz-orphan/SKILL.md.cah-owned-remove/payload'),
-        `expected the quarantined payload reported as the recovery slot, got ${JSON.stringify({ pruned: result.pruned, preserved: result.preserved, recovery: result.recovery })}`);
+      withEnv(INJECT_UNLINK_ENOENT, () => {
+        const result = pruneOrphanDirs(root, new Set(), 'SKILL.md', SetForSkill);
+        // The injected ENOENT is "already removed": the payload stays in the
+        // deterministic quarantine slot, so the removal reports preserved
+        // (payload kept) instead of throwing raw ENOENT.
+        assert.equal(result.pruned, 0);
+        assert.ok(result.preserved.includes('zzz-orphan'), JSON.stringify(result));
+        assert.ok(existsSync(join(orphanDir, 'SKILL.md.cah-owned-remove', 'payload')),
+          'the quarantined payload must be conserved, not dropped');
+        assert.ok(result.recovery.includes('zzz-orphan/SKILL.md.cah-owned-remove/payload'),
+          `expected the quarantined payload reported as the recovery slot, got ${JSON.stringify(result)}`);
+      });
     } finally {
-      if (priorTest === undefined) delete process.env.CAH_TEST_ONLY;
-      else process.env.CAH_TEST_ONLY = priorTest;
-      if (priorInject === undefined) delete process.env.CAH_TEST_ONLY_FSUTIL_UNLINK_ENOENT;
-      else process.env.CAH_TEST_ONLY_FSUTIL_UNLINK_ENOENT = priorInject;
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -125,28 +120,21 @@ describe('prune final-unlink ENOENT', () => {
     const root = mkdtempSync(join(tmpdir(), 'cah-prune-enoent-file-'));
     const orphanPath = join(root, 'zzz-retired-skill.md');
     writeFileSync(orphanPath, '<!-- cah-skill:v1 -->\nmanaged\n');
-    const priorTest = process.env.CAH_TEST_ONLY;
-    const priorInject = process.env.CAH_TEST_ONLY_FSUTIL_UNLINK_ENOENT;
-    process.env.CAH_TEST_ONLY = '1';
-    process.env.CAH_TEST_ONLY_FSUTIL_UNLINK_ENOENT = '1';
     try {
-      const result = pruneOrphans(root, new Set(), SetForSkill);
-      // Verified behavior: the orphan FILE is moved into the quarantine slot
-      // before the injected final-unlink ENOENT, so the original path no
-      // longer exists and the slot is reported under `recovery`, not
-      // `preserved`. Either way the removal must not throw raw ENOENT and
-      // the quarantined payload must be conserved.
-      assert.equal(result.pruned, 0);
-      assert.ok(
-        result.recovery.some((p) => p.replaceAll('\\', '/').endsWith('.cah-owned-remove/payload')),
-        `expected the quarantined payload reported as the recovery slot, got ${JSON.stringify({ pruned: result.pruned, preserved: result.preserved, recovery: result.recovery })}`);
-      assert.ok(existsSync(join(`${orphanPath}.cah-owned-remove`, 'payload')),
-        'the quarantined payload must be conserved, not dropped');
+      withEnv(INJECT_UNLINK_ENOENT, () => {
+        const result = pruneOrphans(root, new Set(), SetForSkill);
+        // The orphan FILE is moved into the quarantine slot before the
+        // injected final-unlink ENOENT, so the original path no longer exists
+        // and the slot is reported under `recovery`, not `preserved`. Either
+        // way the removal must not throw raw ENOENT and the payload must stay.
+        assert.equal(result.pruned, 0);
+        assert.ok(
+          result.recovery.some((p) => p.replaceAll('\\', '/').endsWith('.cah-owned-remove/payload')),
+          `expected the quarantined payload reported as the recovery slot, got ${JSON.stringify(result)}`);
+        assert.ok(existsSync(join(`${orphanPath}.cah-owned-remove`, 'payload')),
+          'the quarantined payload must be conserved, not dropped');
+      });
     } finally {
-      if (priorTest === undefined) delete process.env.CAH_TEST_ONLY;
-      else process.env.CAH_TEST_ONLY = priorTest;
-      if (priorInject === undefined) delete process.env.CAH_TEST_ONLY_FSUTIL_UNLINK_ENOENT;
-      else process.env.CAH_TEST_ONLY_FSUTIL_UNLINK_ENOENT = priorInject;
       rmSync(root, { recursive: true, force: true });
     }
   });

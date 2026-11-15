@@ -1,16 +1,20 @@
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, existsSync, writeFileSync, appendFileSync, rmSync, statSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { readRateLimitsCache, rateLimitsContextPath } from '../lib/transcript-stats.js';
+import { tempDir } from '../test-support/cli-sandbox.js';
+import { sessionHash } from '../test-support/marker-fixtures.js';
 import { proxyModelDisplayName } from '../lib/proxy-model.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BIN = join(__dirname, '..', 'bin', 'cah-status.js');
+// Default cache paths of `run()` live here, not loose in the OS temp dir.
+const SCRATCH = mkdtempSync(join(tmpdir(), 'cah-status-scratch-'));
+after(() => rmSync(SCRATCH, { recursive: true, force: true }));
 
 // Regression: Claude Code cancels an in-flight statusLine command whenever a new
 // update fires. Every render used to rewrite its cache files (a temp file plus a
@@ -31,8 +35,7 @@ describe('cah-status steady-state renders do not write the cache', () => {
   }
 
   function fixture(t) {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-status-steady-'));
-    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const dir = tempDir(t, 'cah-status-steady');
     const transcript = join(dir, 'transcript.jsonl');
     writeFileSync(transcript, JSON.stringify({ type: 'assistant', message: { role: 'assistant',
       model: 'claude-opus-4-8', usage: { input_tokens: 50000, cache_read_input_tokens: 0,
@@ -89,45 +92,37 @@ describe('cah-status daily stale temp sweep', () => {
   const token = '00112233445566778899aabbccddeeff';
   const status = (env) => run({ model: { display_name: 'Opus 4.8' } }, env);
 
-  it('reclaims aged orphan temps once, in the root named by CAH_STALE_TEMP_SWEEP_DIR', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-status-sweep-'));
-    try {
-      const aged = join(dir, `.cah-tmp-4242-${token}`);
-      const fresh = join(dir, `.cah-tmp-4243-${token}`);
-      writeFileSync(aged, '{}\n');
-      writeFileSync(fresh, '{}\n');
-      const old = new Date(Date.now() - 2 * 24 * 3600 * 1000);
-      utimesSync(aged, old, old);
-      const env = { CAH_STALE_TEMP_SWEEP_DIR: dir, CAH_RATE_LIMITS_CACHE: join(dir, 'rate-limits.json') };
-      assert.equal(status(env).status, 0);
-      assert.equal(existsSync(aged), false);
-      assert.equal(existsSync(fresh), true);
-      assert.equal(existsSync(join(dir, 'stale-temp-sweep.stamp')), true);
+  it('reclaims aged orphan temps once, in the root named by CAH_STALE_TEMP_SWEEP_DIR', (t) => {
+    const dir = tempDir(t, 'cah-status-sweep');
+    const aged = join(dir, `.cah-tmp-4242-${token}`);
+    const fresh = join(dir, `.cah-tmp-4243-${token}`);
+    writeFileSync(aged, '{}\n');
+    writeFileSync(fresh, '{}\n');
+    const old = new Date(Date.now() - 2 * 24 * 3600 * 1000);
+    utimesSync(aged, old, old);
+    const env = { CAH_STALE_TEMP_SWEEP_DIR: dir, CAH_RATE_LIMITS_CACHE: join(dir, 'rate-limits.json') };
+    assert.equal(status(env).status, 0);
+    assert.equal(existsSync(aged), false);
+    assert.equal(existsSync(fresh), true);
+    assert.equal(existsSync(join(dir, 'stale-temp-sweep.stamp')), true);
 
-      const again = join(dir, `.cah-tmp-4244-${token}`);
-      writeFileSync(again, '{}\n');
-      utimesSync(again, old, old);
-      assert.equal(status(env).status, 0);
-      assert.equal(existsSync(again), true, 'a second render inside 24 h must not sweep');
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    const again = join(dir, `.cah-tmp-4244-${token}`);
+    writeFileSync(again, '{}\n');
+    utimesSync(again, old, old);
+    assert.equal(status(env).status, 0);
+    assert.equal(existsSync(again), true, 'a second render inside 24 h must not sweep');
   });
 
-  it('does not sweep the directory of a redirected rate cache by default', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-status-nosweep-'));
-    try {
-      const aged = join(dir, `.cah-tmp-4242-${token}`);
-      writeFileSync(aged, '{}\n');
-      const old = new Date(Date.now() - 2 * 24 * 3600 * 1000);
-      utimesSync(aged, old, old);
-      const env = { CAH_RATE_LIMITS_CACHE: join(dir, 'rate-limits.json'), CAH_STALE_TEMP_SWEEP_DIR: '' };
-      assert.equal(status(env).status, 0);
-      assert.equal(existsSync(aged), true);
-      assert.equal(existsSync(join(dir, 'stale-temp-sweep.stamp')), false);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  it('does not sweep the directory of a redirected rate cache by default', (t) => {
+    const dir = tempDir(t, 'cah-status-nosweep');
+    const aged = join(dir, `.cah-tmp-4242-${token}`);
+    writeFileSync(aged, '{}\n');
+    const old = new Date(Date.now() - 2 * 24 * 3600 * 1000);
+    utimesSync(aged, old, old);
+    const env = { CAH_RATE_LIMITS_CACHE: join(dir, 'rate-limits.json'), CAH_STALE_TEMP_SWEEP_DIR: '' };
+    assert.equal(status(env).status, 0);
+    assert.equal(existsSync(aged), true);
+    assert.equal(existsSync(join(dir, 'stale-temp-sweep.stamp')), false);
   });
 });
 
@@ -137,9 +132,9 @@ function run(stdinData, env) {
   // stays untouched by tests and the exact-match assertions cannot be
   // influenced by whatever happens to sit in the user's update-check cache.
   const cacheOverride = (env && env.CAH_RATE_LIMITS_CACHE)
-    || join(tmpdir(), `cah-status-test-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+    || join(SCRATCH, `cache-${Math.random().toString(36).slice(2)}.json`);
   const updateCacheOverride = (env && env.CAH_UPDATE_CHECK_CACHE)
-    || join(tmpdir(), `cah-status-test-update-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+    || join(SCRATCH, `update-${Math.random().toString(36).slice(2)}.json`);
   // A fresh cache recording an ancient version: no registry fetch is attempted
   // (checkedAt is inside the TTL) and no update suffix can appear regardless
   // of the real CURRENT_VERSION. Never clobber a cache the caller provided.
@@ -169,10 +164,6 @@ function run(stdinData, env) {
   };
 }
 
-function sessionHash(sessionId) {
-  return createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
-}
-
 function makePayload(overrides = {}) {
   return {
     hook_event_name: 'Status',
@@ -190,55 +181,47 @@ function makePayload(overrides = {}) {
 }
 
 describe('cah-status bin', () => {
-  it('renders live context and quotas despite an unsupported cache publication fence', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-status-busy-cache-'));
-    try {
-      const cache = join(dir, 'rate-limits.json');
-      const fence = `${cache}.cah-owned-publish`;
-      const proof = JSON.stringify({ version: 2, ownerPid: process.pid });
-      writeFileSync(cache, '{}\n');
-      mkdirSync(fence);
-      writeFileSync(join(fence, 'publication.json'), proof);
-      const { stdout, status } = run(makePayload({ rate_limits: {
-        five_hour: { used_percentage: 15 },
-        seven_day: { used_percentage: 88 },
-      } }), { CAH_RATE_LIMITS_CACHE: cache });
-      assert.equal(status, 0);
-      assert.match(stdout, /67% \(670k\/1M\)/);
-      assert.match(stdout, /5h .*15%/);
-      assert.match(stdout, /wk .*88%/);
-      assert.equal(readFileSync(cache, 'utf8'), '{}\n');
-      assert.equal(readFileSync(join(fence, 'publication.json'), 'utf8'), proof);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  it('renders live context and quotas despite an unsupported cache publication fence', (t) => {
+    const dir = tempDir(t, 'cah-status-busy-cache');
+    const cache = join(dir, 'rate-limits.json');
+    const fence = `${cache}.cah-owned-publish`;
+    const proof = JSON.stringify({ version: 2, ownerPid: process.pid });
+    writeFileSync(cache, '{}\n');
+    mkdirSync(fence);
+    writeFileSync(join(fence, 'publication.json'), proof);
+    const { stdout, status } = run(makePayload({ rate_limits: {
+      five_hour: { used_percentage: 15 },
+      seven_day: { used_percentage: 88 },
+    } }), { CAH_RATE_LIMITS_CACHE: cache });
+    assert.equal(status, 0);
+    assert.match(stdout, /67% \(670k\/1M\)/);
+    assert.match(stdout, /5h .*15%/);
+    assert.match(stdout, /wk .*88%/);
+    assert.equal(readFileSync(cache, 'utf8'), '{}\n');
+    assert.equal(readFileSync(join(fence, 'publication.json'), 'utf8'), proof);
   });
 
-  it('keeps rendering when only the session context cache is blocked', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-status-busy-context-'));
-    try {
-      const cache = join(dir, 'rate-limits.json');
-      const context = rateLimitsContextPath(cache, 'test-session');
-      const fence = `${context}.cah-owned-publish`;
-      mkdirSync(dirname(context), { recursive: true });
-      writeFileSync(context, '{}\n');
-      mkdirSync(fence);
-      const proof = JSON.stringify({ version: 2, ownerPid: process.pid });
-      writeFileSync(join(fence, 'publication.json'), proof);
-      const { stdout, status } = run(makePayload({ rate_limits: {
-        five_hour: { used_percentage: 0 },
-        seven_day: { used_percentage: 88 },
-      } }), { CAH_RATE_LIMITS_CACHE: cache });
-      assert.equal(status, 0);
-      assert.match(stdout, /67% \(670k\/1M\)/);
-      assert.match(stdout, /5h .*0%/);
-      assert.match(stdout, /wk .*88%/);
-      assert.equal(JSON.parse(readFileSync(cache, 'utf8')).sevenDay.used, 88);
-      assert.equal(readFileSync(context, 'utf8'), '{}\n');
-      assert.equal(readFileSync(join(fence, 'publication.json'), 'utf8'), proof);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  it('keeps rendering when only the session context cache is blocked', (t) => {
+    const dir = tempDir(t, 'cah-status-busy-context');
+    const cache = join(dir, 'rate-limits.json');
+    const context = rateLimitsContextPath(cache, 'test-session');
+    const fence = `${context}.cah-owned-publish`;
+    mkdirSync(dirname(context), { recursive: true });
+    writeFileSync(context, '{}\n');
+    mkdirSync(fence);
+    const proof = JSON.stringify({ version: 2, ownerPid: process.pid });
+    writeFileSync(join(fence, 'publication.json'), proof);
+    const { stdout, status } = run(makePayload({ rate_limits: {
+      five_hour: { used_percentage: 0 },
+      seven_day: { used_percentage: 88 },
+    } }), { CAH_RATE_LIMITS_CACHE: cache });
+    assert.equal(status, 0);
+    assert.match(stdout, /67% \(670k\/1M\)/);
+    assert.match(stdout, /5h .*0%/);
+    assert.match(stdout, /wk .*88%/);
+    assert.equal(JSON.parse(readFileSync(cache, 'utf8')).sevenDay.used, 88);
+    assert.equal(readFileSync(context, 'utf8'), '{}\n');
+    assert.equal(readFileSync(join(fence, 'publication.json'), 'utf8'), proof);
   });
 
   it('full payload → "<model> · X% (Nk/Mk)" with no clock', () => {
@@ -249,8 +232,7 @@ describe('cah-status bin', () => {
   });
 
   it('traces context decisions without changing stdout or capturing private fields', (t) => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-status-trace-'));
-    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const dir = tempDir(t, 'cah-status-trace');
     const path = join(dir, 'transcript.jsonl');
     const secret = 'private-trace-marker';
     writeFileSync(path, JSON.stringify({ type: 'assistant', message: {
@@ -301,8 +283,7 @@ describe('cah-status bin', () => {
   });
 
   it('uses optional proxy labels without changing context or requiring a proxy CLI', async (t) => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-proxy-label-'));
-    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const dir = tempDir(t, 'cah-proxy-label');
     const payload = makePayload();
     const env = { ANTHROPIC_AUTH_TOKEN: 'ccgp',
       ANTHROPIC_BASE_URL: 'http://127.0.0.1:60093/call/test-token' };
@@ -320,8 +301,7 @@ describe('cah-status bin', () => {
   });
 
   it('retains envelope context through unidentified streaming chunks but not compaction', (t) => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-context-retain-'));
-    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const dir = tempDir(t, 'cah-context-retain');
     const path = join(dir, 'transcript.jsonl');
     writeFileSync(path, JSON.stringify({ type: 'assistant', message: {
       model: 'claude-opus-5-5', usage: { input_tokens: 0 },
@@ -355,8 +335,7 @@ describe('cah-status bin', () => {
 
   it('keeps context visible after API errors with transcript or retained envelope measurements', (t) => {
     for (const source of ['transcript', 'cache']) {
-      const dir = mkdtempSync(join(tmpdir(), 'cah-context-api-error-'));
-      t.after(() => rmSync(dir, { recursive: true, force: true }));
+      const dir = tempDir(t, 'cah-context-api-error');
       const path = join(dir, 'transcript.jsonl');
       writeFileSync(path, JSON.stringify({ type: 'assistant', message: {
         model: 'claude-opus-5-5', usage: { input_tokens: source === 'transcript' ? 50000 : 0 },
@@ -389,8 +368,7 @@ describe('cah-status bin', () => {
   });
 
   it('traces quota decisions without changing panel output', (t) => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-quota-trace-'));
-    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const dir = tempDir(t, 'cah-quota-trace');
     const reset = new Date(Date.now() + 3_600_000).toISOString();
     const rates = { five_hour: { used_percentage: 15, resets_at: reset },
       seven_day: { used_percentage: 67, resets_at: reset } };
@@ -509,131 +487,115 @@ describe('cah-status bin', () => {
     assert.ok(!stdout.includes('67.4'), 'should not include decimal percentage');
   });
 
-  it('keeps a recent 5h meter through a temporary envelope omission', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-status-5h-fallback-'));
-    try {
-      const cachePath = join(dir, 'rate-limits.json');
-      const capturedAt = Date.now();
-      const reset = new Date(capturedAt + 20 * 60 * 1000).toISOString();
-      writeFileSync(cachePath, JSON.stringify({
-        version: 4,
-        fiveHour: { used: 15, resetsAt: reset },
-        fiveHourCapturedAt: capturedAt,
-        fiveHourSessionHash: sessionHash('test-session'),
-        sevenDay: null,
-        sevenDayCapturedAt: null,
-        sevenDaySessionHash: null,
-        capturedAt,
-      }));
+  it('keeps a recent 5h meter through a temporary envelope omission', (t) => {
+    const dir = tempDir(t, 'cah-status-5h-fallback');
+    const cachePath = join(dir, 'rate-limits.json');
+    const capturedAt = Date.now();
+    const reset = new Date(capturedAt + 20 * 60 * 1000).toISOString();
+    writeFileSync(cachePath, JSON.stringify({
+      version: 4,
+      fiveHour: { used: 15, resetsAt: reset },
+      fiveHourCapturedAt: capturedAt,
+      fiveHourSessionHash: sessionHash('test-session'),
+      sevenDay: null,
+      sevenDayCapturedAt: null,
+      sevenDaySessionHash: null,
+      capturedAt,
+    }));
 
-      const { stdout, status } = run(makePayload({ rate_limits: {
-        five_hour: null,
-        seven_day: { used_percentage: 88, resets_at: new Date(capturedAt + 5 * 86400_000).toISOString() },
-      } }), { CAH_RATE_LIMITS_CACHE: cachePath });
-      assert.equal(status, 0);
-      assert.match(stdout, /5h .*15%/);
-      assert.match(stdout, /wk .*88%/);
-      const cached = JSON.parse(readFileSync(cachePath, 'utf8'));
-      assert.equal(cached.fiveHour.used, 15);
-      assert.equal(cached.fiveHourCapturedAt, capturedAt, 'weekly refresh must not refresh 5h age');
-      assert.equal(cached.fiveHourSessionHash, sessionHash('test-session'));
-      assert.ok(cached.sevenDayCapturedAt > capturedAt);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    const { stdout, status } = run(makePayload({ rate_limits: {
+      five_hour: null,
+      seven_day: { used_percentage: 88, resets_at: new Date(capturedAt + 5 * 86400_000).toISOString() },
+    } }), { CAH_RATE_LIMITS_CACHE: cachePath });
+    assert.equal(status, 0);
+    assert.match(stdout, /5h .*15%/);
+    assert.match(stdout, /wk .*88%/);
+    const cached = JSON.parse(readFileSync(cachePath, 'utf8'));
+    assert.equal(cached.fiveHour.used, 15);
+    assert.equal(cached.fiveHourCapturedAt, capturedAt, 'weekly refresh must not refresh 5h age');
+    assert.equal(cached.fiveHourSessionHash, sessionHash('test-session'));
+    assert.ok(cached.sevenDayCapturedAt > capturedAt);
   });
 
-  it('keeps its own 5h fallback after another session publishes quota', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-status-quota-sessions-'));
-    try {
-      const cachePath = join(dir, 'rate-limits.json');
-      const env = { CAH_RATE_LIMITS_CACHE: cachePath };
-      const reset = new Date(Date.now() + 3_600_000).toISOString();
-      const rates = (used) => ({ five_hour: { used_percentage: used, resets_at: reset },
-        seven_day: { used_percentage: 88, resets_at: reset } });
-      assert.equal(run(makePayload({ session_id: 'session-a', rate_limits: rates(15) }), env).status, 0);
-      assert.equal(run(makePayload({ session_id: 'session-b', rate_limits: rates(42) }), env).status, 0);
-      const result = run(makePayload({ session_id: 'session-a', rate_limits: {
-        five_hour: null, seven_day: rates(15).seven_day,
-      } }), env);
-      assert.equal(result.status, 0);
-      assert.match(result.stdout, /5h .*15%/);
-      assert.doesNotMatch(result.stdout, /5h .*42%/);
-      const codex = run(makePayload({ session_id: 'session-a',
-        model: { id: 'gpt-6-luna', display_name: 'GPT-6 Luna' }, rate_limits: null }), env);
-      assert.equal(codex.status, 0);
-      assert.doesNotMatch(codex.stdout, /5h /);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  it('keeps its own 5h fallback after another session publishes quota', (t) => {
+    const dir = tempDir(t, 'cah-status-quota-sessions');
+    const cachePath = join(dir, 'rate-limits.json');
+    const env = { CAH_RATE_LIMITS_CACHE: cachePath };
+    const reset = new Date(Date.now() + 3_600_000).toISOString();
+    const rates = (used) => ({ five_hour: { used_percentage: used, resets_at: reset },
+      seven_day: { used_percentage: 88, resets_at: reset } });
+    assert.equal(run(makePayload({ session_id: 'session-a', rate_limits: rates(15) }), env).status, 0);
+    assert.equal(run(makePayload({ session_id: 'session-b', rate_limits: rates(42) }), env).status, 0);
+    const result = run(makePayload({ session_id: 'session-a', rate_limits: {
+      five_hour: null, seven_day: rates(15).seven_day,
+    } }), env);
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /5h .*15%/);
+    assert.doesNotMatch(result.stdout, /5h .*42%/);
+    const codex = run(makePayload({ session_id: 'session-a',
+      model: { id: 'gpt-6-luna', display_name: 'GPT-6 Luna' }, rate_limits: null }), env);
+    assert.equal(codex.status, 0);
+    assert.doesNotMatch(codex.stdout, /5h /);
   });
 
-  it('does not show Claude 5h quota in a Codex session', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-status-codex-quota-'));
-    try {
-      const cachePath = join(dir, 'rate-limits.json');
-      const now = Date.now();
-      writeFileSync(cachePath, JSON.stringify({
-        version: 4,
-        fiveHour: { used: 15, resetsAt: new Date(now + 20 * 60 * 1000).toISOString() },
-        fiveHourCapturedAt: now,
-        fiveHourSessionHash: sessionHash('claude-session'),
-        sevenDay: null,
-        sevenDayCapturedAt: null,
-        sevenDaySessionHash: null,
-        capturedAt: now,
-      }));
-      const { stdout, status } = run(makePayload({
-        session_id: 'codex-session',
-        model: { id: 'gpt-6-luna', display_name: 'GPT-6 Luna' },
-        rate_limits: {
-          five_hour: { used_percentage: 15, resets_at: new Date(now + 20 * 60 * 1000).toISOString() },
-          seven_day: { used_percentage: 88, resets_at: new Date(now + 5 * 86400_000).toISOString() },
-        },
-      }), { CAH_RATE_LIMITS_CACHE: cachePath });
-      assert.equal(status, 0);
-      assert.doesNotMatch(stdout, /5h /);
-      assert.match(stdout, /wk .*88%/);
-      const cached = JSON.parse(readFileSync(cachePath, 'utf8'));
-      assert.equal(cached.fiveHour, null);
-      assert.equal(cached.fiveHourSessionHash, null);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  it('does not show Claude 5h quota in a Codex session', (t) => {
+    const dir = tempDir(t, 'cah-status-codex-quota');
+    const cachePath = join(dir, 'rate-limits.json');
+    const now = Date.now();
+    writeFileSync(cachePath, JSON.stringify({
+      version: 4,
+      fiveHour: { used: 15, resetsAt: new Date(now + 20 * 60 * 1000).toISOString() },
+      fiveHourCapturedAt: now,
+      fiveHourSessionHash: sessionHash('claude-session'),
+      sevenDay: null,
+      sevenDayCapturedAt: null,
+      sevenDaySessionHash: null,
+      capturedAt: now,
+    }));
+    const { stdout, status } = run(makePayload({
+      session_id: 'codex-session',
+      model: { id: 'gpt-6-luna', display_name: 'GPT-6 Luna' },
+      rate_limits: {
+        five_hour: { used_percentage: 15, resets_at: new Date(now + 20 * 60 * 1000).toISOString() },
+        seven_day: { used_percentage: 88, resets_at: new Date(now + 5 * 86400_000).toISOString() },
+      },
+    }), { CAH_RATE_LIMITS_CACHE: cachePath });
+    assert.equal(status, 0);
+    assert.doesNotMatch(stdout, /5h /);
+    assert.match(stdout, /wk .*88%/);
+    const cached = JSON.parse(readFileSync(cachePath, 'utf8'));
+    assert.equal(cached.fiveHour, null);
+    assert.equal(cached.fiveHourSessionHash, null);
   });
 
-  it('does not reuse an expired 5h reset or a stale cached percentage', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-status-5h-expired-'));
-    try {
-      const cachePath = join(dir, 'rate-limits.json');
-      const now = Date.now();
-      const weekly = { used_percentage: 88, resets_at: new Date(now + 5 * 86400_000).toISOString() };
-      const payload = makePayload({ rate_limits: { five_hour: null, seven_day: weekly } });
-      const base = {
-        version: 4,
-        fiveHour: { used: 15, resetsAt: new Date(now - 1000).toISOString() },
-        fiveHourCapturedAt: now,
-        fiveHourSessionHash: sessionHash('test-session'),
-        sevenDay: null,
-        sevenDayCapturedAt: null,
-        sevenDaySessionHash: null,
-        capturedAt: now,
-      };
-      writeFileSync(cachePath, JSON.stringify(base));
-      assert.doesNotMatch(run(payload, { CAH_RATE_LIMITS_CACHE: cachePath }).stdout, /5h /);
+  it('does not reuse an expired 5h reset or a stale cached percentage', (t) => {
+    const dir = tempDir(t, 'cah-status-5h-expired');
+    const cachePath = join(dir, 'rate-limits.json');
+    const now = Date.now();
+    const weekly = { used_percentage: 88, resets_at: new Date(now + 5 * 86400_000).toISOString() };
+    const payload = makePayload({ rate_limits: { five_hour: null, seven_day: weekly } });
+    const base = {
+      version: 4,
+      fiveHour: { used: 15, resetsAt: new Date(now - 1000).toISOString() },
+      fiveHourCapturedAt: now,
+      fiveHourSessionHash: sessionHash('test-session'),
+      sevenDay: null,
+      sevenDayCapturedAt: null,
+      sevenDaySessionHash: null,
+      capturedAt: now,
+    };
+    writeFileSync(cachePath, JSON.stringify(base));
+    assert.doesNotMatch(run(payload, { CAH_RATE_LIMITS_CACHE: cachePath }).stdout, /5h /);
 
-      base.fiveHour.resetsAt = new Date(now + 20 * 60 * 1000).toISOString();
-      base.fiveHourCapturedAt = now - 5 * 60 * 1000 - 1;
-      base.capturedAt = now;
-      writeFileSync(cachePath, JSON.stringify(base));
-      assert.doesNotMatch(run(payload, { CAH_RATE_LIMITS_CACHE: cachePath }).stdout, /5h /);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    base.fiveHour.resetsAt = new Date(now + 20 * 60 * 1000).toISOString();
+    base.fiveHourCapturedAt = now - 5 * 60 * 1000 - 1;
+    base.capturedAt = now;
+    writeFileSync(cachePath, JSON.stringify(base));
+    assert.doesNotMatch(run(payload, { CAH_RATE_LIMITS_CACHE: cachePath }).stdout, /5h /);
   });
 
-  it('rate_limits present → appends 5h / wk parts and writes the cache file', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-status-rl-'));
+  it('rate_limits present → appends 5h / wk parts and writes the cache file', (t) => {
+    const dir = tempDir(t, 'cah-status-rl');
     const cachePath = join(dir, 'rate-limits.json');
     const now = Date.now();
     const inFourHours = new Date(now + 4 * 60 * 60 * 1000).toISOString();
@@ -670,8 +632,7 @@ describe('cah-status bin', () => {
   });
 
   it('renders a normal bar for transcript fallback and stops at compaction or a model switch', (t) => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-status-context-'));
-    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const dir = tempDir(t, 'cah-status-context');
     const path = join(dir, 'transcript.jsonl');
     const measured = { type: 'assistant', message: { role: 'assistant', model: 'claude-opus-4-8',
       usage: { input_tokens: 50000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } };
@@ -696,8 +657,7 @@ describe('cah-status bin', () => {
     ['zero', { current_usage: { input_tokens: 0, output_tokens: 0 } }],
   ]) {
     it(`recovers Codex context with ${label} usage without crossing model or compaction boundaries`, (t) => {
-      const dir = mkdtempSync(join(tmpdir(), 'cah-status-codex-context-'));
-      t.after(() => rmSync(dir, { recursive: true, force: true }));
+      const dir = tempDir(t, 'cah-status-codex-context');
       const path = join(dir, 'transcript.jsonl');
       const model = 'gpt-6-luna';
       const measured = { type: 'assistant', message: { role: 'assistant', model,
@@ -739,8 +699,7 @@ describe('cah-status bin', () => {
   }
 
   it('renders split request usage from the last message iteration, not aggregate totals', (t) => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-status-iterations-'));
-    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const dir = tempDir(t, 'cah-status-iterations');
     const path = join(dir, 'transcript.jsonl');
     const iteration = (input_tokens, type = 'message') => ({ type, input_tokens,
       output_tokens: 100, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 });
@@ -774,8 +733,8 @@ describe('cah-status bin', () => {
     );
   });
 
-  it('two sessions retain distinct context windows and do not share quota slots', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-status-sessions-'));
+  it('two sessions retain distinct context windows and do not share quota slots', (t) => {
+    const dir = tempDir(t, 'cah-status-sessions');
     const cachePath = join(dir, 'rate-limits.json');
     const rates = {
       five_hour: { used_percentage: 23, resets_at: new Date(Date.now() + 3_600_000).toISOString() },
@@ -796,8 +755,8 @@ describe('cah-status bin', () => {
     assert.equal(b.sevenDay, null);
   });
 
-  it('appends the update suffix from an isolated fixture cache with a newer latestVersion', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-status-update-'));
+  it('appends the update suffix from an isolated fixture cache with a newer latestVersion', (t) => {
+    const dir = tempDir(t, 'cah-status-update');
     const updateCache = join(dir, 'update-check.json');
     writeFileSync(updateCache, JSON.stringify({ latestVersion: '99.0.0', checkedAt: Date.now() }));
     const { stdout, status } = run(makePayload(), { CAH_UPDATE_CHECK_CACHE: updateCache });
@@ -807,8 +766,8 @@ describe('cah-status bin', () => {
     assert.match(withoutSuffix, /^Opus 4\.8 · \[[█▏▎▍▌▋▊▉░]{10}\] 67% \(670k\/1M\)$/);
   });
 
-  it('never derives a path from the real home directory', () => {
-    const fakeHome = mkdtempSync(join(tmpdir(), 'cah-status-fake-home-'));
+  it('never derives a path from the real home directory', (t) => {
+    const fakeHome = tempDir(t, 'cah-status-fake-home');
     const { stdout, status } = run(makePayload(), { HOME: fakeHome, USERPROFILE: fakeHome });
     assert.equal(status, 0);
     assert.equal(existsSync(join(fakeHome, '.claude')), false,

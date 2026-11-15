@@ -1,36 +1,14 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { DEFAULT_CLI_TIMEOUT_MS } from '../test-support/process-batches.js';
+import { OPENCODE_ENV, cliCaller, tempDir } from '../test-support/cli-sandbox.js';
+import { withEnv } from '../test-support/env.js';
 import { AllCodexAgents } from '../lib/manifest.js';
 import { SentinelOpencodeAgent } from '../lib/opencode-agents.js';
 
-const worktree = fileURLToPath(new URL('..', import.meta.url));
-const cli = join(worktree, 'bin', 'cah.js');
-
-function sandbox(t) {
-  const home = mkdtempSync(join(tmpdir(), 'cah-opencode-agents-'));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
-  return home;
-}
-
-function call(home, ...rest) {
-  const env = rest.length > 0 && rest[0] && typeof rest[0] === 'object' && !Array.isArray(rest[0])
-    ? rest.shift() : {};
-  return spawnSync(process.execPath, [cli, ...rest], {
-    env: { ...process.env, OPENCODE_CONFIG_DIR: '', XDG_CONFIG_HOME: '', HOME: home, USERPROFILE: home, ...env }, encoding: 'utf8', timeout: DEFAULT_CLI_TIMEOUT_MS,
-  });
-}
-
-function ok(home, ...args) {
-  const result = call(home, ...args);
-  assert.equal(result.status, 0, result.stderr);
-  return result;
-}
+const { ok } = cliCaller(OPENCODE_ENV);
+const sandbox = (t) => tempDir(t, 'cah-opencode-agents');
 
 describe('OpenCode agent installer', () => {
   it('writes every agent with openai models, literal efforts, no variant key', (t) => {
@@ -56,14 +34,7 @@ describe('OpenCode agent installer', () => {
 
   it('works without OpenCode installed, without a provider or model', (t) => {
     const home = sandbox(t);
-    const previousPath = process.env.PATH;
-    try {
-      process.env.PATH = '';
-      ok(home, 'install', '--opencode-agents');
-    } finally {
-      if (previousPath === undefined) delete process.env.PATH;
-      else process.env.PATH = previousPath;
-    }
+    withEnv({ PATH: '' }, () => ok(home, 'install', '--opencode-agents'));
     assert.equal(existsSync(join(home, '.config', 'opencode', 'agents', 'hs.md')), true);
   });
 

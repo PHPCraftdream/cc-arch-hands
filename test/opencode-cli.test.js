@@ -1,33 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { DEFAULT_CLI_TIMEOUT_MS } from '../test-support/process-batches.js';
+import { OPENCODE_ENV, cliCaller, tempDir } from '../test-support/cli-sandbox.js';
 
-const worktree = fileURLToPath(new URL('..', import.meta.url));
-const cli = join(worktree, 'bin', 'cah.js');
-
-function sandbox(t) {
-  const home = mkdtempSync(join(tmpdir(), 'cah-opencode-cli-'));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
-  return home;
-}
-
-function call(home, env = {}, ...args) {
-  return spawnSync(process.execPath, [cli, ...args], {
-    env: { ...process.env, OPENCODE_CONFIG_DIR: '', XDG_CONFIG_HOME: '', HOME: home, USERPROFILE: home, ...env },
-    encoding: 'utf8', timeout: DEFAULT_CLI_TIMEOUT_MS,
-  });
-}
-
-function ok(home, env = {}, ...args) {
-  const result = call(home, env, ...args);
-  assert.equal(result.status, 0, result.stderr);
-  return result;
-}
+const { call, ok } = cliCaller(OPENCODE_ENV);
+const sandbox = (t) => tempDir(t, 'cah-opencode-cli');
 
 function rows(home, env = {}, ...args) {
   return ok(home, env, 'list', '--json', ...args).stdout.trim()

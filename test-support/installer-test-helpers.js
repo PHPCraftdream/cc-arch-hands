@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
+import { AllSkills } from '../lib/manifest.js';
 import { runWorker } from './process-batches.js';
 
 export const FABLE_ORACLE = [
@@ -22,6 +23,20 @@ export const FABLE_ORACLE = [
   ['f2x', 'claude-fable-5', 'xhigh'],
   ['f2xx', 'claude-fable-5', 'max'],
 ];
+
+// Runs `fn` with the module-level AllSkills registry replaced by `names`, then
+// puts the original list back.
+export function withSkills(names, fn) {
+  const original = [...AllSkills];
+  AllSkills.length = 0;
+  AllSkills.push(...names);
+  try {
+    return fn();
+  } finally {
+    AllSkills.length = 0;
+    AllSkills.push(...original);
+  }
+}
 
 const tmpDirs = new Set();
 
@@ -53,7 +68,7 @@ export function runSkillWorker(action, dir, interlock, phase, subset = undefined
   const templatesUrl = new URL('../lib/templates.js', import.meta.url).href;
   const scopeUrl = new URL('../lib/scope.js', import.meta.url).href;
   const hooksUrl = new URL('./interlocks.js', import.meta.url).href;
-    const source = `
+  const source = `
     const { parentPort, workerData } = require('node:worker_threads');
     (async () => {
       process.env.CAH_TEST_ONLY = '1';

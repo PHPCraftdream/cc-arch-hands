@@ -15,6 +15,7 @@ import {
   clearDirectoryScanStats, readDirectoryScanStats, resetDirectoryScanStats,
 } from '../lib/lease-lock.js';
 import { DEFAULT_CHILD_DEADLINE_MS } from '../test-support/process-batches.js';
+import { markerEnv } from '../test-support/marker-fixtures.js';
 
 const markerConfig = (markerDir) => ({
   markerDir, namespace: 'marker-tests', prefix: 'marker-', ttlMs: 86400000,
@@ -151,8 +152,7 @@ describe('marker capacity recovery', () => {
         const claim = claimMarker({ ...cfg, sessionId: 'bounded-crash', nowMs: Date.now() });
         if (!claim || abortMarkerTransaction(claim)) process.exit(3);
       `;
-      const env = { ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
-        CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+      const env = { ...markerEnv(home, markerDir),
         CAH_TEST_ONLY_CAPACITY_CRASH: 'after-transaction-retirement' };
       const crashed = runMarker(crashScript, env);
       assert.notEqual(crashed.status, 0, crashed.stderr);
@@ -207,8 +207,7 @@ describe('marker capacity recovery', () => {
         const claim = claimMarker({ ...cfg, sessionId: 'bounded-scan-crash', nowMs: Date.now() });
         if (!claim || abortMarkerTransaction(claim)) process.exit(3);
       `;
-      const env = { ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
-        CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+      const env = { ...markerEnv(home, markerDir),
         CAH_TEST_ONLY_CAPACITY_CRASH: 'after-transaction-retirement' };
       const crashed = runMarker(crashScript, env);
       assert.notEqual(crashed.status, 0, crashed.stderr);
@@ -279,8 +278,7 @@ describe('marker capacity recovery', () => {
         const claim = claimMarker({ ...cfg, sessionId: 'retirements-crash', nowMs: Date.now() });
         if (!claim || abortMarkerTransaction(claim)) process.exit(3);
       `;
-      const env = { ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
-        CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+      const env = { ...markerEnv(home, markerDir),
         CAH_TEST_ONLY_CAPACITY_CRASH: 'after-transaction-retirement' };
       const crashed = runMarker(crashScript, env);
       assert.notEqual(crashed.status, 0, crashed.error || crashed.stderr);

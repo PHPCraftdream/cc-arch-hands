@@ -1,38 +1,15 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { DEFAULT_CLI_TIMEOUT_MS } from '../test-support/process-batches.js';
+import { OPENCODE_ENV, cliCaller, tempDir } from '../test-support/cli-sandbox.js';
 import { AllCodexAgents } from '../lib/manifest.js';
 import {
   OPENCODE_AGENT_TAGS_BEGIN, OPENCODE_AGENT_TAGS_END,
 } from '../lib/opencode-instructions.js';
 
-const worktree = fileURLToPath(new URL('..', import.meta.url));
-const cli = join(worktree, 'bin', 'cah.js');
-
-function sandbox(t) {
-  const home = mkdtempSync(join(tmpdir(), 'cah-opencode-instructions-'));
-  t.after(() => rmSync(home, { recursive: true, force: true }));
-  return home;
-}
-
-function call(home, ...rest) {
-  const env = rest.length > 0 && rest[0] && typeof rest[0] === 'object' && !Array.isArray(rest[0])
-    ? rest.shift() : {};
-  return spawnSync(process.execPath, [cli, ...rest], {
-    env: { ...process.env, OPENCODE_CONFIG_DIR: '', XDG_CONFIG_HOME: '', HOME: home, USERPROFILE: home, ...env }, encoding: 'utf8', timeout: DEFAULT_CLI_TIMEOUT_MS,
-  });
-}
-
-function ok(home, ...args) {
-  const result = call(home, ...args);
-  assert.equal(result.status, 0, result.stderr);
-  return result;
-}
+const { call, ok } = cliCaller(OPENCODE_ENV);
+const sandbox = (t) => tempDir(t, 'cah-opencode-instructions');
 
 describe('OpenCode instructions', () => {
   it('appends the marked section to a foreign global AGENTS.md preserving bytes', (t) => {

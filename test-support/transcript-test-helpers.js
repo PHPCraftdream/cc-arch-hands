@@ -1,11 +1,22 @@
-import { mkdtempSync } from 'node:fs';
+import { afterEach } from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { runWorker } from './process-batches.js';
 
+const scratchDirs = new Set();
+
+afterEach(() => {
+  for (const dir of scratchDirs) rmSync(dir, { recursive: true, force: true });
+  scratchDirs.clear();
+});
+
+// A scratch directory, removed after the test that asked for it.
 export function isolatedDir() {
-  return mkdtempSync(join(tmpdir(), 'cah-ts-'));
+  const dir = mkdtempSync(join(tmpdir(), 'cah-ts-'));
+  scratchDirs.add(dir);
+  return dir;
 }
 
 export { waitForPath } from './process-batches.js';

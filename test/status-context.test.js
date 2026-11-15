@@ -1,3 +1,4 @@
+import { sessionHash } from '../test-support/marker-fixtures.js';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, appendFileSync, readFileSync, readdirSync, mkdirSync, rmSync } from 'node:fs';
@@ -333,7 +334,7 @@ describe('context trace', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cah-quota-decisions-'));
     t.after(() => rmSync(dir, { recursive: true, force: true }));
     const now = Date.now();
-    const hash = createHash('sha256').update('string:session').digest('hex');
+    const hash = sessionHash('session');
     for (const [index, item] of [
       { reason: 'cache_missing', missing: true },
       { reason: 'session_missing', session: '' },
@@ -392,7 +393,7 @@ describe('context trace', () => {
     let session;
     for (let i = 0; i < 1024; i++) {
       const value = `session-${i}`;
-      const hash = createHash('sha256').update(`string:${value}`).digest('hex');
+      const hash = sessionHash(value);
       if (Number.parseInt(hash.slice(0, 2), 16) % 8 !== 0) { session = value; break; }
     }
     assert.ok(session);

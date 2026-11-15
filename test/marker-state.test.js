@@ -20,6 +20,7 @@ import {
 import {
   DEFAULT_CHILD_DEADLINE_MS, killChild, terminateChild, waitForPath,
 } from '../test-support/process-batches.js';
+import { markerEnv } from '../test-support/marker-fixtures.js';
 import {
   probeUntilRenameBlocked, renameBlockedWhileChildHoldsCwd, waitForPathSync,
 } from '../test-support/rename-block.js';
@@ -38,6 +39,15 @@ function spawnMarker(...args) {
   markerChildren.add(child);
   child.once('close', () => markerChildren.delete(child));
   return child;
+}
+
+// Resolves with the exit status and the stderr text once the child has closed.
+function closeWithStderr(child) {
+  return new Promise((resolve) => {
+    let stderr = '';
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('close', (status) => resolve({ status, stderr }));
+  });
 }
 
 function spawnMarkerSync(file, args, options = {}) {
@@ -97,9 +107,7 @@ function runPausedReconciler(home, markerDir) {
   `;
   return spawnMarker(process.execPath, ['--input-type=module', '-e', script], {
     env: {
-      ...process.env, HOME: home, USERPROFILE: home,
-      CAH_TEST_ONLY: '1', CAH_TEST_MARKER_DIR: markerDir,
-      CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+      ...markerEnv(home, markerDir),
       CAH_TEST_ONLY_OWNER_INTERLOCK: join(home, 'stage-reconcile-interlock'),
       CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'marker-capacity-stage',
     },
@@ -134,9 +142,7 @@ function replaceWithSuccessorStage(home, markerDir, stagePath) {
   return retrySuccessor(() => spawnMarkerSync(process.execPath, ['--input-type=module', '-e', script], {
     encoding: 'utf8',
     env: {
-      ...process.env, HOME: home, USERPROFILE: home,
-      CAH_TEST_ONLY: '1', CAH_TEST_MARKER_DIR: markerDir,
-      CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+      ...markerEnv(home, markerDir),
     },
   }));
 }
@@ -161,9 +167,7 @@ function replaceWithSuccessorChild(home, markerDir, stagePath, content = 'succes
   return spawnMarkerSync(process.execPath, ['--input-type=module', '-e', script], {
     encoding: 'utf8',
     env: {
-      ...process.env, HOME: home, USERPROFILE: home,
-      CAH_TEST_ONLY: '1', CAH_TEST_MARKER_DIR: markerDir,
-      CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+      ...markerEnv(home, markerDir),
     },
   });
 }
@@ -205,9 +209,7 @@ function runPausedFenceReconciler(home, markerDir) {
   `;
   return spawnMarker(process.execPath, ['--input-type=module', '-e', script], {
     env: {
-      ...process.env, HOME: home, USERPROFILE: home,
-      CAH_TEST_ONLY: '1', CAH_TEST_MARKER_DIR: markerDir,
-      CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+      ...markerEnv(home, markerDir),
       CAH_TEST_ONLY_OWNER_INTERLOCK: join(home, 'fence-reconcile-interlock'),
       CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'marker-capacity-fence',
     },
@@ -233,9 +235,7 @@ function replaceWithSuccessorFile(home, markerDir, path, content) {
   return retrySuccessor(() => spawnMarkerSync(process.execPath, ['--input-type=module', '-e', script], {
     encoding: 'utf8',
     env: {
-      ...process.env, HOME: home, USERPROFILE: home,
-      CAH_TEST_ONLY: '1', CAH_TEST_MARKER_DIR: markerDir,
-      CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+      ...markerEnv(home, markerDir),
     },
   }));
 }
@@ -267,8 +267,7 @@ describe('marker capacity staging', () => {
       }
     `;
     const env = {
-      ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
-      CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+      ...markerEnv(home, markerDir),
       CAH_TEST_ONLY_OWNER_INTERLOCK: join(home, 'publication-proof-interlock'),
       CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'write-after-proof-before-final-operation',
     };
@@ -335,8 +334,7 @@ describe('marker capacity staging', () => {
     `;
     const interlock = join(home, 'victim-fence-interlock');
     const child = spawnMarker(process.execPath, ['--input-type=module', '-e', script], {
-      env: { ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
-        CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+      env: { ...markerEnv(home, markerDir),
         CAH_TEST_ONLY_OWNER_INTERLOCK: interlock,
         CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'marker-capacity-victim-rename' },
       stdio: ['ignore', 'ignore', 'pipe'],
@@ -371,8 +369,7 @@ describe('marker capacity staging', () => {
         releaseMarkerClaim(claim);
       } else if (claimMarker({ ...cfg, sessionId: 'crash-quarantine', nowMs: Date.now() })) process.exit(4);
     `;
-    const env = { ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
-      CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+    const env = { ...markerEnv(home, markerDir),
       CAH_TEST_ONLY_CAPACITY_CRASH: 'after-victim-quarantine' };
     const crashed = spawnMarkerSync(process.execPath, ['--input-type=module', '-e', script], { env });
     assert.notEqual(crashed.status, 0);
@@ -399,8 +396,7 @@ describe('marker capacity staging', () => {
       if (!claim || !abortMarkerTransaction(claim)) process.exit(3);
       releaseMarkerClaim(claim);
     `;
-    const env = { ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
-      CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+    const env = { ...markerEnv(home, markerDir),
       CAH_TEST_ONLY_CAPACITY_CRASH: 'after-transaction-retirement' };
     const crashed = spawnMarkerSync(process.execPath, ['--input-type=module', '-e', script], { env });
     assert.notEqual(crashed.status, 0);
@@ -431,8 +427,7 @@ describe('marker capacity staging', () => {
       const claim = claimMarker({ ...cfg, sessionId: 'populated-retirement-crash', nowMs: Date.now() });
       if (!claim || abortMarkerTransaction(claim)) process.exit(3);
     `;
-    const env = { ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
-      CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+    const env = { ...markerEnv(home, markerDir),
       CAH_TEST_ONLY_CAPACITY_CRASH: 'after-transaction-retirement' };
     const crashed = spawnMarkerSync(process.execPath, ['--input-type=module', '-e', crashScript], {
       encoding: 'utf8', env,
@@ -475,11 +470,7 @@ describe('marker capacity staging', () => {
       capacityLeaseToken: owner.token, capacityLeaseGeneration: owner.generation,
       victimFenceGeneration: owner.generation }) + '\n');
     writeFileSync(join(home, 'successor-interlock.go'), 'go');
-    const result = await new Promise((resolve) => {
-      let stderr = '';
-      recovery.stderr.on('data', (chunk) => { stderr += chunk; });
-      recovery.on('close', (status) => resolve({ status, stderr }));
-    });
+    const result = await closeWithStderr(recovery);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(existsSync(txDir), false);
     assert.equal(readFileSync(victim, 'utf8'), 'victim\n');
@@ -501,8 +492,7 @@ describe('marker capacity staging', () => {
       if (!claim || !abortMarkerTransaction(claim)) process.exit(3);
       releaseMarkerClaim(claim);
     `;
-    const env = { ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
-      CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+    const env = { ...markerEnv(home, markerDir),
       CAH_TEST_ONLY_CAPACITY_CRASH: 'after-victim-rename' };
     const crashed = spawnMarkerSync(process.execPath, ['--input-type=module', '-e', `
       import { claimMarker } from ${JSON.stringify(markerUrl)};
@@ -552,8 +542,7 @@ describe('marker capacity staging', () => {
       if (!claim || !publishMarker(claim, Buffer.from('new-marker\\n'), cfg)) process.exit(4);
       releaseMarkerClaim(claim);
     `;
-    const env = { ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
-      CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+    const env = { ...markerEnv(home, markerDir),
       CAH_TEST_ONLY_OWNER_INTERLOCK: join(home, 'pre-proof-interlock'),
       CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'write-before-final-publication' };
     const crashed = spawnMarker(process.execPath, ['--input-type=module', '-e', script], {
@@ -597,8 +586,7 @@ describe('marker capacity staging', () => {
           if (!claim || !publishMarker(claim, Buffer.from('new-marker\\n'), cfg)) process.exit(4);
         }
       `;
-      const env = { ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
-        CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+      const env = { ...markerEnv(home, markerDir),
         CAH_TEST_ONLY_OWNER_INTERLOCK: join(home, 'temp-interlock'),
         CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: crashPhase,
         ...(crashPhase === 'write-after-temp-partial'
@@ -641,8 +629,7 @@ describe('marker capacity staging', () => {
       if (abortMarkerTransaction(claim)) process.exit(0);
       process.exit(7);
     `;
-    const env = { ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
-      CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+    const env = { ...markerEnv(home, markerDir),
       CAH_TEST_ONLY_OWNER_INTERLOCK: join(home, 'retirement-interlock'),
       CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'marker-capacity-transaction-retire-before-unlink' };
     const paused = spawnMarker(process.execPath, ['--input-type=module', '-e', script], {
@@ -732,8 +719,7 @@ describe('marker capacity staging', () => {
       const claim = claimMarker({ ...cfg, sessionId: 'lease-reuse-recovery', nowMs: Date.now(), maintenance });
       process.exit(claim ? 3 : maintenance.preserved?.length ? 0 : 4);
     `;
-    const env = { ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
-      CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+    const env = { ...markerEnv(home, markerDir),
       CAH_TEST_ONLY_CAPACITY_CRASH: 'after-victim-quarantine' };
     const crashed = spawnMarkerSync(process.execPath, ['--input-type=module', '-e', `
       import { claimMarker } from ${JSON.stringify(markerUrl)};
@@ -794,8 +780,7 @@ describe('marker capacity staging', () => {
       if (!claim) process.exit(3);
     `;
     const env = {
-      ...process.env, HOME: home, USERPROFILE: home, CAH_TEST_ONLY: '1',
-      CAH_TEST_MARKER_DIR: markerDir, CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS: '100',
+      ...markerEnv(home, markerDir),
       CAH_TEST_ONLY_CAPACITY_CRASH: 'after-victim-rename',
     };
     const crashed = spawnMarkerSync(process.execPath, ['--input-type=module', '-e', script], {
@@ -813,11 +798,7 @@ describe('marker capacity staging', () => {
     unlinkSync(slot);
     writeFileSync(slot, 'successor-slot\n');
     writeFileSync(join(home, 'slot-interlock.go'), 'go');
-    const result = await new Promise((resolve) => {
-      let stderr = '';
-      recovering.stderr.on('data', (chunk) => { stderr += chunk; });
-      recovering.on('close', (status) => resolve({ status, stderr }));
-    });
+    const result = await closeWithStderr(recovering);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(readFileSync(slot, 'utf8'), 'successor-slot\n');
     assert.equal(existsSync(join(home, 'cache', '.markers-capacity-transaction')), true);
@@ -898,11 +879,7 @@ describe('marker capacity staging', () => {
       const successor = await replaceWithSuccessorStage(home, markerDir, stagePath);
       assert.equal(successor.status, 0, successor.stderr);
       writeFileSync(`${interlock}.go`, 'go');
-      const result = await new Promise((resolve) => {
-        let stderr = '';
-        paused.stderr.on('data', (chunk) => { stderr += chunk; });
-        paused.on('close', (status) => resolve({ status, stderr }));
-      });
+      const result = await closeWithStderr(paused);
       assert.equal(result.status, 0, result.stderr);
       assert.equal(existsSync(stagePath), true);
     });
@@ -924,11 +901,7 @@ describe('marker capacity staging', () => {
       const successor = replaceWithSuccessorChild(home, markerDir, stagePath, 'successor\n');
       assert.equal(successor.status, 0, successor.stderr);
       writeFileSync(`${interlock}.go`, 'go');
-      const result = await new Promise((resolve) => {
-        let stderr = '';
-        paused.stderr.on('data', (chunk) => { stderr += chunk; });
-        paused.on('close', (status) => resolve({ status, stderr }));
-      });
+      const result = await closeWithStderr(paused);
       assert.equal(result.status, 0, result.stderr);
       assert.equal(readFileSync(join(stagePath, 'transaction.json'), 'utf8'), 'successor\n');
       assert.equal(existsSync(join(home, 'cache', '.markers-capacity-transaction')), false);
@@ -949,11 +922,7 @@ describe('marker capacity staging', () => {
     const successor = await replaceWithSuccessorFile(home, markerDir, fence, 'successor\n');
     assert.equal(successor.status, 0, successor.stderr);
     writeFileSync(`${interlock}.go`, 'go');
-    const result = await new Promise((resolve) => {
-      let stderr = '';
-      paused.stderr.on('data', (chunk) => { stderr += chunk; });
-      paused.on('close', (status) => resolve({ status, stderr }));
-    });
+    const result = await closeWithStderr(paused);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(existsSync(marker), false);
     assert.equal(readFileSync(fence, 'utf8'), 'successor\n');
@@ -974,11 +943,7 @@ describe('marker capacity staging', () => {
     const successor = await replaceWithSuccessorFile(home, markerDir, fence, 'successor\n');
     assert.equal(successor.status, 0, successor.stderr);
     writeFileSync(`${interlock}.go`, 'go');
-    const result = await new Promise((resolve) => {
-      let stderr = '';
-      paused.stderr.on('data', (chunk) => { stderr += chunk; });
-      paused.on('close', (status) => resolve({ status, stderr }));
-    });
+    const result = await closeWithStderr(paused);
     assert.equal(result.status, 0, result.stderr);
     assert.equal(readFileSync(marker, 'utf8'), JSON.stringify({ deliveredAt: 2 }) + '\n');
     assert.equal(readFileSync(fence, 'utf8'), 'successor\n');

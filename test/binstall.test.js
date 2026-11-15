@@ -25,6 +25,7 @@ import {
 } from '../test-support/process-batches.js';
 import { stampInvocationEnv, stampSidecarPath, writeTranscript } from '../test-support/stamp-helpers.js';
 import { symlinkOrSkip } from '../test-support/symlink.js';
+import { withEnv } from '../test-support/env.js';
 
 function tmpDir() {
   return mkdtempSync(join(tmpdir(), 'cah-bin-test-'));
@@ -186,9 +187,10 @@ function runBinWorker(
         return;
       }
       const { writeBins, removeBins } = await import(workerData.moduleUrl);
-      const operation = workerData.operation === 'removeBins' ? removeBins : writeBins;
       try {
-        parentPort.postMessage(operation(workerData.dst, workerData.src, { testInterlock }));
+        parentPort.postMessage(workerData.operation === 'removeBins'
+          ? removeBins(workerData.dst, { testInterlock })
+          : writeBins(workerData.dst, workerData.src, { testInterlock }));
       } catch (error) {
         parentPort.postMessage({
           __workerError: {
@@ -337,57 +339,63 @@ describe('writeBins', () => {
       `a live publisher's committed fence must be preserved, not swept: ${JSON.stringify(result.maintenance?.swept)}`);
   });
 
-  it('a concurrent install does not drop the stamp of a cah-stamp child paused after the rename', async () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-bin-p2b-e2e-'));
-    const stateDir = join(dst, 'cache', 'stamp-state');
-    mkdirSync(stateDir, { recursive: true });
-    const transcript = writeTranscript(home, 'Opus 5', 1000);
-    const throttlePath = join(dst, 'cache', 'last-stamp.json');
-    const interlockBase = join(dst, 'p2-e2e-windowb-stamp-interlock');
-    const invocation = stampInvocationEnv({
-      CAH_STAMP_HINT_HOME: home,
-      CAH_STAMP_THROTTLE_PATH: throttlePath,
-      CAH_TEST_ONLY: '1',
-      CAH_TEST_ONLY_OWNER_INTERLOCK: interlockBase,
-      CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: 'write-after-rename-before-sync',
+  for (const [label, phase, sessionId] of [
+    ['before the canonical rename', P2_INTERLOCK_PHASE, 'p2-e2e-race'],
+    ['after the canonical rename', 'write-after-rename-before-sync', 'p2-e2e-windowb'],
+  ]) {
+    it(`a concurrent install does not drop the stamp of a cah-stamp child paused ${label}`, async () => {
+      const home = mkdtempSync(join(tmpdir(), 'cah-bin-p2-e2e-'));
+      const stateDir = join(dst, 'cache', 'stamp-state');
+      mkdirSync(stateDir, { recursive: true });
+      const transcript = writeTranscript(home, 'Opus 5', 1000);
+      const throttlePath = join(dst, 'cache', 'last-stamp.json');
+      const interlockBase = join(dst, `${sessionId}-interlock`);
+      const invocation = stampInvocationEnv({
+        CAH_STAMP_HINT_HOME: home,
+        CAH_STAMP_THROTTLE_PATH: throttlePath,
+        CAH_TEST_ONLY: '1',
+        CAH_TEST_ONLY_OWNER_INTERLOCK: interlockBase,
+        CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: phase,
+      });
+      const child = spawn(process.execPath, [RUN_COMPANION, 'stamp'], {
+        env: invocation.env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+      child.stdout.on('data', (chunk) => { stdout += chunk; });
+      child.stderr.on('data', (chunk) => { stderr += chunk; });
+      const closed = new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`stamp child did not exit; stdout=${stdout} stderr=${stderr}`)), 30000);
+        child.once('close', (code) => { clearTimeout(timer); resolve(code); });
+      });
+      child.stdin.end(JSON.stringify({
+        session_id: sessionId, hook_event_name: 'Stop', transcript_path: transcript,
+      }));
+      try {
+        await waitForPath(`${interlockBase}.ready`, 60000);
+        const result = writeBins(dst, src);
+        writeFileSync(`${interlockBase}.go`, 'go');
+        const code = await closed;
+        assert.equal(code, 0, `the stamp child must exit cleanly, stdout=${stdout} stderr=${stderr}`);
+        const line = stdout.split(/\r?\n/).find((entry) => entry.includes('systemMessage'));
+        assert.ok(line, `the stamp must not be dropped, stdout=${JSON.stringify(stdout)}`);
+        assert.match(JSON.parse(line).systemMessage, /\d{2}:\d{2}/);
+        assert.equal((result.maintenance?.swept || []).some((p) => p.includes('stamp-state')), false,
+          `the install must not sweep the stamp child's fence: ${JSON.stringify(result.maintenance?.swept)}`);
+        if (phase !== P2_INTERLOCK_PHASE) {
+          const sidecar = JSON.parse(readFileSync(stampSidecarPath(throttlePath, sessionId), 'utf8'));
+          assert.equal(sidecar.deliveryState, 'delivered',
+            'the raced write must not leave a pending record that suppresses the turn retry');
+        }
+      } finally {
+        rmSync(home, { recursive: true, force: true });
+        child.kill('SIGKILL');
+      }
     });
-    const child = spawn(process.execPath, [RUN_COMPANION, 'stamp'], {
-      env: invocation.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.stderr.on('data', (chunk) => { stderr += chunk; });
-    const closed = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`stamp child did not exit; stdout=${stdout} stderr=${stderr}`)), 30000);
-      child.once('close', (code) => { clearTimeout(timer); resolve(code); });
-    });
-    child.stdin.end(JSON.stringify({
-      session_id: 'p2-e2e-windowb', hook_event_name: 'Stop', transcript_path: transcript,
-    }));
-    try {
-      await waitForPath(`${interlockBase}.ready`, 60000);
-      const result = writeBins(dst, src);
-      writeFileSync(`${interlockBase}.go`, 'go');
-      const code = await closed;
-      assert.equal(code, 0, `the stamp child must exit cleanly, stdout=${stdout} stderr=${stderr}`);
-      const line = stdout.split(/\r?\n/).find((entry) => entry.includes('systemMessage'));
-      assert.ok(line, `the stamp must not be dropped by a window-B race, stdout=${JSON.stringify(stdout)}`);
-      const envelope = JSON.parse(line);
-      assert.match(envelope.systemMessage, /\d{2}:\d{2}/);
-      assert.equal((result.maintenance?.swept || []).some((p) => p.includes('stamp-state')), false,
-        `the install must not sweep the stamp child's committed fence: ${JSON.stringify(result.maintenance?.swept)}`);
-      const sidecar = JSON.parse(readFileSync(stampSidecarPath(throttlePath, 'p2-e2e-windowb'), 'utf8'));
-      assert.equal(sidecar.deliveryState, 'delivered',
-        'the raced write must not leave a pending record that suppresses the turn retry');
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-      child.kill('SIGKILL');
-    }
-  });
+  }
 
   it('a publisher paused past the freshness window still succeeds; a dead recycled-pid publisher is still recovered', async () => {
     const stateDir = join(dst, 'cache', 'stamp-state');
@@ -474,54 +482,6 @@ describe('writeBins', () => {
       sleeper.kill('SIGKILL');
       live.child.kill('SIGKILL');
       successor.child.kill('SIGKILL');
-    }
-  });
-
-  it('a concurrent install does not drop the stamp of a paused cah-stamp child', async () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-bin-p2-e2e-'));
-    const stateDir = join(dst, 'cache', 'stamp-state');
-    mkdirSync(stateDir, { recursive: true });
-    const transcript = writeTranscript(home, 'Opus 5', 1000);
-    const interlockBase = join(dst, 'p2-e2e-stamp-interlock');
-    const invocation = stampInvocationEnv({
-      CAH_STAMP_HINT_HOME: home,
-      CAH_STAMP_THROTTLE_PATH: join(dst, 'cache', 'last-stamp.json'),
-      CAH_TEST_ONLY: '1',
-      CAH_TEST_ONLY_OWNER_INTERLOCK: interlockBase,
-      CAH_TEST_ONLY_OWNER_INTERLOCK_PHASE: P2_INTERLOCK_PHASE,
-    });
-    const child = spawn(process.execPath, [RUN_COMPANION, 'stamp'], {
-      env: invocation.env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.stderr.on('data', (chunk) => { stderr += chunk; });
-    const closed = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`stamp child did not exit; stdout=${stdout} stderr=${stderr}`)), 30000);
-      child.once('close', (code) => { clearTimeout(timer); resolve(code); });
-    });
-    child.stdin.end(JSON.stringify({
-      session_id: 'p2-e2e-race', hook_event_name: 'Stop', transcript_path: transcript,
-    }));
-    try {
-      await waitForPath(`${interlockBase}.ready`, 60000);
-      const result = writeBins(dst, src);
-      writeFileSync(`${interlockBase}.go`, 'go');
-      const code = await closed;
-      assert.equal(code, 0, `the stamp child must exit cleanly, stdout=${stdout} stderr=${stderr}`);
-      const line = stdout.split(/\r?\n/).find((entry) => entry.includes('systemMessage'));
-      assert.ok(line, `the stamp must not be dropped, stdout=${JSON.stringify(stdout)}`);
-      const envelope = JSON.parse(line);
-      assert.match(envelope.systemMessage, /\d{2}:\d{2}/);
-      assert.equal((result.maintenance?.swept || []).some((p) => p.includes('stamp-state')), false,
-        `the install must not sweep the stamp child's in-flight fence: ${JSON.stringify(result.maintenance?.swept)}`);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-      child.kill('SIGKILL');
     }
   });
 
@@ -820,23 +780,14 @@ describe('writeBins', () => {
   it('keeps install and uninstall successful when cache enumeration is unreadable', () => {
     const cache = join(dst, 'cache');
     mkdirSync(cache, { recursive: true });
-    const priorTest = process.env.CAH_TEST_ONLY;
-    const priorFailure = process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
-    process.env.CAH_TEST_ONLY = '1';
-    process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = 'opendir';
-    try {
+    withEnv({ CAH_TEST_ONLY: '1', CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE: 'opendir' }, () => {
       const installed = writeBins(dst, src);
       assert.equal(installed.written, BinFiles.length);
       assert.equal(installed.maintenance.incomplete, true);
       assert.equal(installed.maintenance.truncated, false);
       const removed = removeBins(dst);
       assert.equal(removed.maintenance.incomplete, true);
-    } finally {
-      if (priorTest === undefined) delete process.env.CAH_TEST_ONLY;
-      else process.env.CAH_TEST_ONLY = priorTest;
-      if (priorFailure === undefined) delete process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
-      else process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = priorFailure;
-    }
+    });
   });
 
   it('merges root and cache maintenance visits exactly once for install and uninstall', () => {
@@ -892,11 +843,7 @@ describe('writeBins', () => {
   it('reports each root and cache maintenance failure exactly once', () => {
     const cache = join(dst, 'cache');
     mkdirSync(cache, { recursive: true });
-    const priorTest = process.env.CAH_TEST_ONLY;
-    const priorFailure = process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
-    process.env.CAH_TEST_ONLY = '1';
-    process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = 'opendir';
-    try {
+    withEnv({ CAH_TEST_ONLY: '1', CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE: 'opendir' }, () => {
       const installed = writeBins(dst, src);
       assert.equal(installed.maintenance.failures.length, 4);
       assert.equal(installed.maintenance.failures.filter((failure) => failure.path === 'cache').length, 1);
@@ -906,12 +853,7 @@ describe('writeBins', () => {
       assert.equal(removed.maintenance.failures.length, 4);
       assert.equal(removed.maintenance.failures.filter((failure) => failure.path === 'cache').length, 1);
       assert.ok(removed.maintenance.failures.every((failure) => failure.code === 'EACCES'));
-    } finally {
-      if (priorTest === undefined) delete process.env.CAH_TEST_ONLY;
-      else process.env.CAH_TEST_ONLY = priorTest;
-      if (priorFailure === undefined) delete process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
-      else process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = priorFailure;
-    }
+    });
   });
 
   it('bounds streamed recovery visits while giving displaced data its own budget', () => {
@@ -974,20 +916,11 @@ describe('writeBins', () => {
     const quarantine = join(cache, 'lost.txt.cah-owned-remove');
     mkdirSync(quarantine, { recursive: true });
     writeFileSync(join(quarantine, 'payload'), 'displaced\n');
-    const priorTest = process.env.CAH_TEST_ONLY;
-    const priorFailure = process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
-    process.env.CAH_TEST_ONLY = '1';
-    process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = 'child';
-    try {
+    withEnv({ CAH_TEST_ONLY: '1', CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE: 'child' }, () => {
       const artifacts = enumerateRecoveryArtifacts(cache, { displacedVisitLimit: 1 });
       assert.equal(artifacts.incomplete, true);
       assert.ok(artifacts.failures.some((failure) => failure.path.endsWith('payload')));
-    } finally {
-      if (priorTest === undefined) delete process.env.CAH_TEST_ONLY;
-      else process.env.CAH_TEST_ONLY = priorTest;
-      if (priorFailure === undefined) delete process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
-      else process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = priorFailure;
-    }
+    });
   });
 
   it('refuses a foreign successor at the publication leaf and preserves its mode', async () => {
@@ -1095,8 +1028,7 @@ describe('writeBins', () => {
       'post-commit inspection failure must not strand a runtime leaf');
   });
 
-  it('does not accept content-equivalent rollback state with a corrupted mode', () => {
-    if (process.platform === 'win32') return;
+  it('does not accept content-equivalent rollback state with a corrupted mode', { skip: process.platform === 'win32' }, () => {
     const state = (mode) => ({
       present: true,
       contentDigest: 'same-content',

@@ -1,8 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -12,6 +11,7 @@ import {
 } from '../templates/skills/checkpoint-watch/hooks/engine.mjs';
 import { readWatchState, updateWatch } from '../lib/checkpoint-watch.js';
 import { SettingsFileError } from '../lib/settings-file.js';
+import { tempDir } from '../test-support/cli-sandbox.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cli = join(__dirname, '..', 'bin', 'cah.js');
@@ -1021,8 +1021,8 @@ describe('checkpoint-watch engine: helpers', () => {
 });
 
 describe('checkpoint-watch settings (lib/checkpoint-watch.js)', () => {
-  function project() {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-watch-'));
+  function project(t) {
+    const dir = tempDir(t, 'cah-watch');
     return {
       dir,
       paths: { localPath: join(dir, '.claude', 'settings.local.json'), projectPath: join(dir, '.claude', 'settings.json') },
@@ -1030,8 +1030,8 @@ describe('checkpoint-watch settings (lib/checkpoint-watch.js)', () => {
   }
   const read = (path) => JSON.parse(readFileSync(path, 'utf8'));
 
-  it('keeps a CRLF settings file CRLF with its indent', () => {
-    const { paths } = project();
+  it('keeps a CRLF settings file CRLF with its indent', (t) => {
+    const { paths } = project(t);
     mkdirSync(dirname(paths.localPath), { recursive: true });
     writeFileSync(paths.localPath, '{\r\n\t"env": { "A": "1" }\r\n}\r\n');
     updateWatch(paths, 'enable', { mode: 'commit' });
@@ -1041,8 +1041,8 @@ describe('checkpoint-watch settings (lib/checkpoint-watch.js)', () => {
     assert.deepEqual(read(paths.localPath), { env: { A: '1' }, cahCheckpointWatch: { mode: 'commit' } });
   });
 
-  it('enables, switches mode, and disables in settings.local.json only', () => {
-    const { paths } = project();
+  it('enables, switches mode, and disables in settings.local.json only', (t) => {
+    const { paths } = project(t);
     assert.deepEqual(updateWatch(paths, 'enable', { mode: 'checkpoint' }), { local: 'enabled', legacy: null });
     assert.deepEqual(read(paths.localPath), { cahCheckpointWatch: { mode: 'checkpoint' } });
     assert.equal(existsSync(paths.projectPath), false);
@@ -1054,8 +1054,8 @@ describe('checkpoint-watch settings (lib/checkpoint-watch.js)', () => {
     assert.equal(updateWatch(paths, 'disable').local, 'not-enabled');
   });
 
-  it('keeps other keys and never creates a file to disable', () => {
-    const { paths } = project();
+  it('keeps other keys and never creates a file to disable', (t) => {
+    const { paths } = project(t);
     assert.equal(updateWatch(paths, 'disable').local, 'not-enabled');
     assert.equal(existsSync(paths.localPath), false);
     mkdirSync(dirname(paths.localPath), { recursive: true });
@@ -1066,8 +1066,8 @@ describe('checkpoint-watch settings (lib/checkpoint-watch.js)', () => {
     assert.deepEqual(JSON.parse(text).permissions, { allow: ['Bash(ls)'] });
   });
 
-  it('removes the legacy Stop hint hook and leaves foreign hooks alone', () => {
-    const { paths } = project();
+  it('removes the legacy Stop hint hook and leaves foreign hooks alone', (t) => {
+    const { paths } = project(t);
     mkdirSync(dirname(paths.projectPath), { recursive: true });
     const foreign = { type: 'command', command: 'echo hi' };
     const legacy = { type: 'command', command: 'node hint.js', 'cah-sentinel': 'cah-hook:v1', 'cah-name': 'checkpoint-watch' };
@@ -1080,8 +1080,8 @@ describe('checkpoint-watch settings (lib/checkpoint-watch.js)', () => {
     assert.equal(updateWatch(paths, 'disable').legacy, null);
   });
 
-  it('refuses invalid JSON and writes nothing', () => {
-    const { paths } = project();
+  it('refuses invalid JSON and writes nothing', (t) => {
+    const { paths } = project(t);
     mkdirSync(dirname(paths.localPath), { recursive: true });
     writeFileSync(paths.localPath, '{ broken');
     assert.throws(() => updateWatch(paths, 'enable', { mode: 'checkpoint' }), SettingsFileError);
@@ -1097,18 +1097,18 @@ describe('cah checkpoint-watch', () => {
     });
   }
 
-  it('refuses a folder outside a Git repository', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-watch-home-'));
-    const dir = mkdtempSync(join(tmpdir(), 'cah-watch-nogit-'));
+  it('refuses a folder outside a Git repository', (t) => {
+    const home = tempDir(t, 'cah-watch-home');
+    const dir = tempDir(t, 'cah-watch-nogit');
     const r = run(home, 'on', '--cwd', dir);
     assert.equal(r.status, 1, r.stderr);
     assert.match(r.stderr, /not inside a Git repository/);
     assert.equal(existsSync(join(dir, '.claude')), false);
   });
 
-  it('turns the cycle on with --commit, reports status, and turns it off', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-watch-home-'));
-    const dir = mkdtempSync(join(tmpdir(), 'cah-watch-repo-'));
+  it('turns the cycle on with --commit, reports status, and turns it off', (t) => {
+    const home = tempDir(t, 'cah-watch-home');
+    const dir = tempDir(t, 'cah-watch-repo');
     assert.equal(spawnSync('git', ['init', '-q', dir]).status, 0);
     const on = run(home, 'on', '--commit', '--cwd', dir);
     assert.equal(on.status, 0, on.stderr);

@@ -1,10 +1,10 @@
 import { afterEach } from 'node:test';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readdirSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { createHash } from 'node:crypto';
+import { sessionHash } from './marker-fixtures.js';
 import {
   armChildDeadline, timeoutError, DEFAULT_CHILD_DEADLINE_MS, TERMINATION_GRACE_MS,
 } from './process-batches.js';
@@ -158,10 +158,7 @@ export function updateMarkerDir(home) {
 
 export { waitForPath } from './process-batches.js';
 
-export function sessionHash(sessionId) {
-  const identity = typeof sessionId === 'string' ? `string:${sessionId}` : 'missing:';
-  return createHash('sha256').update(identity, 'utf8').digest('hex');
-}
+export { sessionHash };
 
 export function stampSidecarPath(base, sessionId) {
   const parent = dirname(base);
@@ -180,30 +177,6 @@ export function stampSidecars(base) {
     .map((name) => join(stateDir, name));
 }
 
-export function writeClaim(path, owner) {
-  mkdirSync(path);
-  writeFileSync(join(path, 'owner.json'), JSON.stringify(owner));
-}
-
-export function readClaim(path) {
-  return JSON.parse(readFileSync(join(path, 'owner.json'), 'utf8'));
-}
-
-export function writeTranscript(dir, model, usedTokens) {
-  const path = join(dir, 'transcript.jsonl');
-  const lines = [
-    JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' } }),
-    JSON.stringify({
-      type: 'assistant',
-      message: {
-        role: 'assistant',
-        model,
-        usage: { input_tokens: usedTokens, output_tokens: 10 },
-      },
-    }),
-  ];
-  writeFileSync(path, lines.join('\n') + '\n');
-  return path;
-}
+export { readClaim, writeClaim, writeTranscript } from './marker-fixtures.js';
 
 export const TIME_RE = /^\d{2}:\d{2}/;

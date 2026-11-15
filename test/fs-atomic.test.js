@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync,
+  existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -16,10 +16,12 @@ import {
 import { recoverPublicationFence } from '../lib/fs-atomic-publication.js';
 import { renewLease } from '../lib/lease-lock.js';
 import { waitForPath } from '../test-support/process-batches.js';
+import { tempDir } from '../test-support/cli-sandbox.js';
+import { withEnv } from '../test-support/env.js';
 
 describe('empty atomic-removal reservations', () => {
-  it('reclaims an identity-stable empty reservation before removing its leaf', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-empty-quarantine-'));
+  it('reclaims an identity-stable empty reservation before removing its leaf', (t) => {
+    const dir = tempDir(t, 'cah-empty-quarantine');
     const dest = join(dir, 'leaf');
     const reservation = `${dest}.cah-owned-remove`;
     writeFileSync(dest, 'owned\n');
@@ -31,8 +33,8 @@ describe('empty atomic-removal reservations', () => {
     assert.equal(existsSync(reservation), false);
   });
 
-  it('maintenance reclaims only an empty reservation and preserves successors and payloads', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-empty-quarantine-'));
+  it('maintenance reclaims only an empty reservation and preserves successors and payloads', (t) => {
+    const dir = tempDir(t, 'cah-empty-quarantine');
     const emptyLeaf = join(dir, 'empty');
     const successor = join(dir, 'successor');
     const emptyReservation = `${emptyLeaf}.cah-owned-remove`;
@@ -54,8 +56,8 @@ describe('empty atomic-removal reservations', () => {
     assert.equal(readFileSync(join(occupied, 'foreign'), 'utf8'), 'keep\n');
   });
 
-  it('maintenance defers a fresh empty reservation and reclaims it once stale', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-empty-quarantine-'));
+  it('maintenance defers a fresh empty reservation and reclaims it once stale', (t) => {
+    const dir = tempDir(t, 'cah-empty-quarantine');
     const reservation = join(dir, 'leaf.cah-owned-remove');
     mkdirSync(reservation);
 
@@ -72,32 +74,24 @@ describe('empty atomic-removal reservations', () => {
 });
 
 describe('non-waiting cache publication', () => {
-  it('publishes normally when the fence is free', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-cache-free-fence-'));
-    try {
-      const dest = join(dir, 'cache.json');
-      writeFileSync(dest, 'old\n');
-      writeFileAtomic(dest, 'new\n', {
-        expectedDestination: captureRegularFileSnapshot(dest).expectedDestination,
-        waitForFence: false,
-      });
-      assert.equal(readFileSync(dest, 'utf8'), 'new\n');
-      assert.equal(existsSync(`${dest}.cah-owned-publish`), false);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  it('publishes normally when the fence is free', (t) => {
+    const dir = tempDir(t, 'cah-cache-free-fence');
+    const dest = join(dir, 'cache.json');
+    writeFileSync(dest, 'old\n');
+    writeFileAtomic(dest, 'new\n', {
+      expectedDestination: captureRegularFileSnapshot(dest).expectedDestination,
+      waitForFence: false,
+    });
+    assert.equal(readFileSync(dest, 'utf8'), 'new\n');
+    assert.equal(existsSync(`${dest}.cah-owned-publish`), false);
   });
 
-  it('does not retry a transient mkdir failure in non-waiting mode', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-cache-transient-fence-'));
-    const keys = ['CAH_TEST_ONLY', 'CAH_TEST_ONLY_PUBLICATION_FENCE_MKDIR_TRANSIENT_FAILURES'];
-    const saved = keys.map((key) => process.env[key]);
-    try {
-      const dest = join(dir, 'cache.json');
-      writeFileSync(dest, 'old\n');
-      process.env[keys[0]] = '1';
-      process.env[keys[1]] = '1';
-      let waited = false;
+  it('does not retry a transient mkdir failure in non-waiting mode', (t) => {
+    const dir = tempDir(t, 'cah-cache-transient-fence');
+    const dest = join(dir, 'cache.json');
+    writeFileSync(dest, 'old\n');
+    let waited = false;
+    withEnv({ CAH_TEST_ONLY: '1', CAH_TEST_ONLY_PUBLICATION_FENCE_MKDIR_TRANSIENT_FAILURES: '1' }, () => {
       assert.throws(() => writeFileAtomic(dest, 'new\n', {
         expectedDestination: captureRegularFileSnapshot(dest).expectedDestination,
         waitForFence: false,
@@ -105,47 +99,37 @@ describe('non-waiting cache publication', () => {
           if (phase === 'publication-fence-wait') waited = true;
         },
       }), { code: 'EPERM' });
-      assert.equal(waited, false);
-      assert.equal(readFileSync(dest, 'utf8'), 'old\n');
-    } finally {
-      keys.forEach((key, i) => {
-        if (saved[i] === undefined) delete process.env[key];
-        else process.env[key] = saved[i];
-      });
-      rmSync(dir, { recursive: true, force: true });
-    }
+    });
+    assert.equal(waited, false);
+    assert.equal(readFileSync(dest, 'utf8'), 'old\n');
   });
 
-  it('refuses an unsupported proof without waiting or changing recovery data', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-cache-busy-fence-'));
-    try {
-      const dest = join(dir, 'rate-limits.json');
-      const fence = `${dest}.cah-owned-publish`;
-      const proof = JSON.stringify({ version: 2, ownerPid: process.pid });
-      writeFileSync(dest, 'old\n');
-      mkdirSync(fence);
-      writeFileSync(join(fence, 'publication.json'), proof);
-      const snapshot = captureRegularFileSnapshot(dest);
-      let waited = false;
-      assert.throws(() => writeFileAtomic(dest, 'new\n', {
-        expectedDestination: snapshot.expectedDestination,
-        waitForFence: false,
-        testInterlock: (phase) => {
-          if (phase === 'publication-fence-wait') waited = true;
-        },
-      }), { code: 'EEXIST' });
-      assert.equal(waited, false);
-      assert.equal(readFileSync(dest, 'utf8'), 'old\n');
-      assert.equal(readFileSync(join(fence, 'publication.json'), 'utf8'), proof);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  it('refuses an unsupported proof without waiting or changing recovery data', (t) => {
+    const dir = tempDir(t, 'cah-cache-busy-fence');
+    const dest = join(dir, 'rate-limits.json');
+    const fence = `${dest}.cah-owned-publish`;
+    const proof = JSON.stringify({ version: 2, ownerPid: process.pid });
+    writeFileSync(dest, 'old\n');
+    mkdirSync(fence);
+    writeFileSync(join(fence, 'publication.json'), proof);
+    const snapshot = captureRegularFileSnapshot(dest);
+    let waited = false;
+    assert.throws(() => writeFileAtomic(dest, 'new\n', {
+      expectedDestination: snapshot.expectedDestination,
+      waitForFence: false,
+      testInterlock: (phase) => {
+        if (phase === 'publication-fence-wait') waited = true;
+      },
+    }), { code: 'EEXIST' });
+    assert.equal(waited, false);
+    assert.equal(readFileSync(dest, 'utf8'), 'old\n');
+    assert.equal(readFileSync(join(fence, 'publication.json'), 'utf8'), proof);
   });
 });
 
 describe('empty proof-less publication fences', () => {
-  it('maintenance defers a fresh empty publication fence and reclaims it once stale', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-empty-publish-fence-'));
+  it('maintenance defers a fresh empty publication fence and reclaims it once stale', (t) => {
+    const dir = tempDir(t, 'cah-empty-publish-fence');
     const dest = join(dir, 'leaf.json');
     const fence = `${dest}.cah-owned-publish`;
     writeFileSync(dest, 'owned\n');
@@ -165,8 +149,8 @@ describe('empty proof-less publication fences', () => {
     assert.equal(readFileSync(dest, 'utf8'), 'owned\n', 'sweeping the fence must not touch the leaf');
   });
 
-  it('an unproved publication fence with content is preserved, not swept', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-occupied-publish-fence-'));
+  it('an unproved publication fence with content is preserved, not swept', (t) => {
+    const dir = tempDir(t, 'cah-occupied-publish-fence');
     const dest = join(dir, 'leaf.json');
     const fence = `${dest}.cah-owned-publish`;
     writeFileSync(dest, 'owned\n');
@@ -182,8 +166,8 @@ describe('empty proof-less publication fences', () => {
 });
 
 describe('lease-quarantine recovery artifacts', () => {
-  it('classifies lease-quarantine roots as displaced, empty, or regular-file', () => {
-    const base = mkdtempSync(join(tmpdir(), 'cah-lease-quarantine-'));
+  it('classifies lease-quarantine roots as displaced, empty, or regular-file', (t) => {
+    const base = tempDir(t, 'cah-lease-quarantine');
     const displaced = join(base, 'displaced', '.cah-lease-quarantine');
     mkdirSync(join(displaced, 'claim.taken-1-a'), { recursive: true });
     writeFileSync(join(displaced, 'claim.taken-1-a', 'stray'), 'stray');
@@ -211,15 +195,11 @@ describe('lease-quarantine recovery artifacts', () => {
     assert.equal(report.incomplete, false);
   });
 
-  it('reports an uninspectable quarantine root as inspection-incomplete instead of dropping it', () => {
-    const base = mkdtempSync(join(tmpdir(), 'cah-lease-quarantine-eacces-'));
+  it('reports an uninspectable quarantine root as inspection-incomplete instead of dropping it', (t) => {
+    const base = tempDir(t, 'cah-lease-quarantine-eacces');
     const root = join(base, '.cah-lease-quarantine');
     mkdirSync(root);
-    const priorTest = process.env.CAH_TEST_ONLY;
-    const priorFailure = process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
-    process.env.CAH_TEST_ONLY = '1';
-    process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = 'empty';
-    try {
+    withEnv({ CAH_TEST_ONLY: '1', CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE: 'empty' }, () => {
       const artifacts = enumerateRecoveryArtifacts(base);
       const found = artifacts.filter((artifact) => artifact.kind === 'lease-quarantine');
       assert.equal(found.length, 1, 'the artifact must be reported, not dropped');
@@ -231,12 +211,7 @@ describe('lease-quarantine recovery artifacts', () => {
       const report = maintainRecoveryArtifacts(base);
       assert.ok(report.recovery.includes(root), 'an inspection-incomplete root stays in the recovery report');
       assert.equal(report.incomplete, true);
-    } finally {
-      if (priorTest === undefined) delete process.env.CAH_TEST_ONLY;
-      else process.env.CAH_TEST_ONLY = priorTest;
-      if (priorFailure === undefined) delete process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
-      else process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = priorFailure;
-    }
+    });
   });
 
   it('recognizes the lease-quarantine namespace as a recovery marker', () => {
@@ -250,8 +225,8 @@ describe('lease-quarantine recovery artifacts', () => {
 });
 
 describe('committed predecessor publication fences', () => {
-  it('a same-process re-publication finishes its own committed predecessor fence', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-committed-predecessor-'));
+  it('a same-process re-publication finishes its own committed predecessor fence', (t) => {
+    const dir = tempDir(t, 'cah-committed-predecessor');
     const dest = join(dir, 'leaf.json');
     writeFileSync(dest, 'v1\n');
     assert.throws(
@@ -274,6 +249,15 @@ describe('committed predecessor publication fences', () => {
       'beginFence() must finish a committed predecessor fence unconditionally, never defer to it');
   });
 });
+
+// The child plus a promise of its exit code and everything it wrote to stdout.
+function captured(child) {
+  let stdout = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  const exited = new Promise((resolve) => child.once('close', (code) => resolve({ code, stdout })));
+  return { child, exited };
+}
 
 // A real second publisher: a child process running the product's own
 // writeFileAtomic(), so a racing acquirer goes through beginFence() exactly
@@ -311,11 +295,7 @@ function spawnPublisher(dest, payload, interlockBase, phase) {
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  let stdout = '';
-  child.stdout.setEncoding('utf8');
-  child.stdout.on('data', (chunk) => { stdout += chunk; });
-  const exited = new Promise((resolve) => child.once('close', (code) => resolve({ code, stdout })));
-  return { child, exited };
+  return captured(child);
 }
 
 // A real publisher holding a lifecycle lease across its publication, the way
@@ -365,16 +345,12 @@ function spawnLeasedPublisher(dest, leasePath, payload, interlockBase, phase) {
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  let stdout = '';
-  child.stdout.setEncoding('utf8');
-  child.stdout.on('data', (chunk) => { stdout += chunk; });
-  const exited = new Promise((resolve) => child.once('close', (code) => resolve({ code, stdout })));
-  return { child, exited };
+  return captured(child);
 }
 
 describe('a foreign acquirer racing a live committed fence', () => {
-  it('defers to a foreign live publisher and both publishers succeed', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-windowb-acquirer-'));
+  it('defers to a foreign live publisher and both publishers succeed', async (t) => {
+    const dir = tempDir(t, 'cah-windowb-acquirer');
     const children = [];
     try {
       const dest = join(dir, 'leaf.json');
@@ -422,8 +398,8 @@ describe('a foreign acquirer racing a live committed fence', () => {
 });
 
 describe('a recycled-pid committed fence', () => {
-  it('is recovered by a foreign acquirer once stale instead of wedging the leaf forever', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-recycled-pid-'));
+  it('is recovered by a foreign acquirer once stale instead of wedging the leaf forever', async (t) => {
+    const dir = tempDir(t, 'cah-recycled-pid');
     const children = [];
     try {
       const dest = join(dir, 'leaf.json');
@@ -527,16 +503,12 @@ function spawnRacingPublisher(dest, iterations) {
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  let stdout = '';
-  child.stdout.setEncoding('utf8');
-  child.stdout.on('data', (chunk) => { stdout += chunk; });
-  const exited = new Promise((resolve) => child.once('close', (code) => resolve({ code, stdout })));
-  return { child, exited };
+  return captured(child);
 }
 
 describe('concurrent publishers racing one leaf', () => {
-  it('never surfaces a raw ENOENT from the publication-fence proof race', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-racing-publishers-'));
+  it('never surfaces a raw ENOENT from the publication-fence proof race', async (t) => {
+    const dir = tempDir(t, 'cah-racing-publishers');
     const children = [];
     const publishers = 6;
     const iterations = 120;
@@ -573,38 +545,34 @@ describe('concurrent publishers racing one leaf', () => {
 });
 
 describe('lease displacement and capacity quarantine recovery artifacts', () => {
-  it('reports .abandoned- and .cah-capacity-quarantine namespaces instead of ignoring them', () => {
-    const base = mkdtempSync(join(tmpdir(), 'cah-abandoned-report-'));
-    try {
-      const abandoned = join(base, 'claim.lock.abandoned-4321-6bed1c9e');
-      mkdirSync(abandoned);
-      writeFileSync(join(abandoned, 'owner.json'), '{"pid":4321,"token":"t","generation":"g"}\n');
-      const capacity = join(base, '.cah-capacity-quarantine');
-      mkdirSync(capacity);
-      writeFileSync(join(capacity, 'victim'), '{"pid":4321}\n');
+  it('reports .abandoned- and .cah-capacity-quarantine namespaces instead of ignoring them', (t) => {
+    const base = tempDir(t, 'cah-abandoned-report');
+    const abandoned = join(base, 'claim.lock.abandoned-4321-6bed1c9e');
+    mkdirSync(abandoned);
+    writeFileSync(join(abandoned, 'owner.json'), '{"pid":4321,"token":"t","generation":"g"}\n');
+    const capacity = join(base, '.cah-capacity-quarantine');
+    mkdirSync(capacity);
+    writeFileSync(join(capacity, 'victim'), '{"pid":4321}\n');
 
-      // The predicates and describeRecoveryArtifact() must agree about what
-      // these strings mean, or orphan sweeps treat recovery state as user data.
-      assert.equal(isQuarantineName('claim.lock.abandoned-4321-6bed1c9e'), true);
-      assert.equal(isQuarantinePath(join('x', '.cah-capacity-quarantine', 'victim')), true);
+    // The predicates and describeRecoveryArtifact() must agree about what
+    // these strings mean, or orphan sweeps treat recovery state as user data.
+    assert.equal(isQuarantineName('claim.lock.abandoned-4321-6bed1c9e'), true);
+    assert.equal(isQuarantinePath(join('x', '.cah-capacity-quarantine', 'victim')), true);
 
-      const report = maintainRecoveryArtifacts(base);
-      assert.ok(report.recovery.includes(abandoned),
-        `a displacement quarantine holding a claim must be reported: ${JSON.stringify(report.recovery)}`);
-      assert.ok(report.recovery.includes(capacity),
-        `an occupied capacity victim slot must be reported: ${JSON.stringify(report.recovery)}`);
-      assert.deepEqual(report.swept, [], 'neither namespace may ever be auto-swept');
-      assert.ok(existsSync(join(abandoned, 'owner.json')), 'reporting must not consume the displaced claim');
-      assert.ok(existsSync(join(capacity, 'victim')), 'reporting must not consume the victim slot');
-    } finally {
-      rmSync(base, { recursive: true, force: true });
-    }
+    const report = maintainRecoveryArtifacts(base);
+    assert.ok(report.recovery.includes(abandoned),
+      `a displacement quarantine holding a claim must be reported: ${JSON.stringify(report.recovery)}`);
+    assert.ok(report.recovery.includes(capacity),
+      `an occupied capacity victim slot must be reported: ${JSON.stringify(report.recovery)}`);
+    assert.deepEqual(report.swept, [], 'neither namespace may ever be auto-swept');
+    assert.ok(existsSync(join(abandoned, 'owner.json')), 'reporting must not consume the displaced claim');
+    assert.ok(existsSync(join(capacity, 'victim')), 'reporting must not consume the victim slot');
   });
 });
 
 describe('a future-dated committed fence proof', () => {
-  it('does not pin a recycled-pid fence fresh: the acquirer recovers instead of wedging the leaf', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-future-proof-'));
+  it('does not pin a recycled-pid fence fresh: the acquirer recovers instead of wedging the leaf', async (t) => {
+    const dir = tempDir(t, 'cah-future-proof');
     const children = [];
     try {
       const dest = join(dir, 'leaf.json');
@@ -652,8 +620,8 @@ describe('a future-dated committed fence proof', () => {
 });
 
 describe('a recycled-pid committed fence under maintenance', () => {
-  it('is swept by a stale-proof maintenance pass instead of being deferred forever', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-recycled-maintenance-'));
+  it('is swept by a stale-proof maintenance pass instead of being deferred forever', async (t) => {
+    const dir = tempDir(t, 'cah-recycled-maintenance');
     const children = [];
     try {
       const dest = join(dir, 'leaf.json');
@@ -694,8 +662,8 @@ describe('a recycled-pid committed fence under maintenance', () => {
 });
 
 describe('a leased committed publisher', () => {
-  it('keeps deferring to a live publisher whose lease heartbeat is fresh', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-leased-live-'));
+  it('keeps deferring to a live publisher whose lease heartbeat is fresh', async (t) => {
+    const dir = tempDir(t, 'cah-leased-live');
     const children = [];
     try {
       const dest = join(dir, 'leaf.json');
@@ -725,8 +693,8 @@ describe('a leased committed publisher', () => {
     }
   });
 
-  it('stops deferring once the lease heartbeat expires even when token and generation still match', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-leased-expired-'));
+  it('stops deferring once the lease heartbeat expires even when token and generation still match', async (t) => {
+    const dir = tempDir(t, 'cah-leased-expired');
     const children = [];
     try {
       const dest = join(dir, 'leaf.json');
@@ -779,8 +747,8 @@ describe('a leased committed publisher', () => {
     }
   });
 
-  it('is swept by maintenance once its lease expires instead of being deferred forever', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-leased-maintenance-'));
+  it('is swept by maintenance once its lease expires instead of being deferred forever', async (t) => {
+    const dir = tempDir(t, 'cah-leased-maintenance');
     const children = [];
     try {
       const dest = join(dir, 'leaf.json');
@@ -825,8 +793,8 @@ describe('a leased committed publisher', () => {
     }
   });
 
-  it('a dead leased publisher is recovered without requiring any lease takeover', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-leased-dead-'));
+  it('a dead leased publisher is recovered without requiring any lease takeover', async (t) => {
+    const dir = tempDir(t, 'cah-leased-dead');
     const children = [];
     try {
       const dest = join(dir, 'leaf.json');
@@ -858,82 +826,52 @@ describe('a leased committed publisher', () => {
 });
 
 describe('transient publication-fence mkdir failures', () => {
-  function setEnv(values) {
-    const prior = {};
-    for (const [key, value] of Object.entries(values)) {
-      prior[key] = process.env[key];
-      process.env[key] = value;
-    }
-    return prior;
-  }
-  function restoreEnv(prior) {
-    for (const [key, value] of Object.entries(prior)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  }
   function assertNoFenceResidue(dir, dest) {
     const residue = readdirSync(dir).filter((name) => name.startsWith(`${dest}.cah-owned-publish`));
     assert.deepEqual(residue, []);
   }
 
-  it('survives exactly one transient EPERM on the publication-fence mkdir and still publishes', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-fence-eperm-'));
+  it('survives exactly one transient EPERM on the publication-fence mkdir and still publishes', (t) => {
+    const dir = tempDir(t, 'cah-fence-eperm');
     const dest = join(dir, 'leaf');
     const payload = 'fence-retry-payload\n';
     writeFileSync(dest, 'seed\n');
-    const prior = setEnv({
-      CAH_TEST_ONLY: '1',
-      CAH_TEST_ONLY_PUBLICATION_FENCE_MKDIR_TRANSIENT_FAILURES: '1',
-    });
-    try {
+    withEnv({ CAH_TEST_ONLY: '1', CAH_TEST_ONLY_PUBLICATION_FENCE_MKDIR_TRANSIENT_FAILURES: '1' }, () => {
       writeFileAtomic(dest, payload, {
         expectedDestination: captureRegularFileSnapshot(dest).expectedDestination,
       });
       assert.equal(readFileSync(dest, 'utf8'), payload);
-      // Normal call immediately after, no injection active.
-      delete process.env.CAH_TEST_ONLY;
-      delete process.env.CAH_TEST_ONLY_PUBLICATION_FENCE_MKDIR_TRANSIENT_FAILURES;
-      writeFileAtomic(dest, `${payload}again\n`, {
-        expectedDestination: captureRegularFileSnapshot(dest).expectedDestination,
-      });
-      assert.equal(readFileSync(dest, 'utf8'), `${payload}again\n`);
-      assertNoFenceResidue(dir, dest);
-    } finally {
-      restoreEnv(prior);
-      rmSync(dir, { recursive: true, force: true });
-    }
+    });
+    // Normal call immediately after, no injection active.
+    writeFileAtomic(dest, `${payload}again\n`, {
+      expectedDestination: captureRegularFileSnapshot(dest).expectedDestination,
+    });
+    assert.equal(readFileSync(dest, 'utf8'), `${payload}again\n`);
+    assertNoFenceResidue(dir, dest);
   });
 
-  it('a persistent EPERM on the publication-fence mkdir fails bounded with the original error and no residue', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-fence-eperm-'));
+  it('a persistent EPERM on the publication-fence mkdir fails bounded with the original error and no residue', (t) => {
+    const dir = tempDir(t, 'cah-fence-eperm');
     const dest = join(dir, 'leaf');
     writeFileSync(dest, 'untouched\n');
-    const prior = setEnv({
-      CAH_TEST_ONLY: '1',
-      CAH_TEST_ONLY_PUBLICATION_FENCE_MKDIR_TRANSIENT_FAILURES: '999',
-    });
-    try {
-      const startedAt = Date.now();
+    const startedAt = Date.now();
+    withEnv({ CAH_TEST_ONLY: '1', CAH_TEST_ONLY_PUBLICATION_FENCE_MKDIR_TRANSIENT_FAILURES: '999' }, () => {
       assert.throws(() => writeFileAtomic(dest, 'replaced\n', {
         expectedDestination: captureRegularFileSnapshot(dest).expectedDestination,
       }), (error) => error.code === 'EPERM');
-      assert.ok(Date.now() - startedAt >= 1500,
-        'the persistent EPERM must surface only after the bounded transient window, not immediately');
-      assert.equal(readFileSync(dest, 'utf8'), 'untouched\n');
-      assertNoFenceResidue(dir, dest);
-    } finally {
-      restoreEnv(prior);
-      rmSync(dir, { recursive: true, force: true });
-    }
+    });
+    assert.ok(Date.now() - startedAt >= 1500,
+      'the persistent EPERM must surface only after the bounded transient window, not immediately');
+    assert.equal(readFileSync(dest, 'utf8'), 'untouched\n');
+    assertNoFenceResidue(dir, dest);
   });
 });
 
 describe('stale atomic temp sweep', () => {
   const token = '0123456789abcdef0123456789abcdef';
   const stale = () => new Date(Date.now() - 2 * 24 * 3600 * 1000);
-  function fixture() {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-stale-temps-'));
+  function fixture(t) {
+    const dir = tempDir(t, 'cah-stale-temps');
     const make = (name, aged = true) => {
       const path = join(dir, name);
       writeFileSync(path, '{}\n');
@@ -943,69 +881,53 @@ describe('stale atomic temp sweep', () => {
     return { dir, make };
   }
 
-  it('removes only aged exact-name temps and leaves everything else', () => {
-    const { dir, make } = fixture();
-    try {
-      const old = make(`.cah-tmp-1234-${token}`);
-      const young = make(`.cah-tmp-1235-${token}`, false);
-      const victim = make('.cah-tmp-victim-leaf');
-      const odd = make(`.cah-tmp-abc-${token}`);
-      const user = make('user-file.json');
-      const report = sweepStaleAtomicTemps(dir);
-      assert.deepEqual(report.swept, [old]);
-      for (const path of [young, victim, odd, user]) assert.equal(existsSync(path), true);
-      assert.equal(existsSync(old), false);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  it('removes only aged exact-name temps and leaves everything else', (t) => {
+    const { dir, make } = fixture(t);
+    const old = make(`.cah-tmp-1234-${token}`);
+    const young = make(`.cah-tmp-1235-${token}`, false);
+    const victim = make('.cah-tmp-victim-leaf');
+    const odd = make(`.cah-tmp-abc-${token}`);
+    const user = make('user-file.json');
+    const report = sweepStaleAtomicTemps(dir);
+    assert.deepEqual(report.swept, [old]);
+    for (const path of [young, victim, odd, user]) assert.equal(existsSync(path), true);
+    assert.equal(existsSync(old), false);
   });
 
-  it('honors a custom age floor and a bounded limit', () => {
-    const { dir, make } = fixture();
-    try {
-      for (let i = 0; i < 5; i++) make(`.cah-tmp-${100 + i}-${token}`);
-      const bounded = sweepStaleAtomicTemps(dir, { limit: 2 });
-      assert.equal(bounded.swept.length, 2);
-      assert.equal(bounded.truncated, true);
-      const none = sweepStaleAtomicTemps(dir, { maxAgeMs: 30 * 24 * 3600 * 1000 });
-      assert.deepEqual(none.swept, []);
-      assert.equal(readdirSync(dir).length, 3);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  it('honors a custom age floor and a bounded limit', (t) => {
+    const { dir, make } = fixture(t);
+    for (let i = 0; i < 5; i++) make(`.cah-tmp-${100 + i}-${token}`);
+    const bounded = sweepStaleAtomicTemps(dir, { limit: 2 });
+    assert.equal(bounded.swept.length, 2);
+    assert.equal(bounded.truncated, true);
+    const none = sweepStaleAtomicTemps(dir, { maxAgeMs: 30 * 24 * 3600 * 1000 });
+    assert.deepEqual(none.swept, []);
+    assert.equal(readdirSync(dir).length, 3);
   });
 
-  it('does not follow or remove a directory or non-regular entry with a temp name', () => {
-    const { dir } = fixture();
-    try {
-      const impostor = join(dir, `.cah-tmp-7-${token}`);
-      mkdirSync(impostor);
-      utimesSync(impostor, stale(), stale());
-      const report = sweepStaleAtomicTemps(dir);
-      assert.deepEqual(report.swept, []);
-      assert.equal(existsSync(impostor), true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  it('does not follow or remove a directory or non-regular entry with a temp name', (t) => {
+    const { dir } = fixture(t);
+    const impostor = join(dir, `.cah-tmp-7-${token}`);
+    mkdirSync(impostor);
+    utimesSync(impostor, stale(), stale());
+    const report = sweepStaleAtomicTemps(dir);
+    assert.deepEqual(report.swept, []);
+    assert.equal(existsSync(impostor), true);
   });
 
-  it('sweeps nothing while a publication fence it cannot read may name any temp', () => {
-    const { dir, make } = fixture();
-    try {
-      const old = make(`.cah-tmp-9-${token}`);
-      const fence = join(dir, 'rate-limits.json.cah-owned-publish');
-      mkdirSync(fence);
-      writeFileSync(join(fence, 'publication.json'), JSON.stringify({ version: 2, ownerPid: process.pid }));
-      const report = sweepStaleAtomicTemps(dir);
-      assert.deepEqual(report.swept, []);
-      assert.equal(report.incomplete, true);
-      assert.equal(existsSync(old), true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  it('sweeps nothing while a publication fence it cannot read may name any temp', (t) => {
+    const { dir, make } = fixture(t);
+    const old = make(`.cah-tmp-9-${token}`);
+    const fence = join(dir, 'rate-limits.json.cah-owned-publish');
+    mkdirSync(fence);
+    writeFileSync(join(fence, 'publication.json'), JSON.stringify({ version: 2, ownerPid: process.pid }));
+    const report = sweepStaleAtomicTemps(dir);
+    assert.deepEqual(report.swept, []);
+    assert.equal(report.incomplete, true);
+    assert.equal(existsSync(old), true);
   });
 
-  it('is a no-op for a missing root', () => {
+  it('is a no-op for a missing root', (t) => {
     const report = sweepStaleAtomicTemps(join(tmpdir(), 'cah-stale-temps-absent-' + process.pid));
     assert.deepEqual(report.swept, []);
     assert.deepEqual(report.failures, []);
@@ -1016,8 +938,8 @@ describe('daily stale temp sweep', () => {
   const token = 'fedcba9876543210fedcba9876543210';
   const aged = new Date(Date.now() - 2 * 24 * 3600 * 1000);
   const stamp = (dir) => join(dir, 'stale-temp-sweep.stamp');
-  function cacheFixture() {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-daily-sweep-'));
+  function cacheFixture(t) {
+    const dir = tempDir(t, 'cah-daily-sweep');
     for (const sub of STALE_TEMP_SUBDIRS) mkdirSync(join(dir, sub));
     const temp = (where, pid, old = true) => {
       const path = join(dir, where, `.cah-tmp-${pid}-${token}`);
@@ -1028,22 +950,18 @@ describe('daily stale temp sweep', () => {
     return { dir, temp };
   }
 
-  it('sweeps the cache root and every sidecar namespace; a marker namespace keeps a recent temp', () => {
-    const { dir, temp } = cacheFixture();
-    try {
-      mkdirSync(join(dir, 'stamp-state'));
-      const kept = temp('stamp-state', 1);
-      const roots = ['', ...STALE_TEMP_SUBDIRS].map((where, index) => temp(where, 10 + index));
-      const report = sweepStaleCacheTemps(dir);
-      assert.deepEqual([...report.swept].sort(), [...roots].sort());
-      assert.equal(existsSync(kept), true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  it('sweeps the cache root and every sidecar namespace; a marker namespace keeps a recent temp', (t) => {
+    const { dir, temp } = cacheFixture(t);
+    mkdirSync(join(dir, 'stamp-state'));
+    const kept = temp('stamp-state', 1);
+    const roots = ['', ...STALE_TEMP_SUBDIRS].map((where, index) => temp(where, 10 + index));
+    const report = sweepStaleCacheTemps(dir);
+    assert.deepEqual([...report.swept].sort(), [...roots].sort());
+    assert.equal(existsSync(kept), true);
   });
 
-  it('removes week-old recovery directories of the sidecar caches, nothing younger or foreign', () => {
-    const { dir } = cacheFixture();
+  it('removes week-old recovery directories of the sidecar caches, nothing younger or foreign', (t) => {
+    const { dir } = cacheFixture(t);
     const weekOld = new Date(Date.now() - 8 * 24 * 3600 * 1000);
     const recovery = (where, name, { old = true, freshChild = false } = {}) => {
       const path = join(dir, where, name);
@@ -1056,30 +974,26 @@ describe('daily stale temp sweep', () => {
       }
       return path;
     };
-    try {
-      const hash = 'a'.repeat(64);
-      const gone = [
-        recovery('context-measured', `${hash}.json.cah-owned-remove`),
-        recovery('rate-context', `${hash}.json.cah-owned-publish`),
-        recovery('', 'rate-limits.json.cah-owned-publish.quarantine-4eed014c-8697-493b-ba44-4f865d64e37b'),
-      ];
-      const kept = [
-        recovery('context-measured', `${'b'.repeat(64)}.json.cah-owned-remove`, { old: false }),
-        recovery('context-measured', `${'c'.repeat(64)}.json.cah-owned-remove`, { freshChild: true }),
-        recovery('context-measured', 'notes.cah-owned-remove'),
-        recovery('stamp-state', `${hash}.json.cah-owned-publish`),
-      ];
-      const report = sweepStaleCacheTemps(dir);
-      assert.deepEqual([...report.swept].sort(), [...gone].sort());
-      for (const path of gone) assert.equal(existsSync(path), false, path);
-      for (const path of kept) assert.equal(existsSync(path), true, path);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    const hash = 'a'.repeat(64);
+    const gone = [
+      recovery('context-measured', `${hash}.json.cah-owned-remove`),
+      recovery('rate-context', `${hash}.json.cah-owned-publish`),
+      recovery('', 'rate-limits.json.cah-owned-publish.quarantine-4eed014c-8697-493b-ba44-4f865d64e37b'),
+    ];
+    const kept = [
+      recovery('context-measured', `${'b'.repeat(64)}.json.cah-owned-remove`, { old: false }),
+      recovery('context-measured', `${'c'.repeat(64)}.json.cah-owned-remove`, { freshChild: true }),
+      recovery('context-measured', 'notes.cah-owned-remove'),
+      recovery('stamp-state', `${hash}.json.cah-owned-publish`),
+    ];
+    const report = sweepStaleCacheTemps(dir);
+    assert.deepEqual([...report.swept].sort(), [...gone].sort());
+    for (const path of gone) assert.equal(existsSync(path), false, path);
+    for (const path of kept) assert.equal(existsSync(path), true, path);
   });
 
   it('leaves the recovery dirs of the user\'s own leaves in the cache root, and a stuck one never blocks the stamp', () => {
-    const { dir } = cacheFixture();
+    const { dir } = cacheFixture(t);
     const weekOld = new Date(Date.now() - 8 * 24 * 3600 * 1000);
     const recovery = (name) => {
       const path = join(dir, name);
@@ -1089,119 +1003,91 @@ describe('daily stale temp sweep', () => {
       utimesSync(path, weekOld, weekOld);
       return path;
     };
-    try {
-      const backup = recovery('probe-backup.json.cah-owned-remove');
-      const stuck = recovery('update-check.json.cah-owned-remove');
-      const report = sweepStaleTempsDaily(dir, {
-        removeTree: () => { throw Object.assign(new Error('busy'), { code: 'EBUSY' }); },
-      });
-      assert.equal(existsSync(backup), true, 'probe-backup.json is the user\'s, its recovery dir is not swept');
-      assert.deepEqual(report.stuck, [stuck]);
-      assert.deepEqual(report.failures, []);
-      assert.equal(existsSync(stamp(dir)), true, 'the stamp is written, so the sweep does not rerun on every render');
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    const backup = recovery('probe-backup.json.cah-owned-remove');
+    const stuck = recovery('update-check.json.cah-owned-remove');
+    const report = sweepStaleTempsDaily(dir, {
+      removeTree: () => { throw Object.assign(new Error('busy'), { code: 'EBUSY' }); },
+    });
+    assert.equal(existsSync(backup), true, 'probe-backup.json is the user\'s, its recovery dir is not swept');
+    assert.deepEqual(report.stuck, [stuck]);
+    assert.deepEqual(report.failures, []);
+    assert.equal(existsSync(stamp(dir)), true, 'the stamp is written, so the sweep does not rerun on every render');
   });
 
-  it('an aged publication fence with no readable proof no longer stops the temp sweep and the stamp', () => {
-    const { dir, temp } = cacheFixture();
+  it('an aged publication fence with no readable proof no longer stops the temp sweep and the stamp', (t) => {
+    const { dir, temp } = cacheFixture(t);
     const weekOld = new Date(Date.now() - 8 * 24 * 3600 * 1000);
-    try {
-      const fence = join(dir, 'context-measured', `${'d'.repeat(64)}.json.cah-owned-publish`);
-      mkdirSync(fence);
-      writeFileSync(join(fence, 'publication.json.tmp'), '{"version":2');
-      utimesSync(join(fence, 'publication.json.tmp'), weekOld, weekOld);
-      utimesSync(fence, weekOld, weekOld);
-      const old = temp('context-measured', 50);
-      const report = sweepStaleTempsDaily(dir);
-      assert.equal(existsSync(fence), false);
-      assert.deepEqual(report.swept.sort(), [fence, old].sort());
-      assert.equal(existsSync(stamp(dir)), true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    const fence = join(dir, 'context-measured', `${'d'.repeat(64)}.json.cah-owned-publish`);
+    mkdirSync(fence);
+    writeFileSync(join(fence, 'publication.json.tmp'), '{"version":2');
+    utimesSync(join(fence, 'publication.json.tmp'), weekOld, weekOld);
+    utimesSync(fence, weekOld, weekOld);
+    const old = temp('context-measured', 50);
+    const report = sweepStaleTempsDaily(dir);
+    assert.equal(existsSync(fence), false);
+    assert.deepEqual(report.swept.sort(), [fence, old].sort());
+    assert.equal(existsSync(stamp(dir)), true);
   });
 
-  it('reclaims a marker namespace temp only once it is a week old', () => {
-    const { dir, temp } = cacheFixture();
-    try {
-      mkdirSync(join(dir, 'stamp-state'));
-      const recent = temp('stamp-state', 40);
-      const weekOld = temp('stamp-state', 41);
-      const old = new Date(Date.now() - 8 * 24 * 3600 * 1000);
-      utimesSync(weekOld, old, old);
-      const report = sweepStaleCacheTemps(dir);
-      assert.deepEqual(report.swept, [weekOld]);
-      assert.equal(existsSync(recent), true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  it('reclaims a marker namespace temp only once it is a week old', (t) => {
+    const { dir, temp } = cacheFixture(t);
+    mkdirSync(join(dir, 'stamp-state'));
+    const recent = temp('stamp-state', 40);
+    const weekOld = temp('stamp-state', 41);
+    const old = new Date(Date.now() - 8 * 24 * 3600 * 1000);
+    utimesSync(weekOld, old, old);
+    const report = sweepStaleCacheTemps(dir);
+    assert.deepEqual(report.swept, [weekOld]);
+    assert.equal(existsSync(recent), true);
   });
 
-  it('sweeps when due, stamps, and then stays quiet until the interval passes', () => {
-    const { dir, temp } = cacheFixture();
-    try {
-      const first = temp('rate-context', 20);
-      assert.deepEqual(sweepStaleTempsDaily(dir).swept, [first]);
-      assert.equal(existsSync(stamp(dir)), true);
+  it('sweeps when due, stamps, and then stays quiet until the interval passes', (t) => {
+    const { dir, temp } = cacheFixture(t);
+    const first = temp('rate-context', 20);
+    assert.deepEqual(sweepStaleTempsDaily(dir).swept, [first]);
+    assert.equal(existsSync(stamp(dir)), true);
 
-      const second = temp('rate-context', 21);
-      assert.equal(sweepStaleTempsDaily(dir), null);
-      assert.equal(existsSync(second), true, 'a second run inside the interval must not scan');
+    const second = temp('rate-context', 21);
+    assert.equal(sweepStaleTempsDaily(dir), null);
+    assert.equal(existsSync(second), true, 'a second run inside the interval must not scan');
 
-      const later = Date.now() + 25 * 3600 * 1000;
-      const report = sweepStaleTempsDaily(dir, { now: later });
-      assert.deepEqual(report.swept, [second]);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    const later = Date.now() + 25 * 3600 * 1000;
+    const report = sweepStaleTempsDaily(dir, { now: later });
+    assert.deepEqual(report.swept, [second]);
   });
 
-  it('treats a stamp from the future as due instead of silencing the sweep forever', () => {
-    const { dir, temp } = cacheFixture();
-    try {
-      writeFileSync(stamp(dir), '');
-      const future = new Date(Date.now() + 10 * 24 * 3600 * 1000);
-      utimesSync(stamp(dir), future, future);
-      const old = temp('', 30);
-      assert.deepEqual(sweepStaleTempsDaily(dir).swept, [old]);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  it('treats a stamp from the future as due instead of silencing the sweep forever', (t) => {
+    const { dir, temp } = cacheFixture(t);
+    writeFileSync(stamp(dir), '');
+    const future = new Date(Date.now() + 10 * 24 * 3600 * 1000);
+    utimesSync(stamp(dir), future, future);
+    const old = temp('', 30);
+    assert.deepEqual(sweepStaleTempsDaily(dir).swept, [old]);
   });
 
-  it('tolerates a stamp whose mtime is slightly ahead of the clock', () => {
-    const { dir, temp } = cacheFixture();
-    try {
-      writeFileSync(stamp(dir), '');
-      const ahead = new Date(Date.now() + 2000);
-      utimesSync(stamp(dir), ahead, ahead);
-      const old = temp('', 31);
-      assert.equal(sweepStaleTempsDaily(dir), null);
-      assert.equal(existsSync(old), true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  it('tolerates a stamp whose mtime is slightly ahead of the clock', (t) => {
+    const { dir, temp } = cacheFixture(t);
+    writeFileSync(stamp(dir), '');
+    const ahead = new Date(Date.now() + 2000);
+    utimesSync(stamp(dir), ahead, ahead);
+    const old = temp('', 31);
+    assert.equal(sweepStaleTempsDaily(dir), null);
+    assert.equal(existsSync(old), true);
   });
 
-  it('does not stamp an incomplete sweep, so the next run retries', () => {
-    const { dir, temp } = cacheFixture();
-    try {
-      const old = temp('', 40);
-      const fence = join(dir, 'rate-limits.json.cah-owned-publish');
-      mkdirSync(fence);
-      writeFileSync(join(fence, 'publication.json'), JSON.stringify({ version: 2 }));
-      const report = sweepStaleTempsDaily(dir);
-      assert.equal(report.incomplete, true);
-      assert.equal(existsSync(stamp(dir)), false);
-      assert.equal(existsSync(old), true);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  it('does not stamp an incomplete sweep, so the next run retries', (t) => {
+    const { dir, temp } = cacheFixture(t);
+    const old = temp('', 40);
+    const fence = join(dir, 'rate-limits.json.cah-owned-publish');
+    mkdirSync(fence);
+    writeFileSync(join(fence, 'publication.json'), JSON.stringify({ version: 2 }));
+    const report = sweepStaleTempsDaily(dir);
+    assert.equal(report.incomplete, true);
+    assert.equal(existsSync(stamp(dir)), false);
+    assert.equal(existsSync(old), true);
   });
 
-  it('never throws and creates nothing for a missing cache directory', () => {
+  it('never throws and creates nothing for a missing cache directory', (t) => {
     const dir = join(tmpdir(), `cah-daily-sweep-absent-${process.pid}`);
     assert.doesNotThrow(() => sweepStaleTempsDaily(dir));
     assert.equal(existsSync(dir), false);

@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, rmdirSync, existsSync, symlinkSync, unlinkSync, chmodSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpDir, waitForPath, runSkillWorker } from './installer-test-helpers.js';
+import { tmpDir, waitForPath, runSkillWorker, withSkills } from './installer-test-helpers.js';
 import { SentinelSkill } from '../lib/sentinel.js';
 import { AllSkills } from '../lib/manifest.js';
 import { Scope, SKILL_MANIFEST_LEAF } from '../lib/scope.js';
@@ -101,11 +101,7 @@ describe('writeSkills', { concurrency: false }, () => {
     writeFileSync(join(skillDir, 'SKILL.md'), '# my skill\n');
     const tpl = diskTemplates(tplRoot);
 
-    const origSkills = [...AllSkills];
-    AllSkills.length = 0;
-    AllSkills.push('mytestskill');
-
-    try {
+    withSkills(['mytestskill'], () => {
       const destSkill = join(dir, '.claude', 'skills', 'mytestskill');
       mkdirSync(destSkill, { recursive: true });
       const foreignBody = 'someone else owns this skill';
@@ -115,10 +111,7 @@ describe('writeSkills', { concurrency: false }, () => {
       assert.equal(written, 0);
       assert.deepEqual(skipped, ['mytestskill']);
       assert.equal(readFileSync(join(destSkill, SKILL_MANIFEST_LEAF), 'utf8'), foreignBody);
-    } finally {
-      AllSkills.length = 0;
-      AllSkills.push(...origSkills);
-    }
+    });
   });
 
   it('foreign selected skill with a user symlink safely skips write and removal', (t) => {
@@ -255,21 +248,14 @@ describe('writeSkills', { concurrency: false }, () => {
     writeFileSync(join(skillDir, 'SKILL.md'), stamped);
     const tpl = diskTemplates(tplRoot);
 
-    const origSkills = [...AllSkills];
-    AllSkills.length = 0;
-    AllSkills.push('prestamped');
-
-    try {
+    withSkills(['prestamped'], () => {
       const { written, skipped } = writeSkills(tpl, scope);
       assert.equal(written, 1);
       assert.deepEqual(skipped, []);
 
       const got = readFileSync(join(dir, '.claude', 'skills', 'prestamped', SKILL_MANIFEST_LEAF), 'utf8');
       assert.equal(got, stamped);
-    } finally {
-      AllSkills.length = 0;
-      AllSkills.push(...origSkills);
-    }
+    });
   });
 
   it('rejects duplicate relPaths before writing any skill files', () => {
@@ -529,7 +515,3 @@ describe('writeSkills', { concurrency: false }, () => {
     assert.deepEqual(readFileSync(manifest), mutated);
   });
 });
-
-// ---------------------------------------------------------------------------
-// RemoveSkills
-// ---------------------------------------------------------------------------

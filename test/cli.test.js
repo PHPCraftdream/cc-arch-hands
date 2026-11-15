@@ -10,6 +10,7 @@ import { BinFiles, binLifecycleLockPath } from '../lib/binstall.js';
 import { LEASE_MAX_MS } from '../lib/lease-lock.js';
 import { AllCodexAgents, AllModelCommands } from '../lib/manifest.js';
 import { SentinelBin, SentinelCodexAgent, SetForModelCommand } from '../lib/sentinel.js';
+import { withEnv, withHome } from '../test-support/env.js';
 
 beforeEach((t) => {
   const sandbox = mkdtempSync(join(tmpdir(), 'cah-cli-test-home-'));
@@ -25,18 +26,14 @@ beforeEach((t) => {
   process.env.USERPROFILE = sandbox;
 });
 
-// os.homedir() reads $HOME / %USERPROFILE% on each call, so we can sandbox the
-// always-global bin directory to a temp dir for the duration of a test.
-function withHome(home, fn) {
-  const oh = process.env.HOME;
-  const op = process.env.USERPROFILE;
-  process.env.HOME = home;
-  process.env.USERPROFILE = home;
+// os.homedir() reads $HOME / %USERPROFILE% on each call, so the always-global bin
+// directory is sandboxed by pointing them at a fresh directory, removed afterwards.
+function inHome(fn) {
+  const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
   try {
-    return fn();
+    return withHome(home, () => fn(home));
   } finally {
-    if (oh === undefined) delete process.env.HOME; else process.env.HOME = oh;
-    if (op === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = op;
+    rmSync(home, { recursive: true, force: true });
   }
 }
 function captureStdout(fn) {
@@ -224,19 +221,14 @@ describe('run', () => {
     const error = captureStderr(() => assert.equal(run(['install', '--agent-tree']), 2));
     assert.match(error, /Unknown option .*agent-tree/);
 
-    const home = mkdtempSync(join(tmpdir(), 'cah-extraction-'));
-    try {
-      withHome(home, () => {
-        const version = captureStdout(() => run(['version']));
-        const listing = captureStdout(() => run(['list', '--json']));
-        assert.doesNotMatch(version, /agent-tree/);
-        assert.doesNotMatch(listing, /agent-tree/);
-        const rows = listing.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
-        assert.ok(rows.every((row) => !JSON.stringify(row).includes('agent-tree')));
-      });
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+    inHome((home) => {
+      const version = captureStdout(() => run(['version']));
+      const listing = captureStdout(() => run(['list', '--json']));
+      assert.doesNotMatch(version, /agent-tree/);
+      assert.doesNotMatch(listing, /agent-tree/);
+      const rows = listing.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+      assert.ok(rows.every((row) => !JSON.stringify(row).includes('agent-tree')));
+    });
   });
 
   it('reinstall against a fresh --cwd is uninstall (no-op) then install', () => {
@@ -297,165 +289,134 @@ describe('run install/uninstall --only bins', () => {
   const BIN_LEAVES = BinFiles.map(({ dest }) => dest);
 
   it('copies the real companion bins into <HOME>/.claude/cah-bin and removes them', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    try {
-      withHome(home, () => {
-        const binDir = join(home, '.claude', 'cah-bin');
+    inHome((home) => {
+      const binDir = join(home, '.claude', 'cah-bin');
 
-        assert.equal(run(['install', '--only', 'bins']), 0);
-        for (const leaf of BIN_LEAVES) {
-          const p = join(binDir, leaf);
-          assert.ok(existsSync(p), `${leaf} should be installed`);
-          assert.ok(
-            readFileSync(p, 'utf8').includes(SentinelBin),
-            `${leaf} should carry the bin sentinel`,
-          );
-        }
-        // The copied entry point must still wire to its sibling lib via the
-        // unchanged relative import — proves the bin/ + lib/ mirroring works.
+      assert.equal(run(['install', '--only', 'bins']), 0);
+      for (const leaf of BIN_LEAVES) {
+        const p = join(binDir, leaf);
+        assert.ok(existsSync(p), `${leaf} should be installed`);
         assert.ok(
-          readFileSync(join(binDir, 'bin/cah-status.js'), 'utf8')
-            .includes("'../lib/transcript-stats.js'"),
+          readFileSync(p, 'utf8').includes(SentinelBin),
+          `${leaf} should carry the bin sentinel`,
         );
+      }
+      // The copied entry point must still wire to its sibling lib via the
+      // unchanged relative import — proves the bin/ + lib/ mirroring works.
+      assert.ok(
+        readFileSync(join(binDir, 'bin/cah-status.js'), 'utf8')
+          .includes("'../lib/transcript-stats.js'"),
+      );
 
-        assert.equal(run(['uninstall', '--only', 'bins']), 0);
-        for (const leaf of BIN_LEAVES) {
-          assert.ok(!existsSync(join(binDir, leaf)), `${leaf} should be removed`);
-        }
-      });
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+      assert.equal(run(['uninstall', '--only', 'bins']), 0);
+      for (const leaf of BIN_LEAVES) {
+        assert.ok(!existsSync(join(binDir, leaf)), `${leaf} should be removed`);
+      }
+    });
   });
 
   it('reports a live lifecycle lease as busy and recovers an expired one', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    try {
-      withHome(home, () => {
-        const binDir = join(home, '.claude', 'cah-bin');
-        const lockPath = binLifecycleLockPath(binDir);
-        mkdirSync(lockPath, { recursive: true });
-        writeFileSync(join(lockPath, 'owner.json'), JSON.stringify({
-          kind: 'cc-arch-hands-bin-lifecycle',
-          pid: process.pid,
-          token: 'live-cli-operation',
-          timestamp: Date.now(),
-        }) + '\n');
+    inHome((home) => {
+      const binDir = join(home, '.claude', 'cah-bin');
+      const lockPath = binLifecycleLockPath(binDir);
+      mkdirSync(lockPath, { recursive: true });
+      writeFileSync(join(lockPath, 'owner.json'), JSON.stringify({
+        kind: 'cc-arch-hands-bin-lifecycle',
+        pid: process.pid,
+        token: 'live-cli-operation',
+        timestamp: Date.now(),
+      }) + '\n');
 
-        let busyRc;
-        const busy = captureStderr(() => { busyRc = run(['install', '--only', 'bins']); });
-        assert.equal(busyRc, 1);
-        assert.match(busy, /companion bins are busy/);
-        assert.ok(!existsSync(join(binDir, 'package.json')), 'busy install must not publish leaves');
+      let busyRc;
+      const busy = captureStderr(() => { busyRc = run(['install', '--only', 'bins']); });
+      assert.equal(busyRc, 1);
+      assert.match(busy, /companion bins are busy/);
+      assert.ok(!existsSync(join(binDir, 'package.json')), 'busy install must not publish leaves');
 
-        writeFileSync(join(lockPath, 'owner.json'), JSON.stringify({
-          kind: 'cc-arch-hands-bin-lifecycle',
-          pid: process.pid,
-          token: 'expired-cli-operation',
-          timestamp: Date.now() - LEASE_MAX_MS - 60 * 1000,
-        }) + '\n');
-        assert.equal(run(['install', '--only', 'bins']), 0);
-        assert.ok(existsSync(join(binDir, 'package.json')));
-        assert.ok(!existsSync(lockPath), 'CLI must release the recovered sibling lease');
-      });
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+      writeFileSync(join(lockPath, 'owner.json'), JSON.stringify({
+        kind: 'cc-arch-hands-bin-lifecycle',
+        pid: process.pid,
+        token: 'expired-cli-operation',
+        timestamp: Date.now() - LEASE_MAX_MS - 60 * 1000,
+      }) + '\n');
+      assert.equal(run(['install', '--only', 'bins']), 0);
+      assert.ok(existsSync(join(binDir, 'package.json')));
+      assert.ok(!existsSync(lockPath), 'CLI must release the recovered sibling lease');
+    });
   });
 
   it('list --json reports the bin files as mine once installed', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    try {
-      withHome(home, () => {
-        run(['install', '--only', 'bins']);
-        const out = captureStdout(() => run(['list', '--json']));
-        const rows = out.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
-        const binRows = rows.filter((r) => r.kind === 'bin');
-        assert.equal(binRows.length, BinFiles.length);
-        assert.ok(binRows.every((r) => r.state === 'mine'), 'all bin rows should be mine');
-      });
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+    inHome((home) => {
+      run(['install', '--only', 'bins']);
+      const out = captureStdout(() => run(['list', '--json']));
+      const rows = out.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+      const binRows = rows.filter((r) => r.kind === 'bin');
+      assert.equal(binRows.length, BinFiles.length);
+      assert.ok(binRows.every((r) => r.state === 'mine'), 'all bin rows should be mine');
+    });
   });
 
   it('silently preserves the root cache while reporting unknown entries with normalized paths', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    try {
-      withHome(home, () => {
-        const binDir = join(home, '.claude', 'cah-bin');
-        mkdirSync(join(binDir, 'cache'), { recursive: true });
-        mkdirSync(join(binDir, 'unknown-root-dir'), { recursive: true });
+    inHome((home) => {
+      const binDir = join(home, '.claude', 'cah-bin');
+      mkdirSync(join(binDir, 'cache'), { recursive: true });
+      mkdirSync(join(binDir, 'unknown-root-dir'), { recursive: true });
 
-        const out = captureStdout(() => {
-          assert.equal(run(['install', '--global', '--only', 'bins']), 0);
-        });
-        assert.ok(existsSync(join(binDir, 'cache')));
-        assert.ok(existsSync(join(binDir, 'unknown-root-dir')));
-        assert.doesNotMatch(out, /skipped: cache\b/);
-        assert.match(out, /skipped: unknown-root-dir\b/);
-        assert.doesNotMatch(out, /skipped: .*cah-bin[\\/]unknown-root-dir/);
+      const out = captureStdout(() => {
+        assert.equal(run(['install', '--global', '--only', 'bins']), 0);
       });
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+      assert.ok(existsSync(join(binDir, 'cache')));
+      assert.ok(existsSync(join(binDir, 'unknown-root-dir')));
+      assert.doesNotMatch(out, /skipped: cache\b/);
+      assert.match(out, /skipped: unknown-root-dir\b/);
+      assert.doesNotMatch(out, /skipped: .*cah-bin[\\/]unknown-root-dir/);
+    });
   });
   it('reports unproved cache crash temps through install and uninstall maintenance', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    try {
-      withHome(home, () => {
-        const binDir = join(home, '.claude', 'cah-bin');
-        const cache = join(binDir, 'cache');
-        const crashTemp = join(cache, '.cah-tmp-crashed-cli');
-        mkdirSync(cache, { recursive: true });
-        writeFileSync(crashTemp, 'unproved crash leftover\n');
+    inHome((home) => {
+      const binDir = join(home, '.claude', 'cah-bin');
+      const cache = join(binDir, 'cache');
+      const crashTemp = join(cache, '.cah-tmp-crashed-cli');
+      mkdirSync(cache, { recursive: true });
+      writeFileSync(crashTemp, 'unproved crash leftover\n');
 
-        const installed = captureStdout(() => {
-          assert.equal(run(['install', '--only', 'bins']), 0);
-        });
-        assert.match(installed, /recovery: cache[\\/]\.cah-tmp-crashed-cli/);
-        assert.ok(existsSync(crashTemp), 'unproved cache temp must be preserved');
-        assert.doesNotMatch(installed, /skipped: cache\b/);
-
-        const removed = captureStdout(() => {
-          assert.equal(run(['uninstall', '--only', 'bins']), 0);
-        });
-        assert.match(removed, /recovery: cache[\\/]\.cah-tmp-crashed-cli/);
-        assert.ok(existsSync(crashTemp), 'unproved cache temp must survive removal');
-        assert.doesNotMatch(removed, /skipped: cache\b/);
+      const installed = captureStdout(() => {
+        assert.equal(run(['install', '--only', 'bins']), 0);
       });
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+      assert.match(installed, /recovery: cache[\\/]\.cah-tmp-crashed-cli/);
+      assert.ok(existsSync(crashTemp), 'unproved cache temp must be preserved');
+      assert.doesNotMatch(installed, /skipped: cache\b/);
+
+      const removed = captureStdout(() => {
+        assert.equal(run(['uninstall', '--only', 'bins']), 0);
+      });
+      assert.match(removed, /recovery: cache[\\/]\.cah-tmp-crashed-cli/);
+      assert.ok(existsSync(crashTemp), 'unproved cache temp must survive removal');
+      assert.doesNotMatch(removed, /skipped: cache\b/);
+    });
   });
   it('surfaces maintenance-swept recovery artifacts in the install report', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    try {
-      withHome(home, () => {
-        const binDir = join(home, '.claude', 'cah-bin');
-        const cache = join(binDir, 'cache');
-        mkdirSync(cache, { recursive: true });
-        // An empty removal reservation is provably ours once it is stale (a
-        // fresh one may belong to a live remover): maintenance sweeps it, and
-        // the destructive action must be visible in the report.
-        const crashedReservation = join(cache, 'crashed.cah-owned-remove');
-        mkdirSync(crashedReservation);
-        utimesSync(crashedReservation, new Date(Date.now() - 5000), new Date(Date.now() - 5000));
+    inHome((home) => {
+      const binDir = join(home, '.claude', 'cah-bin');
+      const cache = join(binDir, 'cache');
+      mkdirSync(cache, { recursive: true });
+      // An empty removal reservation is provably ours once it is stale (a
+      // fresh one may belong to a live remover): maintenance sweeps it, and
+      // the destructive action must be visible in the report.
+      const crashedReservation = join(cache, 'crashed.cah-owned-remove');
+      mkdirSync(crashedReservation);
+      utimesSync(crashedReservation, new Date(Date.now() - 5000), new Date(Date.now() - 5000));
 
-        const installed = captureStdout(() => {
-          assert.equal(run(['install', '--only', 'bins']), 0);
-        });
-        assert.match(installed, /maintenance: visits \d+, recovery \d+, temps \d+, swept 1/);
-        assert.match(installed, /maintenance swept: cache[\\/]crashed\.cah-owned-remove/);
-        assert.ok(!existsSync(join(cache, 'crashed.cah-owned-remove')),
-          'the empty reservation must be swept');
+      const installed = captureStdout(() => {
+        assert.equal(run(['install', '--only', 'bins']), 0);
       });
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+      assert.match(installed, /maintenance: visits \d+, recovery \d+, temps \d+, swept 1/);
+      assert.match(installed, /maintenance swept: cache[\\/]crashed\.cah-owned-remove/);
+      assert.ok(!existsSync(join(cache, 'crashed.cah-owned-remove')),
+        'the empty reservation must be swept');
+    });
   });
   it('surfaces maintenance-preserved artifacts the sweep refused to reclaim', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
     // Production's real fence freshness window (FENCE_STALE_MS) is only 1s --
     // comfortable for an actual crashed publisher's microsecond unproved
     // span, but too tight a margin for THIS test's own install() call to
@@ -463,295 +424,209 @@ describe('run install/uninstall --only bins', () => {
     // loaded CI runner (observed real failure: the "fresh" fence read as
     // already-stale and got swept). CAH_TEST_ONLY_FENCE_STALE_MS widens only
     // this test's effective window; production behavior is unaffected.
-    const priorTestOnly = process.env.CAH_TEST_ONLY;
-    const priorStaleMs = process.env.CAH_TEST_ONLY_FENCE_STALE_MS;
-    process.env.CAH_TEST_ONLY = '1';
-    process.env.CAH_TEST_ONLY_FENCE_STALE_MS = '10000';
-    try {
-      withHome(home, () => {
-        const cache = join(home, '.claude', 'cah-bin', 'cache');
-        // An empty, proof-less publication fence has no sweep branch until it
-        // goes stale: while fresh it is refused, and the refusal must be
-        // visible in the report rather than silent.
-        const stampState = join(cache, 'stamp-state');
-        mkdirSync(stampState, { recursive: true });
-        const freshFence = join(stampState, 'live.json.cah-owned-publish');
-        mkdirSync(freshFence);
+    withEnv({ CAH_TEST_ONLY: '1', CAH_TEST_ONLY_FENCE_STALE_MS: '10000' }, () => inHome((home) => {
+      const cache = join(home, '.claude', 'cah-bin', 'cache');
+      // An empty, proof-less publication fence has no sweep branch until it
+      // goes stale: while fresh it is refused, and the refusal must be
+      // visible in the report rather than silent.
+      const stampState = join(cache, 'stamp-state');
+      mkdirSync(stampState, { recursive: true });
+      const freshFence = join(stampState, 'live.json.cah-owned-publish');
+      mkdirSync(freshFence);
 
-        const installed = captureStdout(() => {
-          assert.equal(run(['install', '--only', 'bins']), 0);
-        });
-        assert.match(installed,
-          /maintenance preserved: cache[\\/]stamp-state[\\/]live\.json\.cah-owned-publish/);
-        assert.ok(existsSync(freshFence), 'a fresh empty fence must not be swept');
-
-        const past = new Date(Date.now() - 15000);
-        utimesSync(freshFence, past, past);
-        const reinstalled = captureStdout(() => {
-          assert.equal(run(['install', '--only', 'bins']), 0);
-        });
-        assert.match(reinstalled,
-          /maintenance swept: cache[\\/]stamp-state[\\/]live\.json\.cah-owned-publish/);
-        assert.ok(!existsSync(freshFence), 'a stale empty fence must be swept');
+      const installed = captureStdout(() => {
+        assert.equal(run(['install', '--only', 'bins']), 0);
       });
-    } finally {
-      if (priorTestOnly === undefined) delete process.env.CAH_TEST_ONLY;
-      else process.env.CAH_TEST_ONLY = priorTestOnly;
-      if (priorStaleMs === undefined) delete process.env.CAH_TEST_ONLY_FENCE_STALE_MS;
-      else process.env.CAH_TEST_ONLY_FENCE_STALE_MS = priorStaleMs;
-      rmSync(home, { recursive: true, force: true });
-    }
+      assert.match(installed,
+        /maintenance preserved: cache[\\/]stamp-state[\\/]live\.json\.cah-owned-publish/);
+      assert.ok(existsSync(freshFence), 'a fresh empty fence must not be swept');
+
+      const past = new Date(Date.now() - 15000);
+      utimesSync(freshFence, past, past);
+      const reinstalled = captureStdout(() => {
+        assert.equal(run(['install', '--only', 'bins']), 0);
+      });
+      assert.match(reinstalled,
+        /maintenance swept: cache[\\/]stamp-state[\\/]live\.json\.cah-owned-publish/);
+      assert.ok(!existsSync(freshFence), 'a stale empty fence must be swept');
+    }));
   });
   it('reports unproved crash temps inside cache/rate-context through install maintenance', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    try {
-      withHome(home, () => {
-        const rateContext = join(home, '.claude', 'cah-bin', 'cache', 'rate-context');
-        mkdirSync(rateContext, { recursive: true });
-        writeFileSync(join(rateContext, '.cah-tmp-crashed-rate'), 'unproved crash leftover\n');
+    inHome((home) => {
+      const rateContext = join(home, '.claude', 'cah-bin', 'cache', 'rate-context');
+      mkdirSync(rateContext, { recursive: true });
+      writeFileSync(join(rateContext, '.cah-tmp-crashed-rate'), 'unproved crash leftover\n');
 
-        const installed = captureStdout(() => {
-          assert.equal(run(['install', '--only', 'bins']), 0);
-        });
-        assert.match(installed, /recovery: cache[\\/]rate-context[\\/]\.cah-tmp-crashed-rate/);
-        // The temp is already named under `recovery:`; the maintenance
-        // preserved mirror must not repeat it verbatim.
-        assert.doesNotMatch(installed,
-          /maintenance preserved: cache[\\/]rate-context[\\/]\.cah-tmp-crashed-rate/);
-        assert.ok(existsSync(join(rateContext, '.cah-tmp-crashed-rate')),
-          'unproved cache temp must be preserved');
+      const installed = captureStdout(() => {
+        assert.equal(run(['install', '--only', 'bins']), 0);
       });
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+      assert.match(installed, /recovery: cache[\\/]rate-context[\\/]\.cah-tmp-crashed-rate/);
+      // The temp is already named under `recovery:`; the maintenance
+      // preserved mirror must not repeat it verbatim.
+      assert.doesNotMatch(installed,
+        /maintenance preserved: cache[\\/]rate-context[\\/]\.cah-tmp-crashed-rate/);
+      assert.ok(existsSync(join(rateContext, '.cah-tmp-crashed-rate')),
+        'unproved cache temp must be preserved');
+    });
   });
   it('warns but does not fail when cache maintenance cannot enumerate', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    const priorTest = process.env.CAH_TEST_ONLY;
-    const priorFailure = process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
-    try {
-      withHome(home, () => {
-        mkdirSync(join(home, '.claude', 'cah-bin', 'cache'), { recursive: true });
-        process.env.CAH_TEST_ONLY = '1';
-        process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = 'opendir';
-        const installed = captureStdout(() => assert.equal(run(['install', '--only', 'bins']), 0));
-        assert.match(installed, /warning: cache maintenance incomplete/);
-        const removed = captureStdout(() => assert.equal(run(['uninstall', '--only', 'bins']), 0));
-        assert.match(removed, /warning: cache maintenance incomplete/);
-      });
-    } finally {
-      if (priorTest === undefined) delete process.env.CAH_TEST_ONLY;
-      else process.env.CAH_TEST_ONLY = priorTest;
-      if (priorFailure === undefined) delete process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
-      else process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = priorFailure;
-      rmSync(home, { recursive: true, force: true });
-    }
+    withEnv({ CAH_TEST_ONLY: '1', CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE: 'opendir' }, () => inHome((home) => {
+      mkdirSync(join(home, '.claude', 'cah-bin', 'cache'), { recursive: true });
+      const installed = captureStdout(() => assert.equal(run(['install', '--only', 'bins']), 0));
+      assert.match(installed, /warning: cache maintenance incomplete/);
+      const removed = captureStdout(() => assert.equal(run(['uninstall', '--only', 'bins']), 0));
+      assert.match(removed, /warning: cache maintenance incomplete/);
+    }));
   });
   it('reports combined root and cache maintenance failures once on install and uninstall', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    const priorTest = process.env.CAH_TEST_ONLY;
-    const priorFailure = process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
-    try {
-      withHome(home, () => {
-        const binDir = join(home, '.claude', 'cah-bin');
-        const cache = join(binDir, 'cache');
-        mkdirSync(cache, { recursive: true });
-        writeFileSync(join(binDir, '.cah-tmp-root-cli'), 'root recovery\n');
-        writeFileSync(join(cache, '.cah-tmp-cache-cli'), 'cache recovery\n');
-        process.env.CAH_TEST_ONLY = '1';
-        process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = 'opendir';
+    withEnv({ CAH_TEST_ONLY: '1', CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE: 'opendir' }, () => inHome((home) => {
+      const binDir = join(home, '.claude', 'cah-bin');
+      const cache = join(binDir, 'cache');
+      mkdirSync(cache, { recursive: true });
+      writeFileSync(join(binDir, '.cah-tmp-root-cli'), 'root recovery\n');
+      writeFileSync(join(cache, '.cah-tmp-cache-cli'), 'cache recovery\n');
 
-        const installed = captureStdout(() => assert.equal(run(['install', '--only', 'bins']), 0));
-        const installCacheFailures = installed.split(/\r?\n/)
-          .filter((line) => line === '    maintenance failure: EACCES cache');
-        assert.equal(installCacheFailures.length, 1);
+      const installed = captureStdout(() => assert.equal(run(['install', '--only', 'bins']), 0));
+      const installCacheFailures = installed.split(/\r?\n/)
+        .filter((line) => line === '    maintenance failure: EACCES cache');
+      assert.equal(installCacheFailures.length, 1);
 
-        const removed = captureStdout(() => assert.equal(run(['uninstall', '--only', 'bins']), 0));
-        const uninstallCacheFailures = removed.split(/\r?\n/)
-          .filter((line) => line === '    maintenance failure: EACCES cache');
-        assert.equal(uninstallCacheFailures.length, 1);
-      });
-    } finally {
-      if (priorTest === undefined) delete process.env.CAH_TEST_ONLY;
-      else process.env.CAH_TEST_ONLY = priorTest;
-      if (priorFailure === undefined) delete process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
-      else process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = priorFailure;
-      rmSync(home, { recursive: true, force: true });
-    }
+      const removed = captureStdout(() => assert.equal(run(['uninstall', '--only', 'bins']), 0));
+      const uninstallCacheFailures = removed.split(/\r?\n/)
+        .filter((line) => line === '    maintenance failure: EACCES cache');
+      assert.equal(uninstallCacheFailures.length, 1);
+    }));
   });
   it('propagates generic command maintenance failures to the CLI report', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    const priorTest = process.env.CAH_TEST_ONLY;
-    const priorFailure = process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
-    try {
-      withHome(home, () => {
-        process.env.CAH_TEST_ONLY = '1';
-        process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = 'opendir';
-        const output = captureStdout(() => {
-          assert.equal(run(['install', '--only', 'commands']), 0);
-        });
-        assert.match(output, /commands:[\s\S]*warning: cache maintenance incomplete/);
+    withEnv({ CAH_TEST_ONLY: '1', CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE: 'opendir' }, () => inHome((home) => {
+      const output = captureStdout(() => {
+        assert.equal(run(['install', '--only', 'commands']), 0);
       });
-    } finally {
-      if (priorTest === undefined) delete process.env.CAH_TEST_ONLY;
-      else process.env.CAH_TEST_ONLY = priorTest;
-      if (priorFailure === undefined) delete process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE;
-      else process.env.CAH_TEST_ONLY_FSUTIL_RECOVERY_FAILURE = priorFailure;
-      rmSync(home, { recursive: true, force: true });
-    }
+      assert.match(output, /commands:[\s\S]*warning: cache maintenance incomplete/);
+    }));
   });
 
   it('bare uninstall preserves shared bins; explicit bins removal warns', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    try {
-      withHome(home, () => {
-        run(['install', '--only', 'bins']);
-        assert.equal(run(['uninstall']), 0);
-        assert.ok(existsSync(join(home, '.claude', 'cah-bin', 'bin', 'cah-status.js')));
-        const out = captureStdout(() => assert.equal(run(['uninstall', '--only', 'bins']), 0));
-        assert.match(out, /warning: removing shared companion bins/);
-        assert.ok(!existsSync(join(home, '.claude', 'cah-bin', 'bin', 'cah-status.js')));
-      });
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+    inHome((home) => {
+      run(['install', '--only', 'bins']);
+      assert.equal(run(['uninstall']), 0);
+      assert.ok(existsSync(join(home, '.claude', 'cah-bin', 'bin', 'cah-status.js')));
+      const out = captureStdout(() => assert.equal(run(['uninstall', '--only', 'bins']), 0));
+      assert.match(out, /warning: removing shared companion bins/);
+      assert.ok(!existsSync(join(home, '.claude', 'cah-bin', 'bin', 'cah-status.js')));
+    });
   });
 
   it('rejects a foreign ESM package boundary before CLI bin mutation', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    try {
-      withHome(home, () => {
-        const binDir = join(home, '.claude', 'cah-bin');
-        const foreignPackage = JSON.stringify({ type: 'module', owner: 'user' }) + '\n';
-        mkdirSync(binDir, { recursive: true });
-        writeFileSync(join(binDir, 'package.json'), foreignPackage);
+    inHome((home) => {
+      const binDir = join(home, '.claude', 'cah-bin');
+      const foreignPackage = JSON.stringify({ type: 'module', owner: 'user' }) + '\n';
+      mkdirSync(binDir, { recursive: true });
+      writeFileSync(join(binDir, 'package.json'), foreignPackage);
 
-        let rc;
-        const error = captureStderr(() => { rc = run(['install', '--only', 'bins']); });
-        assert.equal(rc, 1);
-        assert.match(error, /foreign package boundary/);
-        assert.equal(readFileSync(join(binDir, 'package.json'), 'utf8'), foreignPackage);
-        assert.ok(!existsSync(join(binDir, 'bin', 'cah-status.js')),
-          'CLI failure must not publish companion leaves');
-      });
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+      let rc;
+      const error = captureStderr(() => { rc = run(['install', '--only', 'bins']); });
+      assert.equal(rc, 1);
+      assert.match(error, /foreign package boundary/);
+      assert.equal(readFileSync(join(binDir, 'package.json'), 'utf8'), foreignPackage);
+      assert.ok(!existsSync(join(binDir, 'bin', 'cah-status.js')),
+        'CLI failure must not publish companion leaves');
+    });
   });
 
   it('rejects a foreign companion executable before CLI bin mutation', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    try {
-      withHome(home, () => {
-        const binDir = join(home, '.claude', 'cah-bin');
-        const foreign = join(binDir, 'bin', 'cah-status.js');
-        const foreignBody = '#!/usr/bin/env node\nforeign\n';
-        mkdirSync(join(binDir, 'bin'), { recursive: true });
-        writeFileSync(foreign, foreignBody);
+    inHome((home) => {
+      const binDir = join(home, '.claude', 'cah-bin');
+      const foreign = join(binDir, 'bin', 'cah-status.js');
+      const foreignBody = '#!/usr/bin/env node\nforeign\n';
+      mkdirSync(join(binDir, 'bin'), { recursive: true });
+      writeFileSync(foreign, foreignBody);
 
-        let rc;
-        const error = captureStderr(() => { rc = run(['install', '--only', 'bins']); });
-        assert.equal(rc, 1);
-        assert.match(error, /foreign managed runtime leaf.*cah-status\.js/);
-        assert.equal(readFileSync(foreign, 'utf8'), foreignBody);
-        assert.ok(!existsSync(join(binDir, 'package.json')),
-          'foreign executable rejection must not publish the package boundary');
-        assert.ok(!existsSync(join(binDir, 'lib', 'fsutil.js')),
-          'foreign executable rejection must not publish dependencies');
-      });
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+      let rc;
+      const error = captureStderr(() => { rc = run(['install', '--only', 'bins']); });
+      assert.equal(rc, 1);
+      assert.match(error, /foreign managed runtime leaf.*cah-status\.js/);
+      assert.equal(readFileSync(foreign, 'utf8'), foreignBody);
+      assert.ok(!existsSync(join(binDir, 'package.json')),
+        'foreign executable rejection must not publish the package boundary');
+      assert.ok(!existsSync(join(binDir, 'lib', 'fsutil.js')),
+        'foreign executable rejection must not publish dependencies');
+    });
   });
 });
 
 
 describe('run install/uninstall --codex-agents', () => {
   it('default install does not write Codex agents', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    try {
-      withHome(home, () => {
-        assert.equal(run(['install', '--only', 'commands']), 0);
-        assert.ok(!existsSync(join(home, '.codex')), 'nothing of Codex is written');
-        // codex-agents is an opt-in selector — valid via --only but excluded from
-        // the default (empty --only) install set.
-        assert.deepEqual(parseOnly('codex-agents'), { classes: ['codex-agents'], skills: [] });
-        assert.deepEqual(parseOnly(''), { classes: ['commands', 'agents', 'skills', 'bins'], skills: [] });
-      });
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+    inHome((home) => {
+      assert.equal(run(['install', '--only', 'commands']), 0);
+      assert.ok(!existsSync(join(home, '.codex')), 'nothing of Codex is written');
+      // codex-agents is an opt-in selector — valid via --only but excluded from
+      // the default (empty --only) install set.
+      assert.deepEqual(parseOnly('codex-agents'), { classes: ['codex-agents'], skills: [] });
+      assert.deepEqual(parseOnly(''), { classes: ['commands', 'agents', 'skills', 'bins'], skills: [] });
+    });
   });
 
   it('installs, refreshes shifted Sol generations, and removes Codex agents', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    try {
-      withHome(home, () => {
-        assert.equal(run(['install', '--codex-agents']), 0);
-        assert.ok(existsSync(join(home, '.codex', 'agents', 'ha.toml')));
-        assert.ok(readFileSync(join(home, '.codex', 'agents', 'ha.toml'), 'utf8').includes('model = "gpt-6-astra"'));
-        assert.ok(readFileSync(join(home, '.codex', 'agents', 'xxt.toml'), 'utf8').includes('model = "gpt-6.1-terra"'));
-        assert.ok(readFileSync(join(home, '.codex', 'agents', 'xxt.toml'), 'utf8').includes('model_reasoning_effort = "max"'));
-        assert.ok(readFileSync(join(home, '.codex', 'agents', 'll.toml'), 'utf8').includes('model = "gpt-6-luna"'));
-        for (const [model, suffix, levels] of [
-          ['gpt-6.1-sol', '', ['l', 'm', 'h', 'x', 'xx', 'u']],
-          ['gpt-6-sol', '1', ['l', 'm', 'h', 'x', 'xx', 'u']],
-          ['gpt-5.6-sol', '2', ['l', 'm', 'h', 'x', 'xx', 'u']],
-        ]) {
-          for (const prefix of levels) {
-            assert.ok(readFileSync(join(home, '.codex', 'agents', `${prefix}s${suffix}.toml`), 'utf8')
-              .includes(`model = "${model}"`));
-          }
+    inHome((home) => {
+      assert.equal(run(['install', '--codex-agents']), 0);
+      assert.ok(existsSync(join(home, '.codex', 'agents', 'ha.toml')));
+      assert.ok(readFileSync(join(home, '.codex', 'agents', 'ha.toml'), 'utf8').includes('model = "gpt-6-astra"'));
+      assert.ok(readFileSync(join(home, '.codex', 'agents', 'xxt.toml'), 'utf8').includes('model = "gpt-6.1-terra"'));
+      assert.ok(readFileSync(join(home, '.codex', 'agents', 'xxt.toml'), 'utf8').includes('model_reasoning_effort = "max"'));
+      assert.ok(readFileSync(join(home, '.codex', 'agents', 'll.toml'), 'utf8').includes('model = "gpt-6-luna"'));
+      for (const [model, suffix, levels] of [
+        ['gpt-6.1-sol', '', ['l', 'm', 'h', 'x', 'xx', 'u']],
+        ['gpt-6-sol', '1', ['l', 'm', 'h', 'x', 'xx', 'u']],
+        ['gpt-5.6-sol', '2', ['l', 'm', 'h', 'x', 'xx', 'u']],
+      ]) {
+        for (const prefix of levels) {
+          assert.ok(readFileSync(join(home, '.codex', 'agents', `${prefix}s${suffix}.toml`), 'utf8')
+            .includes(`model = "${model}"`));
         }
-        assert.ok(readFileSync(join(home, '.codex', 'agents', 'ua.toml'), 'utf8').includes('model = "gpt-6-astra"'));
-        assert.ok(!existsSync(join(home, '.codex', 'agents', 'ul1.toml')));
-        assert.ok(readFileSync(join(home, '.codex', 'agents', 'us.toml'), 'utf8').includes('model_reasoning_effort = "ultra"'));
-        assert.ok(readFileSync(join(home, '.codex', 'agents', 'us2.toml'), 'utf8').includes('model_reasoning_effort = "ultra"'));
+      }
+      assert.ok(readFileSync(join(home, '.codex', 'agents', 'ua.toml'), 'utf8').includes('model = "gpt-6-astra"'));
+      assert.ok(!existsSync(join(home, '.codex', 'agents', 'ul1.toml')));
+      assert.ok(readFileSync(join(home, '.codex', 'agents', 'us.toml'), 'utf8').includes('model_reasoning_effort = "ultra"'));
+      assert.ok(readFileSync(join(home, '.codex', 'agents', 'us2.toml'), 'utf8').includes('model_reasoning_effort = "ultra"'));
 
-        for (const [alias, staleModel] of [['ls', 'gpt-6-sol'], ['ls1', 'gpt-5.6-sol']]) {
-          const path = join(home, '.codex', 'agents', `${alias}.toml`);
-          writeFileSync(path, readFileSync(path, 'utf8').replace(/model = "[^"]+"/, `model = "${staleModel}"`));
-        }
-        writeFileSync(join(home, '.codex', 'agents', 'ul1.toml'),
-          readFileSync(join(home, '.codex', 'agents', 'us2.toml'), 'utf8').replace('name = "us2"', 'name = "ul1"'));
-        assert.equal(run(['reinstall', '--codex-agents']), 0);
-        assert.ok(readFileSync(join(home, '.codex', 'agents', 'ls.toml'), 'utf8').includes('model = "gpt-6.1-sol"'));
-        assert.ok(readFileSync(join(home, '.codex', 'agents', 'ls1.toml'), 'utf8').includes('model = "gpt-6-sol"'));
-        assert.ok(readFileSync(join(home, '.codex', 'agents', 'ls2.toml'), 'utf8').includes('model = "gpt-5.6-sol"'));
-        assert.ok(!existsSync(join(home, '.codex', 'agents', 'ul1.toml')));
+      for (const [alias, staleModel] of [['ls', 'gpt-6-sol'], ['ls1', 'gpt-5.6-sol']]) {
+        const path = join(home, '.codex', 'agents', `${alias}.toml`);
+        writeFileSync(path, readFileSync(path, 'utf8').replace(/model = "[^"]+"/, `model = "${staleModel}"`));
+      }
+      writeFileSync(join(home, '.codex', 'agents', 'ul1.toml'),
+        readFileSync(join(home, '.codex', 'agents', 'us2.toml'), 'utf8').replace('name = "us2"', 'name = "ul1"'));
+      assert.equal(run(['reinstall', '--codex-agents']), 0);
+      assert.ok(readFileSync(join(home, '.codex', 'agents', 'ls.toml'), 'utf8').includes('model = "gpt-6.1-sol"'));
+      assert.ok(readFileSync(join(home, '.codex', 'agents', 'ls1.toml'), 'utf8').includes('model = "gpt-6-sol"'));
+      assert.ok(readFileSync(join(home, '.codex', 'agents', 'ls2.toml'), 'utf8').includes('model = "gpt-5.6-sol"'));
+      assert.ok(!existsSync(join(home, '.codex', 'agents', 'ul1.toml')));
 
-        const out = captureStdout(() => run(['list', '--json']));
-        const rows = out.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
-        const codexRows = rows.filter((r) => r.kind === 'codex-agent');
-        assert.equal(codexRows.length, AllCodexAgents.length);
-        assert.ok(codexRows.every((r) => r.state === 'mine'));
+      const out = captureStdout(() => run(['list', '--json']));
+      const rows = out.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+      const codexRows = rows.filter((r) => r.kind === 'codex-agent');
+      assert.equal(codexRows.length, AllCodexAgents.length);
+      assert.ok(codexRows.every((r) => r.state === 'mine'));
 
-        assert.equal(run(['uninstall', '--codex-agents']), 0);
-        assert.ok(!existsSync(join(home, '.codex', 'agents', 'ha.toml')));
-        for (const alias of ['ls', 'us', 'ls1', 'ls2', 'us2']) {
-          assert.ok(!existsSync(join(home, '.codex', 'agents', `${alias}.toml`)));
-        }
-      });
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+      assert.equal(run(['uninstall', '--codex-agents']), 0);
+      assert.ok(!existsSync(join(home, '.codex', 'agents', 'ha.toml')));
+      for (const alias of ['ls', 'us', 'ls1', 'ls2', 'us2']) {
+        assert.ok(!existsSync(join(home, '.codex', 'agents', `${alias}.toml`)));
+      }
+    });
   });
 
   it('selects Codex agents via --only codex-agents (no flag needed)', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    try {
-      withHome(home, () => {
-        assert.equal(run(['install', '--only', 'codex-agents']), 0);
-        assert.ok(existsSync(join(home, '.codex', 'agents', 'ha.toml')));
-        // claude-side must NOT be touched by a codex-only selection
-        assert.ok(!existsSync(join(home, '.claude', 'commands')));
+    inHome((home) => {
+      assert.equal(run(['install', '--only', 'codex-agents']), 0);
+      assert.ok(existsSync(join(home, '.codex', 'agents', 'ha.toml')));
+      // claude-side must NOT be touched by a codex-only selection
+      assert.ok(!existsSync(join(home, '.claude', 'commands')));
 
-        assert.equal(run(['uninstall', '--only', 'codex-agents']), 0);
-        assert.ok(!existsSync(join(home, '.codex', 'agents', 'ha.toml')));
-      });
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+      assert.equal(run(['uninstall', '--only', 'codex-agents']), 0);
+      assert.ok(!existsSync(join(home, '.codex', 'agents', 'ha.toml')));
+    });
   });
 
   it('install and reinstall prune legacy and unsupported sentinel-owned Codex TOML and preserve foreign files', () => {
@@ -817,57 +692,42 @@ describe('run install/uninstall --codex-agents', () => {
 
 describe('run install/uninstall --commands', () => {
   it('default install writes the per-model slash-commands again', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    try {
-      withHome(home, () => {
-        assert.equal(run(['install']), 0);
-        // Default again since anthropics/claude-code#81318 was fixed.
-        assert.ok(existsSync(join(home, '.claude', 'commands', 'oh.md')));
-        assert.ok(existsSync(join(home, '.claude', 'agents')));
-        assert.deepEqual(parseOnly('commands'), { classes: ['commands'], skills: [] });
-        assert.deepEqual(parseOnly(''), { classes: ['commands', 'agents', 'skills', 'bins'], skills: [] });
-      });
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+    inHome((home) => {
+      assert.equal(run(['install']), 0);
+      // Default again since anthropics/claude-code#81318 was fixed.
+      assert.ok(existsSync(join(home, '.claude', 'commands', 'oh.md')));
+      assert.ok(existsSync(join(home, '.claude', 'agents')));
+      assert.deepEqual(parseOnly('commands'), { classes: ['commands'], skills: [] });
+      assert.deepEqual(parseOnly(''), { classes: ['commands', 'agents', 'skills', 'bins'], skills: [] });
+    });
   });
 
   it('writes the per-model slash-commands under <HOME>/.claude/commands and removes them', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    try {
-      withHome(home, () => {
-        assert.equal(run(['install', '--commands']), 0);
-        assert.ok(existsSync(join(home, '.claude', 'commands', 'oh.md')));
+    inHome((home) => {
+      assert.equal(run(['install', '--commands']), 0);
+      assert.ok(existsSync(join(home, '.claude', 'commands', 'oh.md')));
 
-        const out = captureStdout(() => run(['list', '--json']));
-        const rows = out.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
-        const commandRows = rows.filter((r) => r.kind === 'command');
-        assert.equal(commandRows.length, AllModelCommands.length);
-        assert.ok(commandRows.every((r) => r.state === 'mine'));
+      const out = captureStdout(() => run(['list', '--json']));
+      const rows = out.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+      const commandRows = rows.filter((r) => r.kind === 'command');
+      assert.equal(commandRows.length, AllModelCommands.length);
+      assert.ok(commandRows.every((r) => r.state === 'mine'));
 
-        assert.equal(run(['uninstall', '--commands']), 0);
-        assert.ok(!existsSync(join(home, '.claude', 'commands', 'oh.md')));
-      });
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+      assert.equal(run(['uninstall', '--commands']), 0);
+      assert.ok(!existsSync(join(home, '.claude', 'commands', 'oh.md')));
+    });
   });
 
   it('selects commands via --only commands (no flag needed)', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    try {
-      withHome(home, () => {
-        assert.equal(run(['install', '--only', 'commands']), 0);
-        assert.ok(existsSync(join(home, '.claude', 'commands', 'oh.md')));
-        // rest of the default set must NOT be pulled in by a commands-only selection
-        assert.ok(!existsSync(join(home, '.claude', 'agents')));
+    inHome((home) => {
+      assert.equal(run(['install', '--only', 'commands']), 0);
+      assert.ok(existsSync(join(home, '.claude', 'commands', 'oh.md')));
+      // rest of the default set must NOT be pulled in by a commands-only selection
+      assert.ok(!existsSync(join(home, '.claude', 'agents')));
 
-        assert.equal(run(['uninstall', '--only', 'commands']), 0);
-        assert.ok(!existsSync(join(home, '.claude', 'commands', 'oh.md')));
-      });
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+      assert.equal(run(['uninstall', '--only', 'commands']), 0);
+      assert.ok(!existsSync(join(home, '.claude', 'commands', 'oh.md')));
+    });
   });
 });
 
@@ -892,39 +752,29 @@ describe('run install/uninstall --only <skill-name>', () => {
   });
 
   it('install --only clock writes the clock skill AND auto-pulls bins (with notice)', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    try {
-      withHome(home, () => {
-        const out = captureStdout(() => assert.equal(run(['install', '--only', 'clock']), 0));
-        assert.match(out, /notice: auto-added 'bins' \(required by: clock\)/);
-        assert.ok(existsSync(join(home, '.claude', 'skills', 'clock', 'SKILL.md')));
-        assert.ok(existsSync(join(home, '.claude', 'cah-bin', 'bin', 'cah-status.js')),
-          'bins must be auto-installed');
-        // Other skills must NOT appear when only clock is requested.
-        assert.ok(!existsSync(join(home, '.claude', 'skills', 'babysit')));
-      });
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+    inHome((home) => {
+      const out = captureStdout(() => assert.equal(run(['install', '--only', 'clock']), 0));
+      assert.match(out, /notice: auto-added 'bins' \(required by: clock\)/);
+      assert.ok(existsSync(join(home, '.claude', 'skills', 'clock', 'SKILL.md')));
+      assert.ok(existsSync(join(home, '.claude', 'cah-bin', 'bin', 'cah-status.js')),
+        'bins must be auto-installed');
+      // Other skills must NOT appear when only clock is requested.
+      assert.ok(!existsSync(join(home, '.claude', 'skills', 'babysit')));
+    });
   });
 
   it('uninstall does NOT auto-pull deps — removes ONLY what is named', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    try {
-      withHome(home, () => {
-        // Seed both clock and bins.
-        run(['install', '--only', 'clock']);
-        assert.ok(existsSync(join(home, '.claude', 'cah-bin', 'bin', 'cah-status.js')));
-        // Now remove only clock — bins must stay.
-        const out = captureStdout(() => assert.equal(run(['uninstall', '--only', 'clock']), 0));
-        assert.ok(!out.includes('auto-added'), 'uninstall must NOT auto-pull deps');
-        assert.ok(!existsSync(join(home, '.claude', 'skills', 'clock')));
-        assert.ok(existsSync(join(home, '.claude', 'cah-bin', 'bin', 'cah-status.js')),
-          'bins must survive targeted uninstall of clock');
-      });
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+    inHome((home) => {
+      // Seed both clock and bins.
+      run(['install', '--only', 'clock']);
+      assert.ok(existsSync(join(home, '.claude', 'cah-bin', 'bin', 'cah-status.js')));
+      // Now remove only clock — bins must stay.
+      const out = captureStdout(() => assert.equal(run(['uninstall', '--only', 'clock']), 0));
+      assert.ok(!out.includes('auto-added'), 'uninstall must NOT auto-pull deps');
+      assert.ok(!existsSync(join(home, '.claude', 'skills', 'clock')));
+      assert.ok(existsSync(join(home, '.claude', 'cah-bin', 'bin', 'cah-status.js')),
+        'bins must survive targeted uninstall of clock');
+    });
   });
 
   it('reinstall --only clock honours the subset (uninstall + install)', () => {
@@ -969,17 +819,12 @@ describe('doctor exit codes', () => {
   });
 
   it('returns 0 when a full global install is healthy', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-home-'));
-    try {
-      withHome(home, () => {
-        captureStdout(() => run(['install']));
-        let rc;
-        captureStdout(() => { rc = run(['doctor']); });
-        assert.equal(rc, 0);
-      });
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+    inHome((home) => {
+      captureStdout(() => run(['install']));
+      let rc;
+      captureStdout(() => { rc = run(['doctor']); });
+      assert.equal(rc, 0);
+    });
   });
 });
 
@@ -1128,17 +973,12 @@ describe('strict local and path conflicts', () => {
   });
 
   it('doctor exits 2 for a directory conflict at an expected file path', () => {
-    const home = mkdtempSync(join(tmpdir(), 'cah-doctor-conflict-'));
-    try {
-      withHome(home, () => {
-        mkdirSync(join(home, '.claude', 'agents', 'oh.md'), { recursive: true });
-        let rc;
-        captureStdout(() => { rc = run(['doctor']); });
-        assert.equal(rc, 2);
-      });
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-    }
+    inHome((home) => {
+      mkdirSync(join(home, '.claude', 'agents', 'oh.md'), { recursive: true });
+      let rc;
+      captureStdout(() => { rc = run(['doctor']); });
+      assert.equal(rc, 2);
+    });
   });
 });
 

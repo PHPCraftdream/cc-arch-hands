@@ -1,9 +1,9 @@
+import { sessionHash } from './marker-fixtures.js';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFileSync, readFileSync, readdirSync, existsSync, utimesSync, mkdirSync, unlinkSync, rmdirSync, lstatSync, rmSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
-import { createHash } from 'node:crypto';
 import { runStamp, runStampAsync, isolatedDir, writeTranscript, updateMarkerDir, waitForPath, writeClaim, readClaim, stampSidecarPath } from './stamp-helpers.js';
 import { runConcurrentBatches } from './process-batches.js';
 import { symlinkOrSkip } from './symlink.js';
@@ -45,7 +45,7 @@ export function registerStampUpdateCases() {
       const updateCache = freshUpdateCache(dir, '99.0.0');
       const hintHome = isolatedDir();
       const sessionId = 'legacy-update-marker';
-      const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+      const hash = sessionHash(sessionId);
       const legacyDir = join(hintHome, '.claude');
       mkdirSync(legacyDir, { recursive: true });
       writeFileSync(join(legacyDir, `cah-update-shown-${hash}`), 'legacy');
@@ -72,7 +72,7 @@ export function registerStampUpdateCases() {
       mkdirSync(legacyDir, { recursive: true });
       const legacy = join(legacyDir, `cah-update-shown-${sessionId}`);
       writeFileSync(legacy, 'legacy');
-      const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+      const hash = sessionHash(sessionId);
       const result = runStamp(
         { session_id: sessionId, transcript_path: tp, hook_event_name: 'Stop' },
         {
@@ -281,7 +281,7 @@ export function registerStampUpdateCases() {
       const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
       const sessionId = 'recovery-update-session';
-      const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+      const hash = sessionHash(sessionId);
       const claim = join(markerDir, `.cah-marker-claim-cah-update-shown-${hash}`);
       writeClaim(claim, { pid: 99999999, nonce: 'dead-owner', claimedAt: Date.now() - 60_000 });
       const old = Date.now() / 1000 - 60;
@@ -306,7 +306,7 @@ export function registerStampUpdateCases() {
       const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
       const sessionId = 'update-reclaim-toctou';
-      const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+      const hash = sessionHash(sessionId);
       const claim = join(markerDir, `.cah-marker-claim-cah-update-shown-${hash}`);
       writeClaim(claim, { pid: 99999999, nonce: 'dead-owner' });
       const interlock = join(dir, 'update-reclaim-interlock');
@@ -342,7 +342,7 @@ export function registerStampUpdateCases() {
       const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
       const sessionId = 'update-three-party';
-      const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+      const hash = sessionHash(sessionId);
       const claim = join(markerDir, `.cah-marker-claim-cah-update-shown-${hash}`);
       writeClaim(claim, { pid: 99999999, nonce: 'stale-a' });
       const interlock = join(dir, 'update-three-party-interlock');
@@ -389,7 +389,7 @@ export function registerStampUpdateCases() {
       const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
       const sessionId = 'update-abandoned-fence';
-      const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+      const hash = sessionHash(sessionId);
       const claim = join(markerDir, `.cah-marker-claim-cah-update-shown-${hash}`);
       const fence = `${claim}.taken-99999999-dead-operation`;
       const ownerB = { pid: process.pid, nonce: 'restored-b' };
@@ -415,7 +415,7 @@ export function registerStampUpdateCases() {
       const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
       const sessionId = 'update-unexpected-fence';
-      const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+      const hash = sessionHash(sessionId);
       const claim = join(markerDir, `.cah-marker-claim-cah-update-shown-${hash}`);
       const fence = `${claim}.taken-99999999-unexpected-fence`;
       writeClaim(fence, { pid: process.pid, nonce: 'preserve-owner' });
@@ -444,7 +444,7 @@ export function registerStampUpdateCases() {
       const hintHome = isolatedDir();
       const markerDir = updateMarkerDir(hintHome);
       const sessionId = 'update-release-toctou';
-      const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+      const hash = sessionHash(sessionId);
       const claim = join(markerDir, `.cah-marker-claim-cah-update-shown-${hash}`);
       const interlock = join(dir, 'update-release-interlock');
       const running = runStampAsync(
@@ -479,7 +479,7 @@ export function registerStampUpdateCases() {
       const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
       const sessionId = 'update-marker-toctou';
-      const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+      const hash = sessionHash(sessionId);
       const marker = join(markerDir, `cah-update-shown-${hash}`);
       writeFileSync(marker, 'stale');
       const old = Date.now() / 1000 - 30 * 24 * 60 * 60;
@@ -537,7 +537,7 @@ export function registerStampUpdateCases() {
       );
       assert.equal(result.stdout, '');
       assert.equal(readFileSync(victim, 'utf8'), 'victim-0');
-      assert.equal(existsSync(join(markerDir, `cah-update-shown-${createHash('sha256').update('string:state-write-failure', 'utf8').digest('hex')}`)), false);
+      assert.equal(existsSync(join(markerDir, `cah-update-shown-${sessionHash('state-write-failure')}`)), false);
     });
 
     it('final update-marker unlink failure preserves the victim without prune growth', () => {
@@ -569,7 +569,7 @@ export function registerStampUpdateCases() {
         },
       );
       assert.match(JSON.parse(result.stdout.trim()).systemMessage, /99\.0\.0/);
-      assert.equal(existsSync(join(markerDir, `cah-update-shown-${createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex')}`)), true);
+      assert.equal(existsSync(join(markerDir, `cah-update-shown-${sessionHash(sessionId)}`)), true);
       assert.ok(readdirSync(markerDir)
         .filter((name) => /^cah-update-shown-[a-f0-9]{64}$/.test(name)).length <= 64);
       assert.equal(readFileSync(join(dirname(markerDir), '.update-markers-capacity-transaction', 'victim'), 'utf8'), 'victim-0');
@@ -615,7 +615,7 @@ export function registerStampUpdateCases() {
       for (let i = 0; i < 300; i += 1) writeFileSync(join(custom, `foreign-${i}`), 'foreign');
       const throttle = join(custom, 'last-stamp.json');
       const sessionId = 'custom-legacy-lock';
-      const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+      const hash = sessionHash(sessionId);
       const legacyState = `${throttle}.session-${hash}.json`;
       const legacyLock = `${legacyState}.lock`;
       writeFileSync(legacyState, JSON.stringify({ version: 3, lastStampedAt: Date.now(), lastStampedRequestId: 'old' }));

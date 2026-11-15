@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { AllModelCommands, AllCodexAgents } from '../lib/manifest.js';
 import { CodexModelSpecs } from '../lib/codex-model-specs.js';
 import { modelLimit } from '../lib/transcript-stats.js';
+import { withEnv } from '../test-support/env.js';
 
 const positiveInt = (value) => Number.isSafeInteger(value) && value > 0;
 
@@ -31,16 +32,11 @@ describe('Claude alias context windows', () => {
   });
 
   it('agrees with the status-line modelLimit for every model', () => {
-    const saved = process.env.CLAUDE_CODE_DISABLE_1M_CONTEXT;
-    delete process.env.CLAUDE_CODE_DISABLE_1M_CONTEXT;
-    try {
+    withEnv({ CLAUDE_CODE_DISABLE_1M_CONTEXT: undefined }, () => {
       for (const { name, model, contextWindow } of AllModelCommands) {
         assert.equal(modelLimit(model), contextWindow, `${name} (${model})`);
       }
-    } finally {
-      if (saved === undefined) delete process.env.CLAUDE_CODE_DISABLE_1M_CONTEXT;
-      else process.env.CLAUDE_CODE_DISABLE_1M_CONTEXT = saved;
-    }
+    });
   });
 });
 

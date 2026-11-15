@@ -1,5 +1,5 @@
+import { sessionHash } from '../test-support/marker-fixtures.js';
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -8,7 +8,7 @@ import { persistRateLimitsCache, rateLimitsContextPath, readRateLimitsCache } fr
 
 const now = 1_700_000_000_000;
 const session = 'same-session';
-const hash = createHash('sha256').update(`string:${session}`).digest('hex');
+const hash = sessionHash(session);
 
 function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'cah-rate-isolation-'));

@@ -8,22 +8,9 @@ import { join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { run, classifyPath } from '../lib/cli.js';
 import { SentinelBin, SetForBin } from '../lib/sentinel.js';
+import { withHome } from '../test-support/env.js';
 import { symlinkOrSkip } from '../test-support/symlink.js';
 
-// os.homedir() reads $HOME / %USERPROFILE% on each call, so we can sandbox the
-// always-global bin directory to a temp dir for the duration of a test.
-function withHome(home, fn) {
-  const oh = process.env.HOME;
-  const op = process.env.USERPROFILE;
-  process.env.HOME = home;
-  process.env.USERPROFILE = home;
-  try {
-    return fn();
-  } finally {
-    if (oh === undefined) delete process.env.HOME; else process.env.HOME = oh;
-    if (op === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = op;
-  }
-}
 function captureStdout(fn) {
   const orig = process.stdout.write;
   let out = '';

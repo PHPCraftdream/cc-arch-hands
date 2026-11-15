@@ -8,6 +8,7 @@ import { runWorker } from './process-batches.js';
 import { SentinelModelCommand } from '../lib/sentinel.js';
 import { enumerateRecoveryArtifacts, removeOwnedRegularFile, regularFileIdentity, sameFileIdentity, sweepRecoveryArtifacts, writeFileAtomic } from '../lib/fsutil.js';
 import { symlinkOrSkip } from './symlink.js';
+import { withEnv } from './env.js';
 
 // ---------------------------------------------------------------------------
 // Atomic file writes
@@ -244,17 +245,9 @@ describe('writeFileAtomic', { concurrency: false }, () => {
     const dest = join(dir, 'remove-target.txt');
     writeFileSync(dest, 'owned\n');
     const identity = regularFileIdentity(dest);
-    const old = process.env.CAH_TEST_ONLY;
-    const oldFailures = process.env.CAH_TEST_ONLY_FSUTIL_REMOVE_TRANSIENT_FAILURES;
-    process.env.CAH_TEST_ONLY = '1';
-    process.env.CAH_TEST_ONLY_FSUTIL_REMOVE_TRANSIENT_FAILURES = '2';
-    try {
+    withEnv({ CAH_TEST_ONLY: '1', CAH_TEST_ONLY_FSUTIL_REMOVE_TRANSIENT_FAILURES: '2' }, () => {
       assert.equal(removeOwnedRegularFile(dest, identity), true);
-    } finally {
-      if (old === undefined) delete process.env.CAH_TEST_ONLY; else process.env.CAH_TEST_ONLY = old;
-      if (oldFailures === undefined) delete process.env.CAH_TEST_ONLY_FSUTIL_REMOVE_TRANSIENT_FAILURES;
-      else process.env.CAH_TEST_ONLY_FSUTIL_REMOVE_TRANSIENT_FAILURES = oldFailures;
-    }
+    });
     assert.ok(!existsSync(dest));
     assert.deepEqual(readdirSync(dir).filter((name) => name.includes('.cah-owned-remove-')), []);
   });

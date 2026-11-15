@@ -5,11 +5,11 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, utimes
 import { join, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { createHash } from 'node:crypto';
 import {
   armChildDeadline, timeoutError, DEFAULT_CHILD_DEADLINE_MS, TERMINATION_GRACE_MS,
   runConcurrentBatches, terminateChild, waitForPath,
 } from '../test-support/process-batches.js';
+import { readClaim, sessionHash, writeClaim, writeTranscript } from '../test-support/marker-fixtures.js';
 import { symlinkOrSkip } from '../test-support/symlink.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -115,36 +115,9 @@ function cacheDir(home) {
   return join(home, '.claude', 'cah-bin', 'cache', 'hint-markers');
 }
 
-// Write a JSONL transcript with one line carrying model + usage.input_tokens.
-function writeTranscript(home, model, usedTokens) {
-  const path = join(home, 'transcript.jsonl');
-  const lines = [
-    JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' } }),
-    JSON.stringify({
-      type: 'assistant',
-      message: {
-        role: 'assistant',
-        model,
-        usage: { input_tokens: usedTokens, output_tokens: 10 },
-      },
-    }),
-  ];
-  writeFileSync(path, lines.join('\n') + '\n');
-  return path;
-}
-
 function markerExists(home, sessionId) {
-  const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+  const hash = sessionHash(sessionId);
   return existsSync(join(cacheDir(home), `cah-hint-shown-${hash}`));
-}
-
-function writeClaim(path, owner) {
-  mkdirSync(path);
-  writeFileSync(join(path, 'owner.json'), JSON.stringify(owner));
-}
-
-function readClaim(path) {
-  return JSON.parse(readFileSync(join(path, 'owner.json'), 'utf8'));
 }
 
 const EXPECTED =
@@ -189,7 +162,6 @@ describe('cah-checkpoint-hint bin', () => {
 
   it('terminates a deterministically hung child after its deadline', async (t) => {
     const home = isolatedHome();
-    t.after(() => rmSync(home, { recursive: true, force: true }));
     const started = Date.now();
     const result = await runHintAsync('', home, { CAH_TEST_ONLY_HANG: '1' }, {
       timeoutMs: 50,
@@ -202,7 +174,6 @@ describe('cah-checkpoint-hint bin', () => {
 
   it('awaits a deterministic slow close before settling a timed-out child', async (t) => {
     const home = isolatedHome();
-    t.after(() => rmSync(home, { recursive: true, force: true }));
     const started = Date.now();
     const result = await runHintAsync('', home, {
       CAH_TEST_ONLY_SLOW_CLOSE: '1', CAH_TEST_ONLY_SLOW_CLOSE_MS: '10',
@@ -216,7 +187,7 @@ describe('cah-checkpoint-hint bin', () => {
     const home = isolatedHome();
     const sessionId = 'dup-session';
     mkdirSync(join(home, '.claude'), { recursive: true });
-    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const hash = sessionHash(sessionId);
     writeFileSync(join(home, '.claude', `cah-hint-shown-${hash}`), '');
     const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
     const { stdout, status } = runHint(
@@ -287,7 +258,7 @@ describe('cah-checkpoint-hint bin', () => {
       writeFileSync(join(markerDir, `cah-hint-shown-${i.toString(16).padStart(64, '0')}`), `victim-${i}`);
     }
     const sessionId = 'full-capacity-legacy-migration';
-    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const hash = sessionHash(sessionId);
     const legacyDir = join(home, '.claude');
     mkdirSync(legacyDir, { recursive: true });
     writeFileSync(join(legacyDir, `cah-hint-shown-${sessionId}`),
@@ -507,14 +478,13 @@ describe('cah-checkpoint-hint bin', () => {
     assert.equal(result.stdout, EXPECTED);
     const names = readdirSync(cacheDir(home));
     assert.deepEqual(names.filter((name) => name.startsWith('cah-hint-shown-')), [
-      `cah-hint-shown-${createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex')}`,
+      `cah-hint-shown-${sessionHash(sessionId)}`,
     ]);
     assert.equal(existsSync(join(home, 'escape')), false);
   });
 
   it('24 concurrent claims emit at most one hint in bounded batches', async (t) => {
     const home = isolatedHome();
-    t.after(() => rmSync(home, { recursive: true, force: true }));
     const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
     const input = JSON.stringify({ session_id: 'parallel-hint', transcript_path: tp });
     const results = await runConcurrentBatches(24, (_, { signal }) =>
@@ -529,7 +499,7 @@ describe('cah-checkpoint-hint bin', () => {
   it('does not overwrite a successor installed at the final atomic publication boundary', async () => {
     const home = isolatedHome();
     const sessionId = 'hint-final-publication-boundary';
-    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const hash = sessionHash(sessionId);
     const marker = join(cacheDir(home), `cah-hint-shown-${hash}`);
     const interlock = join(home, 'hint-final-publication-interlock');
     const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
@@ -553,9 +523,8 @@ describe('cah-checkpoint-hint bin', () => {
 
   it('24 concurrent claims recover one expired marker without double delivery in bounded batches', async (t) => {
     const home = isolatedHome();
-    t.after(() => rmSync(home, { recursive: true, force: true }));
     const sessionId = 'parallel-expired-hint';
-    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const hash = sessionHash(sessionId);
     const marker = join(cacheDir(home), `cah-hint-shown-${hash}`);
     mkdirSync(cacheDir(home), { recursive: true });
     writeFileSync(marker, 'old');
@@ -572,7 +541,7 @@ describe('cah-checkpoint-hint bin', () => {
   it('recovers a claim left by a crashed process before delivery', () => {
     const home = isolatedHome();
     const sessionId = 'recovery-hint-session';
-    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const hash = sessionHash(sessionId);
     const markerDir = cacheDir(home);
     mkdirSync(markerDir, { recursive: true });
     const claim = join(markerDir, `.cah-marker-claim-cah-hint-shown-${hash}`);
@@ -588,7 +557,7 @@ describe('cah-checkpoint-hint bin', () => {
   it('reclaims a live-PID claim after its absolute lease expires', () => {
     const home = isolatedHome();
     const sessionId = 'expired-live-claim';
-    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const hash = sessionHash(sessionId);
     const markerDir = cacheDir(home);
     const claim = join(markerDir, `.cah-marker-claim-cah-hint-shown-${hash}`);
     mkdirSync(markerDir, { recursive: true });
@@ -606,7 +575,7 @@ describe('cah-checkpoint-hint bin', () => {
   it('recovers a stale fence even when its PID is now live', () => {
     const home = isolatedHome();
     const sessionId = 'pid-reuse-fence';
-    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const hash = sessionHash(sessionId);
     const markerDir = cacheDir(home);
     const claim = join(markerDir, `.cah-marker-claim-cah-hint-shown-${hash}`);
     const fence = `${claim}.taken-${process.pid}-old-operation`;
@@ -627,7 +596,7 @@ describe('cah-checkpoint-hint bin', () => {
   it('ignores a lease-duration override without the explicit test-only guard', () => {
     const home = isolatedHome();
     const sessionId = 'unguarded-lease-duration';
-    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const hash = sessionHash(sessionId);
     const markerDir = cacheDir(home);
     const claim = join(markerDir, `.cah-marker-claim-cah-hint-shown-${hash}`);
     mkdirSync(markerDir, { recursive: true });
@@ -653,7 +622,7 @@ describe('cah-checkpoint-hint bin', () => {
   it('does not reclaim a successor claim installed after the dead-owner check', async () => {
     const home = isolatedHome();
     const sessionId = 'hint-reclaim-toctou';
-    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const hash = sessionHash(sessionId);
     const markerDir = cacheDir(home);
     mkdirSync(markerDir, { recursive: true });
     const claim = join(markerDir, `.cah-marker-claim-cah-hint-shown-${hash}`);
@@ -684,7 +653,7 @@ describe('cah-checkpoint-hint bin', () => {
   it('fences a three-party claim race while displaced owner B is restored', async () => {
     const home = isolatedHome();
     const sessionId = 'hint-three-party';
-    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const hash = sessionHash(sessionId);
     const markerDir = cacheDir(home);
     mkdirSync(markerDir, { recursive: true });
     const claim = join(markerDir, `.cah-marker-claim-cah-hint-shown-${hash}`);
@@ -716,7 +685,7 @@ describe('cah-checkpoint-hint bin', () => {
   it('recovers an abandoned claim fence without losing its displaced owner', () => {
     const home = isolatedHome();
     const sessionId = 'hint-abandoned-fence';
-    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const hash = sessionHash(sessionId);
     const markerDir = cacheDir(home);
     mkdirSync(markerDir, { recursive: true });
     const claim = join(markerDir, `.cah-marker-claim-cah-hint-shown-${hash}`);
@@ -733,7 +702,7 @@ describe('cah-checkpoint-hint bin', () => {
   it('quarantines an abandoned claim fence with unexpected contents', () => {
     const home = isolatedHome();
     const sessionId = 'hint-unexpected-fence';
-    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const hash = sessionHash(sessionId);
     const markerDir = cacheDir(home);
     mkdirSync(markerDir, { recursive: true });
     const claim = join(markerDir, `.cah-marker-claim-cah-hint-shown-${hash}`);
@@ -771,7 +740,7 @@ describe('cah-checkpoint-hint bin', () => {
   it('old claim release cannot unlink a successor owner', async () => {
     const home = isolatedHome();
     const sessionId = 'hint-release-toctou';
-    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const hash = sessionHash(sessionId);
     const markerDir = cacheDir(home);
     const claim = join(markerDir, `.cah-marker-claim-cah-hint-shown-${hash}`);
     const interlock = join(home, 'hint-release-interlock');
@@ -800,7 +769,7 @@ describe('cah-checkpoint-hint bin', () => {
   it('stale-marker cleanup restores a freshly replaced delivered marker', async () => {
     const home = isolatedHome();
     const sessionId = 'hint-marker-toctou';
-    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const hash = sessionHash(sessionId);
     const markerDir = cacheDir(home);
     mkdirSync(markerDir, { recursive: true });
     const marker = join(markerDir, `cah-hint-shown-${hash}`);
@@ -942,7 +911,7 @@ describe('cah-checkpoint-hint bin', () => {
   it('directly migrates a post-sentinel current-session legacy claim beyond the scan cap', () => {
     const home = isolatedHome();
     const sessionId = 'post-sentinel-legacy-claim';
-    const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
+    const hash = sessionHash(sessionId);
     const cache = join(home, '.claude', 'cah-bin', 'cache');
     const markerDir = cacheDir(home);
     mkdirSync(cache, { recursive: true });

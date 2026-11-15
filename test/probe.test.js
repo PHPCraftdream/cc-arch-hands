@@ -1,7 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  mkdtempSync,
   readFileSync,
   writeFileSync,
   existsSync,
@@ -16,7 +15,6 @@ import {
   renameSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -41,10 +39,11 @@ import {
 import { regularFileIdentity, sameFileIdentity } from '../lib/fsutil.js';
 import { recoverPublicationFence } from '../lib/fs-atomic-publication.js';
 import { runWorker, waitForPath } from '../test-support/process-batches.js';
+import { tempDir } from '../test-support/cli-sandbox.js';
 import { symlinkOrSkip } from '../test-support/symlink.js';
 
-function harness() {
-  const root = mkdtempSync(join(tmpdir(), 'cah-probe-'));
+function harness(t) {
+  const root = tempDir(t, 'cah-probe');
   return {
     settingsPath: join(root, 'settings.json'),
     backupPath: join(root, 'cache', 'probe-backup.json'),
@@ -141,8 +140,8 @@ function mutateSettingsInPlace(path) {
 }
 
 describe('enableProbe', () => {
-  it('creates settings.json with probe entry when file is missing', () => {
-    const h = harness();
+  it('creates settings.json with probe entry when file is missing', (t) => {
+    const h = harness(t);
     enableProbe(h);
     const s = JSON.parse(readFileSync(h.settingsPath, 'utf8'));
     assert.equal(s.statusLine['cah-sentinel'], PROBE_SENTINEL);
@@ -152,8 +151,8 @@ describe('enableProbe', () => {
     assert.equal(b.previous, null);
   });
 
-  it('preserves the original statusLine into backup', () => {
-    const h = harness();
+  it('preserves the original statusLine into backup', (t) => {
+    const h = harness(t);
     const original = { type: 'command', command: 'foo', padding: 0 };
     writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original, other: 'keep' }));
     enableProbe(h);
@@ -164,8 +163,8 @@ describe('enableProbe', () => {
     assert.equal(s.statusLine['cah-sentinel'], PROBE_SENTINEL);
   });
 
-  it('does not overwrite a pre-existing foreign .tmp file', () => {
-    const h = harness();
+  it('does not overwrite a pre-existing foreign .tmp file', (t) => {
+    const h = harness(t);
     const tempPath = `${h.settingsPath}.tmp`;
     const foreignTemp = '{"foreign":true}\n';
     writeFileSync(tempPath, foreignTemp);
@@ -178,7 +177,7 @@ describe('enableProbe', () => {
   });
 
   it('does not follow a pre-existing .tmp symlink while publishing JSON', (t) => {
-    const h = harness();
+    const h = harness(t);
     const tempPath = `${h.settingsPath}.tmp`;
     const victimPath = `${h.settingsPath}.victim`;
     const victim = '{"victim":"untouched"}\n';
@@ -194,14 +193,14 @@ describe('enableProbe', () => {
     assert.equal(settings.statusLine['cah-sentinel'], PROBE_SENTINEL);
   });
 
-  it('refuses to re-arm when probe already active (would erase backup)', () => {
-    const h = harness();
+  it('refuses to re-arm when probe already active (would erase backup)', (t) => {
+    const h = harness(t);
     enableProbe(h);
     assert.throws(() => enableProbe(h), ProbeAlreadyActiveError);
   });
 
-  it('truncates the log file on start so each session is clean', () => {
-    const h = harness();
+  it('truncates the log file on start so each session is clean', (t) => {
+    const h = harness(t);
     enableProbe(h);
     writeFileSync(h.logPath, '{"old":"record"}\n');
     // re-enable would throw; simulate fresh state instead
@@ -210,8 +209,8 @@ describe('enableProbe', () => {
     assert.equal(readFileSync(h.logPath, 'utf8'), '');
   });
 
-  it('fails before state mutation when the log path cannot be prepared', () => {
-    const h = harness();
+  it('fails before state mutation when the log path cannot be prepared', (t) => {
+    const h = harness(t);
     const original = { type: 'command', command: 'original', padding: 0 };
     const settingsBefore = JSON.stringify({ statusLine: original });
     writeFileSync(h.settingsPath, settingsBefore);
@@ -223,7 +222,7 @@ describe('enableProbe', () => {
   });
 
   it('rejects a log symlink without touching its victim or probe state', (t) => {
-    const h = harness();
+    const h = harness(t);
     const victimPath = join(h.logPath, '..', 'log-victim.txt');
     const victim = 'foreign log data\n';
     mkdirSync(join(h.logPath, '..'), { recursive: true });
@@ -239,8 +238,8 @@ describe('enableProbe', () => {
     assert.equal(lstatSync(h.logPath, { bigint: true }).isSymbolicLink(), true);
   });
 
-  it('rejects a hard-linked log without touching either link or probe state', () => {
-    const h = harness();
+  it('rejects a hard-linked log without touching either link or probe state', (t) => {
+    const h = harness(t);
     const victimPath = join(h.logPath, '..', 'log-hardlink-victim.txt');
     const victim = 'foreign hard-linked data\n';
     mkdirSync(join(h.logPath, '..'), { recursive: true });
@@ -256,12 +255,12 @@ describe('enableProbe', () => {
     assert.equal(existsSync(h.backupPath), false);
   });
 
-  it('atomically publishes an empty log for a missing or safe existing leaf', () => {
-    const missing = harness();
+  it('atomically publishes an empty log for a missing or safe existing leaf', (t) => {
+    const missing = harness(t);
     enableProbe(missing);
     assert.equal(readFileSync(missing.logPath, 'utf8'), '');
 
-    const existing = harness();
+    const existing = harness(t);
     mkdirSync(join(existing.logPath, '..'), { recursive: true });
     writeFileSync(existing.logPath, 'foreign existing log\n');
     const before = lstatSync(existing.logPath, { bigint: true });
@@ -273,8 +272,8 @@ describe('enableProbe', () => {
 });
 
 describe('disableProbe', () => {
-  it('restores the previous statusLine verbatim', () => {
-    const h = harness();
+  it('restores the previous statusLine verbatim', (t) => {
+    const h = harness(t);
     const original = { type: 'command', command: 'foo', padding: 0 };
     writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
     enableProbe(h);
@@ -285,30 +284,30 @@ describe('disableProbe', () => {
     assert.ok(!existsSync(h.backupPath), 'backup is consumed on stop');
   });
 
-  it('removes statusLine key when there was none originally', () => {
-    const h = harness();
+  it('removes statusLine key when there was none originally', (t) => {
+    const h = harness(t);
     enableProbe(h);
     disableProbe(h);
     const s = JSON.parse(readFileSync(h.settingsPath, 'utf8'));
     assert.ok(!('statusLine' in s), 'statusLine key removed when previous was null');
   });
 
-  it('throws ProbeNotActiveError when probe is not wired', () => {
-    const h = harness();
+  it('throws ProbeNotActiveError when probe is not wired', (t) => {
+    const h = harness(t);
     writeFileSync(h.settingsPath, JSON.stringify({ statusLine: { type: 'command', command: 'foreign' } }));
     assert.throws(() => disableProbe(h), ProbeNotActiveError);
   });
 
-  it('throws MissingBackupError when backup vanished mid-session', () => {
-    const h = harness();
+  it('throws MissingBackupError when backup vanished mid-session', (t) => {
+    const h = harness(t);
     enableProbe(h);
     // simulate a user/tool removing the backup
     unlinkSync(h.backupPath);
     assert.throws(() => disableProbe(h), MissingBackupError);
   });
 
-  it('throws a path-specific error for malformed settings JSON', () => {
-    const h = harness();
+  it('throws a path-specific error for malformed settings JSON', (t) => {
+    const h = harness(t);
     writeFileSync(h.settingsPath, '{ malformed settings');
     assert.throws(() => disableProbe(h), (error) => {
       assert.ok(error instanceof MalformedSettingsError);
@@ -317,8 +316,8 @@ describe('disableProbe', () => {
     });
   });
 
-  it('tolerates a UTF-8 BOM in settings.json', () => {
-    const h = harness();
+  it('tolerates a UTF-8 BOM in settings.json', (t) => {
+    const h = harness(t);
     const original = { type: 'command', command: 'foo', padding: 0 };
     // editor-added BOM in front of otherwise valid JSON
     writeFileSync(h.settingsPath, '﻿' + JSON.stringify({ statusLine: original }));
@@ -330,8 +329,8 @@ describe('disableProbe', () => {
 });
 
 describe('probe concurrency', () => {
-  it('terminates a deterministically hung worker before rejecting', async () => {
-    const h = harness();
+  it('terminates a deterministically hung worker before rejecting', async (t) => {
+    const h = harness(t);
     const started = Date.now();
     await assert.rejects(
       runProbeWorker('enableProbe', h, join(h.settingsPath, '..', 'hung-probe'), 'unused', null, null, {
@@ -344,8 +343,8 @@ describe('probe concurrency', () => {
     assert.ok(Date.now() - started < 2_000, 'hung worker must be bounded');
   });
 
-  it('does not overwrite a settings edit made during enable', async () => {
-    const h = harness();
+  it('does not overwrite a settings edit made during enable', async (t) => {
+    const h = harness(t);
     const original = { type: 'command', command: 'before-edit', padding: 0 };
     writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
     const interlock = join(h.settingsPath, '..', 'enable-edit-interlock');
@@ -363,8 +362,8 @@ describe('probe concurrency', () => {
     assert.ok(!existsSync(h.backupPath), 'failed enable must roll back its exact backup');
   });
 
-  it('does not arm against a backup replaced before enable settings publication', async () => {
-    const h = harness();
+  it('does not arm against a backup replaced before enable settings publication', async (t) => {
+    const h = harness(t);
     const original = { type: 'command', command: 'original', padding: 0 };
     writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
     const interlock = join(h.settingsPath, '..', 'enable-backup-replacement-interlock');
@@ -384,8 +383,8 @@ describe('probe concurrency', () => {
       'foreign successor backup must be preserved');
   });
 
-  it('fails fast while another probe transition owns the operation lease', async () => {
-    const h = harness();
+  it('fails fast while another probe transition owns the operation lease', async (t) => {
+    const h = harness(t);
     const interlock = join(h.settingsPath, '..', 'enable-busy-interlock');
     const worker = runProbeWorker('enableProbe', h, interlock, 'enable-after-read');
 
@@ -396,8 +395,8 @@ describe('probe concurrency', () => {
     assert.equal(result.ok, true);
   });
 
-  it('does not remove a successor backup after stop reads the old one', async () => {
-    const h = harness();
+  it('does not remove a successor backup after stop reads the old one', async (t) => {
+    const h = harness(t);
     const original = { type: 'command', command: 'original', padding: 0 };
     writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
     enableProbe(h);
@@ -417,8 +416,8 @@ describe('probe concurrency', () => {
     assert.deepEqual(JSON.parse(readFileSync(h.settingsPath, 'utf8')).statusLine, original);
   });
 
-  it('does not restore settings from a backup replaced before stop restore', async () => {
-    const h = harness();
+  it('does not restore settings from a backup replaced before stop restore', async (t) => {
+    const h = harness(t);
     const original = { type: 'command', command: 'original', padding: 0 };
     writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
     enableProbe(h);
@@ -440,8 +439,8 @@ describe('probe concurrency', () => {
       'foreign successor backup must be preserved');
   });
 
-  it('rolls back the exact settings leaf when backup changes after enable publication', async () => {
-    const h = harness();
+  it('rolls back the exact settings leaf when backup changes after enable publication', async (t) => {
+    const h = harness(t);
     const original = { type: 'command', command: 'original', padding: 0 };
     writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
 
@@ -463,8 +462,8 @@ describe('probe concurrency', () => {
       'enable must not remove a foreign backup successor');
   });
 
-  it('keeps restored settings when backup changes after stop publication', async () => {
-    const h = harness();
+  it('keeps restored settings when backup changes after stop publication', async (t) => {
+    const h = harness(t);
     const original = { type: 'command', command: 'original', padding: 0 };
     writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
     enableProbe(h);
@@ -487,8 +486,8 @@ describe('probe concurrency', () => {
       'stop must preserve a foreign backup successor');
   });
 
-  it('does not roll back a settings successor after enable postcheck failure', async () => {
-    const h = harness();
+  it('does not roll back a settings successor after enable postcheck failure', async (t) => {
+    const h = harness(t);
     const original = { type: 'command', command: 'original', padding: 0 };
     writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
 
@@ -515,8 +514,8 @@ describe('probe concurrency', () => {
     assert.equal(existsSync(h.backupPath), false, 'a successful disable consumes the backup');
   });
 
-  it('keeps C during a probe rollback CAS race', async () => {
-    const h = harness();
+  it('keeps C during a probe rollback CAS race', async (t) => {
+    const h = harness(t);
     const original = { type: 'command', command: 'original', padding: 0 };
     writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
     enableProbe(h);
@@ -554,8 +553,8 @@ describe('probe concurrency', () => {
       'a failed CAS must clean its private temp without creating a publication vacancy');
   });
 
-  it('does not roll back a byte-identical settings successor after stop postcheck failure', async () => {
-    const h = harness();
+  it('does not roll back a byte-identical settings successor after stop postcheck failure', async (t) => {
+    const h = harness(t);
     const original = { type: 'command', command: 'original', padding: 0 };
     writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
     enableProbe(h);
@@ -583,7 +582,7 @@ describe('probe concurrency', () => {
       t.skip('nanosecond mtime restoration is not deterministic on Windows');
       return;
     }
-    const h = harness();
+    const h = harness(t);
     writeFileSync(h.settingsPath, JSON.stringify({
       statusLine: { type: 'command', command: 'original', padding: 0 },
     }));
@@ -611,7 +610,7 @@ describe('probe concurrency', () => {
       t.skip('nanosecond mtime restoration is not deterministic on Windows');
       return;
     }
-    const h = harness();
+    const h = harness(t);
     writeFileSync(h.settingsPath, JSON.stringify({
       statusLine: { type: 'command', command: 'original', padding: 0 },
     }));
@@ -630,8 +629,8 @@ describe('probe concurrency', () => {
     assert.ok(existsSync(h.backupPath), 'stop rollback must retain its backup');
   });
 
-  it('throws a path-specific error for malformed backup JSON', () => {
-    const h = harness();
+  it('throws a path-specific error for malformed backup JSON', (t) => {
+    const h = harness(t);
     enableProbe(h);
     writeFileSync(h.backupPath, '{ malformed backup');
     assert.throws(() => disableProbe(h), (error) => {
@@ -643,8 +642,8 @@ describe('probe concurrency', () => {
 });
 
 describe('probe command portability', () => {
-  it('normalizes path separators and keeps shell-safe paths working', () => {
-    const h = harness();
+  it('normalizes path separators and keeps shell-safe paths working', (t) => {
+    const h = harness(t);
     enableProbe(h);
     const s = JSON.parse(readFileSync(h.settingsPath, 'utf8'));
     assert.ok(!s.statusLine.command.includes('\\'), 'no backslash separators');
@@ -654,8 +653,8 @@ describe('probe command portability', () => {
   const unsafeSegments = ['$(echo CAH_EXPANDED)', 'a`b', 'a"b', 'a&b', 'a%b',
     'a;b', 'a|b', 'a<b', 'a>b', 'a^b', 'a!b', 'a$b'];
   for (const segment of unsafeSegments) {
-    it(`refuses a probe path containing ${JSON.stringify(segment)} at generation time`, () => {
-      const h = harness();
+    it(`refuses a probe path containing ${JSON.stringify(segment)} at generation time`, (t) => {
+      const h = harness(t);
       const original = { type: 'command', command: 'original-user-command', padding: 0 };
       writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
       const unsafePath = join(dirname(h.probeBinAbsPath), segment, 'cah-status-probe.js');
@@ -673,8 +672,8 @@ describe('probe command portability', () => {
     });
   }
 
-  it('runs the generated command identically through the platform shell for shell-safe paths', () => {
-    const h = harness();
+  it('runs the generated command identically through the platform shell for shell-safe paths', (t) => {
+    const h = harness(t);
     const fixtureDir = join(dirname(h.settingsPath), 'probe shell dir (ok)');
     mkdirSync(fixtureDir, { recursive: true });
     const fixture = join(fixtureDir, 'cah-status-probe.js');
@@ -695,16 +694,16 @@ describe('probe command portability', () => {
       'direct argv-array invocation must behave identically');
   });
 
-  it('preserves 4-space indentation of an existing settings.json', () => {
-    const h = harness();
+  it('preserves 4-space indentation of an existing settings.json', (t) => {
+    const h = harness(t);
     writeFileSync(h.settingsPath, JSON.stringify({ other: 'keep' }, null, 4));
     enableProbe(h);
     const text = readFileSync(h.settingsPath, 'utf8');
     assert.match(text, /\n {4}"other"/, 'indentation must stay 4-space');
   });
 
-  it('keeps the CRLF line ends of an existing settings.json through enable and disable', () => {
-    const h = harness();
+  it('keeps the CRLF line ends of an existing settings.json through enable and disable', (t) => {
+    const h = harness(t);
     writeFileSync(h.settingsPath, '{\r\n  "other": "keep"\r\n}\r\n');
     const bareLf = /(?<!\r)\n/;
     enableProbe(h);
@@ -736,8 +735,8 @@ describe('probe committed-publication rollback', () => {
     ['at destination inspection', 'write-before-destination-inspection', 3, 1],
   ];
   for (const [label, phase, enableAt, disableAt] of postCommitPhases) {
-    it(`enable converges when its settings publication fails ${label}`, () => {
-      const h = harness();
+    it(`enable converges when its settings publication fails ${label}`, (t) => {
+      const h = harness(t);
       const original = { type: 'command', command: 'original-user-command', padding: 0 };
       writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
       let error = null;
@@ -755,8 +754,8 @@ describe('probe committed-publication rollback', () => {
         'the failed transition must not leave a publication fence');
     });
 
-    it(`stop converges when its settings publication fails ${label}`, () => {
-      const h = harness();
+    it(`stop converges when its settings publication fails ${label}`, (t) => {
+      const h = harness(t);
       const original = { type: 'command', command: 'original-user-command', padding: 0 };
       writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
       enableProbe(h);
@@ -776,8 +775,8 @@ describe('probe committed-publication rollback', () => {
     });
   }
 
-  it('never rolls back over a settings successor that replaced a committed enable publication', () => {
-    const h = harness();
+  it('never rolls back over a settings successor that replaced a committed enable publication', (t) => {
+    const h = harness(t);
     const original = { type: 'command', command: 'original-user-command', padding: 0 };
     writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
     let seen = 0;
@@ -814,8 +813,8 @@ describe('probe committed-publication rollback', () => {
 });
 
 describe('probe backup vs ordinary settings edits', () => {
-  it('keeps the backup when an external editor re-saves settings with an unrelated key', () => {
-    const h = harness();
+  it('keeps the backup when an external editor re-saves settings with an unrelated key', (t) => {
+    const h = harness(t);
     const original = { type: 'command', command: 'original-user-command', padding: 0 };
     writeFileSync(h.settingsPath, JSON.stringify({ statusLine: original }));
 
@@ -857,9 +856,9 @@ describe('probe backup vs ordinary settings edits', () => {
 });
 
 describe('probe settings root validation', () => {
-  it('refuses a valid-JSON non-object settings root on enable, disable, and status without any side effects', async () => {
+  it('refuses a valid-JSON non-object settings root on enable, disable, and status without any side effects', async (t) => {
     for (const root of ['[]', '"just a string"', '42', 'true', 'null']) {
-      const h = harness();
+      const h = harness(t);
       writeFileSync(h.settingsPath, root + '\n');
 
       await assert.rejects(async () => enableProbe(h), (error) =>
@@ -878,8 +877,8 @@ describe('probe settings root validation', () => {
     }
   });
 
-  it('still enables and disables normally for a plain object root', () => {
-    const h = harness();
+  it('still enables and disables normally for a plain object root', (t) => {
+    const h = harness(t);
     writeFileSync(h.settingsPath, JSON.stringify({ editorSetting: 'keep' }, null, 2) + '\n');
 
     enableProbe(h);
@@ -898,8 +897,8 @@ describe('probe settings root validation', () => {
 });
 
 describe('probe lease expiry vs successor backup', () => {
-  it('an enable that lost its lease must not overwrite the successor backup, settings, or log', async () => {
-    const h = harness();
+  it('an enable that lost its lease must not overwrite the successor backup, settings, or log', async (t) => {
+    const h = harness(t);
     writeFileSync(h.settingsPath, JSON.stringify({
       statusLine: { type: 'command', command: 'original-before-edit', padding: 0 },
       editorSetting: 'keep',
@@ -974,13 +973,13 @@ describe('probe lease expiry vs successor backup', () => {
 });
 
 describe('readProbeLog', () => {
-  it('returns [] for missing file', () => {
-    const h = harness();
+  it('returns [] for missing file', (t) => {
+    const h = harness(t);
     assert.deepEqual(readProbeLog(h.logPath), []);
   });
 
-  it('parses JSONL and skips malformed lines', () => {
-    const h = harness();
+  it('parses JSONL and skips malformed lines', (t) => {
+    const h = harness(t);
     mkdirSync(join(h.logPath, '..'), { recursive: true });
     writeFileSync(h.logPath,
       '{"capturedAt":"t1","raw":"{}"}\n'
@@ -994,16 +993,16 @@ describe('readProbeLog', () => {
 });
 
 describe('probeStatus', () => {
-  it('reports inactive when nothing is set', () => {
-    const h = harness();
+  it('reports inactive when nothing is set', (t) => {
+    const h = harness(t);
     const s = probeStatus(h);
     assert.equal(s.active, false);
     assert.equal(s.backupExists, false);
     assert.equal(s.logRecords, 0);
   });
 
-  it('reports active after enable, with backup present', () => {
-    const h = harness();
+  it('reports active after enable, with backup present', (t) => {
+    const h = harness(t);
     enableProbe(h);
     const s = probeStatus(h);
     assert.equal(s.active, true);
@@ -1011,8 +1010,8 @@ describe('probeStatus', () => {
     assert.equal(s.logRecords, 0);
   });
 
-  it('accepts the Latin-1 mojibake BOM the mutating paths accept', () => {
-    const h = harness();
+  it('accepts the Latin-1 mojibake BOM the mutating paths accept', (t) => {
+    const h = harness(t);
     writeFileSync(h.settingsPath, 'ï»¿' + JSON.stringify({
       statusLine: {
         type: 'command',
@@ -1027,8 +1026,8 @@ describe('probeStatus', () => {
     assert.equal(s.logRecords, 0);
   });
 
-  it('throws MalformedSettingsError on malformed settings JSON like the mutating paths', () => {
-    const h = harness();
+  it('throws MalformedSettingsError on malformed settings JSON like the mutating paths', (t) => {
+    const h = harness(t);
     writeFileSync(h.settingsPath, '{ malformed settings');
     assert.throws(() => probeStatus(h), (error) => {
       assert.ok(error instanceof MalformedSettingsError);

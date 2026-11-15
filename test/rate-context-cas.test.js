@@ -1,6 +1,6 @@
+import { sessionHash } from '../test-support/marker-fixtures.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { createHash } from 'node:crypto';
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -24,7 +24,7 @@ for (const boundary of ['target publication', 'source cleanup']) {
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
     const cache = join(root, 'rate-limits.json');
     const session = 'cas-session';
-    const hash = createHash('sha256').update(`string:${session}`).digest('hex');
+    const hash = sessionHash(session);
     const source = `${cache}.context-${hash}.json`;
     const target = rateLimitsContextPath(cache, session);
     fs.mkdirSync(dirname(target));

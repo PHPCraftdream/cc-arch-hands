@@ -1,11 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { DEFAULT_CLI_TIMEOUT_MS } from '../test-support/process-batches.js';
+import { cliCaller, tempDir } from '../test-support/cli-sandbox.js';
 import { parseOnly } from '../lib/cli.js';
 import { Scope } from '../lib/scope.js';
 import { writeCodexSkills, removeCodexSkills } from '../lib/codex-skills.js';
@@ -13,11 +11,7 @@ import { embeddedTemplates } from '../lib/templates.js';
 import { SentinelSkill } from '../lib/sentinel.js';
 import { AllCodexSkills } from '../lib/manifest.js';
 
-function sandbox(t) {
-  const dir = mkdtempSync(join(tmpdir(), 'cah-codex-skills-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  return dir;
-}
+const sandbox = (t) => tempDir(t, 'cah-codex-skills');
 
 function skillDir(dir, name = 'cli-run') {
   return join(dir, '.codex', 'skills', name);
@@ -29,13 +23,7 @@ function isolatedHome(dir) {
   return home;
 }
 
-const cli = fileURLToPath(new URL('../bin/cah.js', import.meta.url));
-
-function callCli(home, ...args) {
-  return spawnSync(process.execPath, [cli, ...args], {
-    env: { ...process.env, HOME: home, USERPROFILE: home }, encoding: 'utf8', timeout: DEFAULT_CLI_TIMEOUT_MS,
-  });
-}
+const { call: callCli } = cliCaller();
 
 function missingCount(home) {
   const doctor = callCli(home, 'doctor');

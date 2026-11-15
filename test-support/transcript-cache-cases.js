@@ -1,3 +1,4 @@
+import { sessionHash as hashOf } from './marker-fixtures.js';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -9,7 +10,6 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
 import {
@@ -216,7 +216,7 @@ describe('readRateLimitsCache', () => {
     const dir = isolatedDir();
     const path = join(dir, 'rate-limits.json');
     const session = 'legacy-current-session';
-    const hash = createHash('sha256').update(`string:${session}`).digest('hex');
+    const hash = hashOf(session);
     const legacy = `${path}.context-${hash}.json`;
     const target = rateLimitsContextPath(path, session);
     mkdirSync(join(dir, 'rate-context'), { recursive: true });
@@ -262,7 +262,7 @@ describe('readRateLimitsCache', () => {
     mkdirSync(namespace, { recursive: true });
     for (let i = 0; i < 100; i++) {
       const session = `preexisting-${i}`;
-      const hash = createHash('sha256').update(`string:${session}`).digest('hex');
+      const hash = hashOf(session);
       writeFileSync(join(namespace, `${hash}.json`), JSON.stringify({
         version: 1, contextWindowSize: 200_000, capturedAt: now,
       }));
@@ -307,7 +307,7 @@ describe('readRateLimitsCache', () => {
     assert.equal(rateLimitsQuotaPath(path, ''), null);
     assert.notEqual(quotaPath, rateLimitsQuotaPath(join(dir, 'other.json'), '../session-a'));
     mkdirSync(join(dir, 'rate-quota'), { recursive: true });
-    const hash = createHash('sha256').update('string:../session-a').digest('hex');
+    const hash = hashOf('../session-a');
     const state = { version: 4, fiveHour: { used: 10, resetsAt: new Date(now + 60_000).toISOString() },
       fiveHourCapturedAt: now, fiveHourSessionHash: hash, capturedAt: now };
     writeFileSync(quotaPath, JSON.stringify(state));
@@ -342,7 +342,7 @@ describe('readRateLimitsCache', () => {
     const now = Date.now();
     mkdirSync(namespace);
     for (let i = 0; i < 65; i++) {
-      const hash = createHash('sha256').update(`string:preexisting-${i}`).digest('hex');
+      const hash = hashOf(`preexisting-${i}`);
       writeFileSync(join(namespace, `${hash}.json`), JSON.stringify({ capturedAt: now }));
     }
     const slot = { used: 10, resetsAt: new Date(now + 3_600_000).toISOString() };
@@ -388,7 +388,7 @@ describe('readRateLimitsCache', () => {
       refreshed,
     );
 
-    const sessionHash = createHash('sha256').update('string:session-a', 'utf8').digest('hex');
+    const sessionHash = hashOf('session-a');
     assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), {
       version: 4,
       fiveHour: { used: 20, resetsAt: fiveHourReset },

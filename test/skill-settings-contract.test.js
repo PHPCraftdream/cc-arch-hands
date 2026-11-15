@@ -1,12 +1,13 @@
-// Contract tests for the instructions published to LLM agents in the clock
-// and checkpoint-watch SKILL.md templates. The skill files are prose, so
-// these tests pin the *published text* to the library's guarantees (extract
-// the literal command lines, compare the documented unsafe-character list
-// with lib/probe.js's refusal policy) and exercise a faithful transcription
-// of the published "Atomic write only — with a concurrent-edit check" write
-// protocol under the exact races the release review reproduced. If the
-// SKILL.md wording changes, update the model and anchors here to match: the
-// model IS the executable form of the published contract.
+// Contract tests for the instructions the clock SKILL.md publishes to LLM
+// agents (checkpoint-watch only runs `cah checkpoint-watch`, which edits the
+// settings itself). The skill file is prose, so these tests pin the
+// *published text* to the library's guarantees (extract the literal command
+// lines, compare the documented unsafe-character list with the library's
+// UNSAFE_SHELL_CHARS) and exercise a faithful transcription of the published
+// "Atomic write only — with a concurrent-edit check" write protocol under
+// the exact races the release review reproduced. If the SKILL.md wording
+// changes, update the model and anchors here to match: the model IS the
+// executable form of the published contract.
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
@@ -32,10 +33,6 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const readSkill = (path) => readFileSync(path, 'utf8').replaceAll('\r\n', '\n');
 const CLOCK = readSkill(join(__dirname, '..', 'templates', 'skills', 'clock', 'SKILL.md'));
 const SETTINGS_LOCK_URL = pathToFileURL(join(__dirname, '..', 'lib', 'settings-lock.js')).href;
-const WATCH = readSkill(
-  join(__dirname, '..', 'templates', 'skills', 'checkpoint-watch', 'SKILL.md'));
-// checkpoint-watch no longer edits settings by hand: `cah checkpoint-watch` does
-// it through lib/checkpoint-watch.js under the same lock.
 
 describe('clock refresh interval contract', () => {
   it('publishes seconds and converts the legacy millisecond override', () => {
@@ -54,7 +51,7 @@ function commandLines(text) {
 
 // Faithful transcription of the "Lock settings.json for the whole
 // read-modify-write cycle" + "Atomic write only — with a concurrent-edit
-// check" rules both SKILL.md files publish, executed through the real shared
+// check" rules the clock SKILL.md publishes, executed through the real shared
 // module lib/settings-lock.js (built on lib/lease-lock.js directory
 // leases). Steps as documented:
 // 0. acquire the shared cross-process settings lock via
@@ -126,15 +123,12 @@ function documentedAtomicSave(settingsPath, mutator, hooks = {}) {
   }
 }
 
-describe('published clock/checkpoint-watch settings instructions', () => {
-  it('publishes exactly the three cah-bin command lines, double-quoted', () => {
+describe('published clock settings instructions', () => {
+  it('publishes exactly the two cah-bin command lines, double-quoted', () => {
     assert.deepEqual(commandLines(CLOCK).sort(), [
       'node "<HOME>/.claude/cah-bin/bin/cah-stamp.js"',
       'node "<HOME>/.claude/cah-bin/bin/cah-status.js"',
     ]);
-    assert.deepEqual(commandLines(WATCH), []);
-    assert.match(WATCH, /cah checkpoint-watch on --cwd "<cwd>"/);
-    assert.match(WATCH, /Never edit the settings files by hand/);
   });
 
   it('the published command line still runs through the platform shell for a safe spaced home', () => {
@@ -915,7 +909,7 @@ describe('settings-lock lifecycle races', () => {
       assert.equal(existsSync(join(lockDir, 'owner.json')), false,
         'the blocked acquirer must not write an owner into the reservation');
       assert.deepEqual(
-        readdirSync(dir).filter((n) => n.startsWith('settings.json.lock.stale.')),
+        readdirSync(dir).filter((n) => n.startsWith('settings.json.lock.stale')),
         [], 'the blocked acquirer must never fence a fresh ownerless reservation aside',
       );
 

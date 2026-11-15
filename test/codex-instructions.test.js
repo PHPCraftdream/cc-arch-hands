@@ -1,31 +1,16 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { DEFAULT_CLI_TIMEOUT_MS } from '../test-support/process-batches.js';
+import { cliCaller, tempDir } from '../test-support/cli-sandbox.js';
 import { Scope } from '../lib/scope.js';
 import {
   CODEX_CLI_RUN_BEGIN, CODEX_CLI_RUN_END,
   inspectCodexInstructions, writeCodexInstructions, removeCodexInstructions,
 } from '../lib/codex-instructions.js';
 
-const cli = fileURLToPath(new URL('../bin/cah.js', import.meta.url));
-
-function sandbox(t) {
-  const dir = mkdtempSync(join(tmpdir(), 'cah-codex-instructions-'));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  return dir;
-}
-
-function call(home, ...args) {
-  return spawnSync(process.execPath, [cli, ...args], {
-    env: { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: '', XDG_CONFIG_HOME: '', OPENCODE_CONFIG_DIR: '' },
-    encoding: 'utf8', timeout: DEFAULT_CLI_TIMEOUT_MS,
-  });
-}
+const { call } = cliCaller({ CLAUDE_CONFIG_DIR: '', XDG_CONFIG_HOME: '', OPENCODE_CONFIG_DIR: '' });
+const sandbox = (t) => tempDir(t, 'cah-codex-instructions');
 
 function missingCount(home) {
   const doctor = call(home, 'doctor');

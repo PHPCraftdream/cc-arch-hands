@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { formatStatusLine } from '../lib/transcript-stats.js';
+import { effortCode, formatStatusLine } from '../lib/transcript-stats.js';
 
 // ---------------------------------------------------------------------------
 // effortCode mapping (one-letter codes that match the /sl /sm /sh /sx /sxx
@@ -9,8 +9,7 @@ import { formatStatusLine } from '../lib/transcript-stats.js';
 // ---------------------------------------------------------------------------
 
 describe('effortCode', () => {
-  it('maps the five known levels to their slash-command suffixes', async () => {
-    const { effortCode } = await import('../lib/transcript-stats.js');
+  it('maps the five known levels to their slash-command suffixes', () => {
     assert.equal(effortCode('low'), 'l');
     assert.equal(effortCode('medium'), 'm');
     assert.equal(effortCode('high'), 'h');
@@ -18,14 +17,12 @@ describe('effortCode', () => {
     assert.equal(effortCode('max'), 'xx');
   });
 
-  it('is case-insensitive', async () => {
-    const { effortCode } = await import('../lib/transcript-stats.js');
+  it('is case-insensitive', () => {
     assert.equal(effortCode('MAX'), 'xx');
     assert.equal(effortCode('Medium'), 'm');
   });
 
-  it('returns null for unknown / missing / non-string input', async () => {
-    const { effortCode } = await import('../lib/transcript-stats.js');
+  it('returns null for unknown / missing / non-string input', () => {
     assert.equal(effortCode('extreme'), null);
     assert.equal(effortCode(''), null);
     assert.equal(effortCode(null), null);

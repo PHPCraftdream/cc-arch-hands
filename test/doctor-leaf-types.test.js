@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, unlinkSync, w
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { it } from 'node:test';
+import { withHome } from '../test-support/env.js';
 import { symlinkOrSkip } from '../test-support/symlink.js';
 import { classifyPath, run } from '../lib/cli.js';
 import { AllModelCommands } from '../lib/manifest.js';
@@ -29,32 +30,27 @@ for (const present of [false, true]) {
 
 it('doctor rejects an agent symlink that an actual install cannot replace', (t) => {
   const root = fixture(t);
-  const previous = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
   const stdout = process.stdout.write;
   const stderr = process.stderr.write;
-  process.env.HOME = root;
-  process.env.USERPROFILE = root;
   process.stdout.write = () => true;
   process.stderr.write = () => true;
   try {
-    assert.equal(run(['install']), 0);
-    assert.equal(run(['doctor']), 0);
-    const path = join(root, '.claude', 'agents', AllModelCommands[0].name + '.md');
-    const target = join(root, 'agent-target.md');
-    const original = readFileSync(path, 'utf8');
-    writeFileSync(target, original);
-    unlinkSync(path);
-    if (!symlinkOrSkip(t, target, path, 'file')) return;
-    assert.equal(run(['install', '--only', 'agents']), 1);
-    assert.equal(run(['doctor']), 2);
-    assert.ok(lstatSync(path).isSymbolicLink());
-    assert.equal(readFileSync(target, 'utf8'), original);
+    withHome(root, () => {
+      assert.equal(run(['install']), 0);
+      assert.equal(run(['doctor']), 0);
+      const path = join(root, '.claude', 'agents', AllModelCommands[0].name + '.md');
+      const target = join(root, 'agent-target.md');
+      const original = readFileSync(path, 'utf8');
+      writeFileSync(target, original);
+      unlinkSync(path);
+      if (!symlinkOrSkip(t, target, path, 'file')) return;
+      assert.equal(run(['install', '--only', 'agents']), 1);
+      assert.equal(run(['doctor']), 2);
+      assert.ok(lstatSync(path).isSymbolicLink());
+      assert.equal(readFileSync(target, 'utf8'), original);
+    });
   } finally {
     process.stdout.write = stdout;
     process.stderr.write = stderr;
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
   }
 });

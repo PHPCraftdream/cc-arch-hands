@@ -1,9 +1,9 @@
+import { sessionHash } from './marker-fixtures.js';
 import { it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
+import { writeFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir, homedir } from 'node:os';
-import { createHash } from 'node:crypto';
+import { homedir } from 'node:os';
 import { runStamp, runStampAsync, isolatedDir, writeTranscript, updateMarkerDir, stampSidecarPath, TIME_RE } from './stamp-helpers.js';
 import { proxyModelDisplayName } from '../lib/proxy-model.js';
 
@@ -97,15 +97,15 @@ export function registerStampCoreCases() {
     assert.notEqual(result.hintHome, homedir());
     assert.notEqual(result.cachePath, realCache);
     assert.equal(result.cachePath, join(result.hintHome, 'missing-rate-limits.json'));
-    const marker = join(updateMarkerDir(result.hintHome), `cah-update-shown-${createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex')}`);
-    const realMarker = join(updateMarkerDir(homedir()), `cah-update-shown-${createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex')}`);
+    const marker = join(updateMarkerDir(result.hintHome), `cah-update-shown-${sessionHash(sessionId)}`);
+    const realMarker = join(updateMarkerDir(homedir()), `cah-update-shown-${sessionHash(sessionId)}`);
     assert.equal(existsSync(marker), true);
     assert.equal(existsSync(realMarker), false);
   });
 
   it('default-layout stamp state survives migration and deduplicates the second call', () => {
     const dir = isolatedDir();
-    const home = mkdtempSync(join(tmpdir(), 'cah-default-layout-home-'));
+    const home = isolatedDir();
     const cache = join(home, '.claude', 'cah-bin', 'cache');
     mkdirSync(cache, { recursive: true });
     const tp = join(dir, 'request.jsonl');
@@ -153,19 +153,11 @@ export function registerStampCoreCases() {
       session_id: 's-missing',
       transcript_path: join(dir, 'nonexistent.jsonl'),
     });
-    // Still emits a systemMessage (with just HH:MM since no transcript data)
+    // An unreadable transcript degrades to a time-only stamp, never to silence.
     assert.equal(status, 0);
-    let parsed;
-    try {
-      parsed = JSON.parse(stdout.trim());
-    } catch {
-      // If nothing was emitted because transcriptPath returned null and we returned early
-      // that's also acceptable — spec says "exit 0 silent" for missing transcript
-      assert.equal(stdout, '');
-      return;
-    }
+    const parsed = JSON.parse(stdout.trim());
     assert.equal(parsed.continue, true);
-    assert.match(parsed.systemMessage, TIME_RE);
+    assert.match(parsed.systemMessage, /^\d{2}:\d{2}:\d{2}$/);
   });
 
   it('valid envelope + Opus 4.7 transcript (46k tokens) → correct systemMessage', () => {
@@ -294,9 +286,9 @@ export function registerStampCoreCases() {
     writeFileSync(cachePath, JSON.stringify({
       version: 4,
       fiveHour: { used: 23, resetsAt: inFourHours },
-      fiveHourSessionHash: createHash('sha256').update('string:s', 'utf8').digest('hex'),
+      fiveHourSessionHash: sessionHash('s'),
       sevenDay: { used: 67, resetsAt: inSixDays },
-      sevenDaySessionHash: createHash('sha256').update('string:s', 'utf8').digest('hex'),
+      sevenDaySessionHash: sessionHash('s'),
       capturedAt: now,
     }));
     const { stdout, status } = runStamp(
