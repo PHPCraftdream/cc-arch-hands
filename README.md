@@ -798,7 +798,7 @@ What `/resume` does:
 
 | Artifact | Count | Destination |
 |---|---|---|
-| Slash-commands | <!--gen:count:model-commands-->67<!--/gen--> | `<scope>/.claude/commands/<name>.md` (only with `--commands`) |
+| Slash-commands | <!--gen:count:model-commands-->67<!--/gen--> | `<scope>/.claude/commands/<name>.md` (default install; `--commands` selects them alone) |
 | Sub-agents | <!--gen:count:model-commands-->67<!--/gen--> | `<scope>/.claude/agents/<name>.md` |
 | Skills | 16 | `<scope>/.claude/skills/<name>/` |
 | Codex custom agents | <!--gen:count:codex-agents-->46<!--/gen--> | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
@@ -1070,14 +1070,19 @@ cc-arch-hands/
 │   ├── rewake.js                # add/remove the cah-rewake hooks in a settings.json
 │   ├── cli-rewake.js            # `cah rewake on|off|status` (global + ccgp profiles, or one project)
 │   ├── checkpoint-watch.js      # turn the checkpoint-watch mod on/off in one project's settings.local.json
-│   └── cli-checkpoint-watch.js  # `cah checkpoint-watch on [--commit]|off|status`
+│   ├── cli-checkpoint-watch.js  # `cah checkpoint-watch on [--commit]|off|status`
+│   ├── checkpoint-idle.js, cli-checkpoint-idle.js  # the silence cycle: `cah checkpoint-idle on|off|status`
+│   ├── ccgp-profiles.js         # ccgp profile folders and CLAUDE_CONFIG_DIR that a global install also covers
+│   ├── marked-section.js        # one marker-delimited block in a user file (Codex AGENTS.md, OMP APPEND_SYSTEM.md)
+│   ├── lease-lock.js, settings-lock.js  # directory leases and the shared settings.json lock
+│   └── …                        # CLAUDE.md lists every file
 ├── templates/
 │   ├── skills/                  # Claude Code skill templates
 │   │   ├── <name>/SKILL.md
 │   │   └── checkpoint-watch/hooks/  # the checkpoint-watch mod (engine.mjs + register.mjs)
 │   ├── shared/                  # harness-neutral fragments pulled in by {{include:<name>}}
-│   ├── nobg.test.js             # cah-nobg detection + `cah nobg` settings wiring
-│   └── codex-skills/            # cli-run, checkpoint, ccheckpoint, resume
+│   ├── codex-skills/            # cli-run, checkpoint, ccheckpoint, resume
+│   ├── omp-commands/ opencode-commands/ opencode-skills/ opencode-runtime/  # OMP and OpenCode workflow texts and runtime
 ├── test/
 │   ├── installer.test.js        # installer tests (node:test + node:assert)
 │   ├── cli.test.js              # CLI layer tests (scope, parseOnly, resolveDeps, --only subset)
@@ -1088,8 +1093,9 @@ cc-arch-hands/
 │   ├── checkpoint-hint.test.js  # cah-checkpoint-hint bin tests
 │   ├── probe.test.js            # lib/probe.js enable/disable/readLog tests
 │   ├── rewake.test.js           # cah-rewake bin + `cah rewake` settings wiring
+│   ├── nobg.test.js             # cah-nobg detection + `cah nobg` settings wiring
 │   └── checkpoint-watch.test.js # checkpoint-watch mod engine (fake $), settings wiring, `cah checkpoint-watch`
-├── .github/workflows/ci.yml    # CI: npm test on 3 OS × 3 Node versions
+├── .github/workflows/ci.yml    # CI: licenses, mod validation, npm test on 3 OS (Node 24)
 ├── install.sh / install.bat     # quick install wrappers
 ├── reinstall.sh / reinstall.bat # uninstall + install
 ├── uninstall.sh / uninstall.bat # quick uninstall wrappers
