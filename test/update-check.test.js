@@ -17,7 +17,7 @@ import { Worker } from 'node:worker_threads';
 import { join, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { isNewerVersion, getLatestVersion, CURRENT_VERSION } from '../lib/update-check.js';
+import { isNewerVersion, getLatestVersion, cachedLatestVersion, CURRENT_VERSION } from '../lib/update-check.js';
 import { isOlderThan, mtimeMsForAge, sameDeviceIdentity, sameFileIdentity, writeFileAtomic } from '../lib/fsutil.js';
 import { runWorker, DEFAULT_CHILD_DEADLINE_MS } from '../test-support/process-batches.js';
 
@@ -645,6 +645,22 @@ describe('getLatestVersion caching', () => {
       latestVersion: '10.10.10',
       checkedAt: now + 1,
     });
+  });
+});
+
+describe('cachedLatestVersion', () => {
+  it('reads the cached version, fresh or stale, and never fetches', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-update-cached-'));
+    const path = join(dir, 'update-check.json');
+    assert.equal(cachedLatestVersion(path), null);
+    writeFileSync(path, JSON.stringify({ latestVersion: '9.9.9', checkedAt: 0 }));
+    assert.equal(cachedLatestVersion(path), '9.9.9', 'a stale record still answers');
+    writeFileSync(path, JSON.stringify({ latestVersion: 'not-a-version', checkedAt: Date.now() }));
+    assert.equal(cachedLatestVersion(path), null);
+    writeFileSync(path, '{ broken');
+    assert.equal(cachedLatestVersion(path), null);
+    unlinkSync(path);
+    rmdirSync(dir);
   });
 });
 

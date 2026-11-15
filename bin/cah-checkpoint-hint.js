@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // cah-checkpoint-hint — Claude Code Stop hook.
 
-import { readFileSync, writeSync } from 'node:fs';
+import { readFileSync, realpathSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
@@ -101,7 +101,12 @@ export function main(testHooks = {}) {
   } finally { releaseMarkerClaim(claim); }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+// Node resolves the module URL through links and junctions; argv[1] stays as typed.
+function invokedDirectly() {
+  try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
+}
+
+if (process.argv[1] && invokedDirectly()) {
   try { main(); } catch { /* fail-silent Stop hook */ }
   process.exit(0);
 }

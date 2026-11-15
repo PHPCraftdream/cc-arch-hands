@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // cah-stamp — Claude Code Stop hook.
 
-import { readFileSync, writeFileSync, writeSync, statSync, lstatSync } from 'node:fs';
+import { readFileSync, realpathSync, writeFileSync, writeSync, statSync, lstatSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
@@ -397,7 +397,12 @@ export async function main(testHooks = {}) {
   }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+// Node resolves the module URL through links and junctions; argv[1] stays as typed.
+function invokedDirectly() {
+  try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
+}
+
+if (process.argv[1] && invokedDirectly()) {
   try { await main(); } catch { /* fail-silent */ }
   process.exit(0);
 }

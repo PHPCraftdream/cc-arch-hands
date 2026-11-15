@@ -28,7 +28,7 @@ import {
   writeStatusContextTrace,
   statusMeasuredContext,
 } from '../lib/transcript-stats.js';
-import { CURRENT_VERSION, getLatestVersion, isNewerVersion } from '../lib/update-check.js';
+import { CURRENT_VERSION, cachedLatestVersion, getLatestVersion, isNewerVersion } from '../lib/update-check.js';
 import { proxyModelDisplayName } from '../lib/proxy-model.js';
 import { sweepStaleTempsDaily } from '../lib/stale-temps.js';
 
@@ -182,7 +182,8 @@ function buildLine(data, contextState = null, proxyDisplayName = null) {
 
   let updateSuffix = '';
   try {
-    const latest = getLatestVersion(UPDATE_CHECK_CACHE);
+    // The cached value only: the refresh (a network call) runs after the line is out.
+    const latest = cachedLatestVersion(UPDATE_CHECK_CACHE);
     if (isNewerVersion(CURRENT_VERSION, latest)) {
       updateSuffix = ` · 🔵 v${latest}`;
     }
@@ -225,6 +226,9 @@ async function main() {
     if (contextState) contextState.reason = 'render_error';
   }
   process.stdout.write(line + '\n');
+  // At most once a day (TTL cache): a stale registry check is refreshed now,
+  // after the line, so the bar never waits on the network.
+  try { getLatestVersion(UPDATE_CHECK_CACHE); } catch { /* fail-silent */ }
   if (contextState) {
     contextState.elapsedMs = performance.now() - started;
     writeStatusContextTrace(traceDirectory, data, contextState);

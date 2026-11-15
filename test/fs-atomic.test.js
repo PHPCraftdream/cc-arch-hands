@@ -1040,7 +1040,7 @@ describe('daily stale temp sweep', () => {
     return { dir, temp };
   }
 
-  it('sweeps the cache root and every sidecar namespace, never marker namespaces', () => {
+  it('sweeps the cache root and every sidecar namespace; a marker namespace keeps a recent temp', () => {
     const { dir, temp } = cacheFixture();
     try {
       mkdirSync(join(dir, 'stamp-state'));
@@ -1049,6 +1049,103 @@ describe('daily stale temp sweep', () => {
       const report = sweepStaleCacheTemps(dir);
       assert.deepEqual([...report.swept].sort(), [...roots].sort());
       assert.equal(existsSync(kept), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('removes week-old recovery directories of the sidecar caches, nothing younger or foreign', () => {
+    const { dir } = cacheFixture();
+    const weekOld = new Date(Date.now() - 8 * 24 * 3600 * 1000);
+    const recovery = (where, name, { old = true, freshChild = false } = {}) => {
+      const path = join(dir, where, name);
+      mkdirSync(path, { recursive: true });
+      const child = join(path, 'payload');
+      writeFileSync(child, '{}\n');
+      if (old) {
+        if (!freshChild) utimesSync(child, weekOld, weekOld);
+        utimesSync(path, weekOld, weekOld);
+      }
+      return path;
+    };
+    try {
+      const hash = 'a'.repeat(64);
+      const gone = [
+        recovery('context-measured', `${hash}.json.cah-owned-remove`),
+        recovery('rate-context', `${hash}.json.cah-owned-publish`),
+        recovery('', 'rate-limits.json.cah-owned-publish.quarantine-4eed014c-8697-493b-ba44-4f865d64e37b'),
+      ];
+      const kept = [
+        recovery('context-measured', `${'b'.repeat(64)}.json.cah-owned-remove`, { old: false }),
+        recovery('context-measured', `${'c'.repeat(64)}.json.cah-owned-remove`, { freshChild: true }),
+        recovery('context-measured', 'notes.cah-owned-remove'),
+        recovery('stamp-state', `${hash}.json.cah-owned-publish`),
+      ];
+      const report = sweepStaleCacheTemps(dir);
+      assert.deepEqual([...report.swept].sort(), [...gone].sort());
+      for (const path of gone) assert.equal(existsSync(path), false, path);
+      for (const path of kept) assert.equal(existsSync(path), true, path);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves the recovery dirs of the user\'s own leaves in the cache root, and a stuck one never blocks the stamp', () => {
+    const { dir } = cacheFixture();
+    const weekOld = new Date(Date.now() - 8 * 24 * 3600 * 1000);
+    const recovery = (name) => {
+      const path = join(dir, name);
+      mkdirSync(path);
+      writeFileSync(join(path, 'payload'), '{}\n');
+      utimesSync(join(path, 'payload'), weekOld, weekOld);
+      utimesSync(path, weekOld, weekOld);
+      return path;
+    };
+    try {
+      const backup = recovery('probe-backup.json.cah-owned-remove');
+      const stuck = recovery('update-check.json.cah-owned-remove');
+      const report = sweepStaleTempsDaily(dir, {
+        removeTree: () => { throw Object.assign(new Error('busy'), { code: 'EBUSY' }); },
+      });
+      assert.equal(existsSync(backup), true, 'probe-backup.json is the user\'s, its recovery dir is not swept');
+      assert.deepEqual(report.stuck, [stuck]);
+      assert.deepEqual(report.failures, []);
+      assert.equal(existsSync(stamp(dir)), true, 'the stamp is written, so the sweep does not rerun on every render');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('an aged publication fence with no readable proof no longer stops the temp sweep and the stamp', () => {
+    const { dir, temp } = cacheFixture();
+    const weekOld = new Date(Date.now() - 8 * 24 * 3600 * 1000);
+    try {
+      const fence = join(dir, 'context-measured', `${'d'.repeat(64)}.json.cah-owned-publish`);
+      mkdirSync(fence);
+      writeFileSync(join(fence, 'publication.json.tmp'), '{"version":2');
+      utimesSync(join(fence, 'publication.json.tmp'), weekOld, weekOld);
+      utimesSync(fence, weekOld, weekOld);
+      const old = temp('context-measured', 50);
+      const report = sweepStaleTempsDaily(dir);
+      assert.equal(existsSync(fence), false);
+      assert.deepEqual(report.swept.sort(), [fence, old].sort());
+      assert.equal(existsSync(stamp(dir)), true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reclaims a marker namespace temp only once it is a week old', () => {
+    const { dir, temp } = cacheFixture();
+    try {
+      mkdirSync(join(dir, 'stamp-state'));
+      const recent = temp('stamp-state', 40);
+      const weekOld = temp('stamp-state', 41);
+      const old = new Date(Date.now() - 8 * 24 * 3600 * 1000);
+      utimesSync(weekOld, old, old);
+      const report = sweepStaleCacheTemps(dir);
+      assert.deepEqual(report.swept, [weekOld]);
+      assert.equal(existsSync(recent), true);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

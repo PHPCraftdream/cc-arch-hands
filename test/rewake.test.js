@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -73,6 +73,23 @@ describe('cah-rewake bin', () => {
     setTimeout(() => appendFileSync(input.transcript_path, '{"type":"user"}\n'), 150);
     assert.equal((await pending).code, 0);
     assert.equal(events(dir).at(-1), 'moved-on');
+  });
+
+  it('prunes a temp state file a killed writer left, once it is an hour old', async (t) => {
+    const dir = sandbox(t);
+    const states = join(dir, '.claude', 'cah-bin', 'cache', 'rewake');
+    mkdirSync(states, { recursive: true });
+    const stale = join(states, `${'a'.repeat(64)}.json.tmp-123-0badf00d`);
+    const fresh = join(states, `${'b'.repeat(64)}.json.tmp-124-0badf00d`);
+    const foreign = join(states, 'notes.tmp-1-0badf00d');
+    for (const path of [stale, fresh, foreign]) writeFileSync(path, '{}\n');
+    const old = new Date(Date.now() - 2 * 3600 * 1000);
+    utimesSync(stale, old, old);
+    utimesSync(foreign, old, old);
+    await wait(payload(dir), testEnv(dir, 0));
+    assert.equal(existsSync(stale), false);
+    assert.equal(existsSync(fresh), true);
+    assert.equal(existsSync(foreign), true);
   });
 
   it('exits 2 with the message on stderr as a hook process', (t) => {

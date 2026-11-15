@@ -8,7 +8,7 @@
 // Fail-silent: any unexpected state ends with exit 0 (no wake).
 
 import {
-  appendFileSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync,
+  appendFileSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { homedir } from 'node:os';
@@ -63,13 +63,18 @@ function writeState(path, state) {
   renameSync(tmp, path);
 }
 
+// A temp a killed writer left behind; no writer lives this long.
+const TEMP_TTL_MS = 60 * 60 * 1000;
+
 function pruneStates(dir, nowMs) {
   let names;
   try { names = readdirSync(dir).slice(0, STATE_SCAN_CAP); } catch { return; }
   for (const name of names) {
-    if (!/^[a-f0-9]{64}\.json$/.test(name)) continue;
+    const ttl = /^[a-f0-9]{64}\.json$/.test(name) ? STATE_TTL_MS
+      : /^[a-f0-9]{64}\.json\.tmp-\d+-[a-f0-9]{8}$/.test(name) ? TEMP_TTL_MS : null;
+    if (ttl === null) continue;
     const path = join(dir, name);
-    try { if (nowMs - statSync(path).mtimeMs > STATE_TTL_MS) rmSync(path, { force: true }); } catch { /* raced */ }
+    try { if (nowMs - statSync(path).mtimeMs > ttl) rmSync(path, { force: true }); } catch { /* raced */ }
   }
 }
 
@@ -156,6 +161,11 @@ async function run() {
   return outcome.code;
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+// Node resolves the module URL through links and junctions; argv[1] stays as typed.
+function invokedDirectly() {
+  try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
+}
+
+if (process.argv[1] && invokedDirectly()) {
   run().then((code) => process.exit(code), () => process.exit(0));
 }
