@@ -70,7 +70,9 @@ describe('Codex skill lifecycle', () => {
     assert.ok(existsSync(join(skillDir(dir), 'scripts', 'runner.mjs')));
     assert.equal(callCli(home, 'uninstall', '--codex-skills', '--cwd', dir).status, 0);
     for (const name of AllCodexSkills) assert.ok(!existsSync(skillDir(dir, name)));
-    assert.ok(!readFileSync(join(home, '.codex', 'AGENTS.md'), 'utf8').includes('<!-- cah-cli-run:start -->'));
+    // A global AGENTS.md that held only our section goes away with it.
+    const agents = join(home, '.codex', 'AGENTS.md');
+    assert.ok(!existsSync(agents) || !readFileSync(agents, 'utf8').includes('<!-- cah-cli-run:start -->'));
   });
 
   it('reinstall publishes the current cli-run instructions from the bundled template', (t) => {

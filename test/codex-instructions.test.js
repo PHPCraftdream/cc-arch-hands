@@ -22,7 +22,7 @@ function sandbox(t) {
 
 function call(home, ...args) {
   return spawnSync(process.execPath, [cli, ...args], {
-    env: { ...process.env, HOME: home, USERPROFILE: home },
+    env: { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: '', XDG_CONFIG_HOME: '', OPENCODE_CONFIG_DIR: '' },
     encoding: 'utf8', timeout: DEFAULT_CLI_TIMEOUT_MS,
   });
 }
@@ -67,6 +67,25 @@ describe('managed Codex AGENTS.md section', () => {
     assert.equal(removeCodexInstructions(scope).removed, 1);
     assert.deepEqual(readFileSync(path), original);
     assert.equal(removeCodexInstructions(scope).removed, 0);
+  });
+
+  it('writes CRLF into a CRLF file and removes a file that held only its section', (t) => {
+    const dir = sandbox(t);
+    const scope = new Scope({ cwd: dir });
+    const path = join(dir, '.codex', 'AGENTS.md');
+    mkdirSync(join(dir, '.codex'));
+    writeFileSync(path, '# Rules\r\n');
+    writeCodexInstructions(scope);
+    const crlf = readFileSync(path, 'utf8');
+    assert.equal(crlf.replace(/\r\n/g, '').includes('\n'), false, 'no bare LF in a CRLF file');
+    assert.equal(writeCodexInstructions(scope).written, 0);
+    removeCodexInstructions(scope);
+    assert.equal(readFileSync(path, 'utf8'), '# Rules\r\n');
+
+    rmSync(path);
+    writeCodexInstructions(scope);
+    removeCodexInstructions(scope);
+    assert.equal(existsSync(path), false, 'an AGENTS.md cah created is removed with its section');
   });
 
   it('refreshes only its own block and preserves later user text', (t) => {
