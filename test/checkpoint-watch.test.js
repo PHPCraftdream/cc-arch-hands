@@ -10,7 +10,8 @@ import {
   COMPACT_INSTRUCTIONS, COMPACT_TRIES, COMPACT_RETRY_MS, DROP_REASON, HELD_TEXT_LIMIT,
   IDLE_MIN_MS, IDLE_SKIP_REASON, IDLE_MIN_TOKENS, idleOf, HOLD_REASON, MAX_DENIES, stopReason,
 } from '../templates/skills/checkpoint-watch/hooks/engine.mjs';
-import { readWatchState, updateWatch, WatchSettingsError } from '../lib/checkpoint-watch.js';
+import { readWatchState, updateWatch } from '../lib/checkpoint-watch.js';
+import { SettingsFileError } from '../lib/settings-file.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cli = join(__dirname, '..', 'bin', 'cah.js');
@@ -1083,7 +1084,7 @@ describe('checkpoint-watch settings (lib/checkpoint-watch.js)', () => {
     const { paths } = project();
     mkdirSync(dirname(paths.localPath), { recursive: true });
     writeFileSync(paths.localPath, '{ broken');
-    assert.throws(() => updateWatch(paths, 'enable', { mode: 'checkpoint' }), WatchSettingsError);
+    assert.throws(() => updateWatch(paths, 'enable', { mode: 'checkpoint' }), SettingsFileError);
     assert.equal(readFileSync(paths.localPath, 'utf8'), '{ broken');
     assert.throws(() => updateWatch(paths, 'enable', { mode: 'sometimes' }), /unknown checkpoint-watch mode/);
   });

@@ -3,7 +3,7 @@
 //
 // Reads a JSON envelope from stdin (Claude Code statusLine protocol),
 // then emits a single line:
-//   <display_name> [effort] · X% (Nk/Mk) · 5h N% (→reset) · wk N% (→reset) [· 🔵 vX.Y.Z]
+//   <display_name> [effort] · X% (Nk/Mk) · 5h N% →reset · wk N% →reset [· 🔵 vX.Y.Z]
 // Falls back gracefully: if context_window is null → omit the usage part;
 // no rate_limits → omit the quotas; if model is missing or on any error → "—".
 //

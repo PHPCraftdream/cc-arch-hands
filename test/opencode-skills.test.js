@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_CLI_TIMEOUT_MS } from '../test-support/process-batches.js';
 import { OpencodeSkills } from '../lib/opencode-skills.js';
-import { OpencodeCommands, OpencodeCommandRuntimeFiles } from '../lib/opencode-commands.js';
+import { OpencodeCommands } from '../lib/opencode-commands.js';
 import { embeddedTemplates } from '../lib/templates.js';
 
 const worktree = fileURLToPath(new URL('..', import.meta.url));

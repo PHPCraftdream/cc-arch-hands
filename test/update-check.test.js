@@ -17,8 +17,9 @@ import { join, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { isNewerVersion, getLatestVersion, cachedLatestVersion, CURRENT_VERSION } from '../lib/update-check.js';
-import { isOlderThan, mtimeMsForAge, sameDeviceIdentity, sameFileIdentity, writeFileAtomic } from '../lib/fsutil.js';
-import { runWorker, DEFAULT_CHILD_DEADLINE_MS, waitForPath } from '../test-support/process-batches.js';
+import { isOlderThan, mtimeMsForAge, sameDirectoryIdentity, sameFileIdentity, writeFileAtomic } from '../lib/fsutil.js';
+import { sameStatIdentity } from '../lib/fs-atomic-identity.js';
+import { runWorker, waitForPath } from '../test-support/process-batches.js';
 import { symlinkOrSkip } from '../test-support/symlink.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -640,6 +641,17 @@ describe('CURRENT_VERSION', () => {
 });
 
 describe('exact filesystem identities', () => {
+  it('sameStatIdentity wants every one of inode, mode, size and mtime to match as a bigint', () => {
+    const base = { dev: 1n, ino: 2n, mode: 33188n, size: 3n, mtimeNs: 4n };
+    assert.equal(sameStatIdentity(base, { ...base }), true);
+    for (const key of Object.keys(base)) {
+      assert.equal(sameStatIdentity(base, { ...base, [key]: base[key] + 1n }), false, key);
+      assert.equal(sameStatIdentity(base, { ...base, [key]: Number(base[key]) }), false, `${key} as a Number`);
+    }
+    assert.equal(sameStatIdentity(base, null), false);
+    assert.equal(sameStatIdentity(undefined, base), false);
+  });
+
   it('compares synthetic >2^53 dev/ino/size/mtimeNs without Number rounding', () => {
     const base = {
       dev: 2n ** 53n + 101n,
@@ -655,7 +667,7 @@ describe('exact filesystem identities', () => {
     assert.equal(sameFileIdentity(base, {
       ...base, mtimeNs: base.mtimeNs + 1n, isFile: () => true,
     }), false);
-    assert.equal(sameDeviceIdentity(base, {
+    assert.equal(sameDirectoryIdentity(base, {
       ...base, dev: base.dev + 1n,
     }), false);
     assert.equal(sameFileIdentity(base, {

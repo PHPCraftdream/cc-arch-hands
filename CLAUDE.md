@@ -164,6 +164,7 @@ is never exposed before its complete mirrored dependency chain is present.
 | `lib/cli-settings-commands.js` | `SettingsCommands` — `rewake`, `checkpoint-watch`, `checkpoint-idle` and `nobg` keyed by subcommand name; `lib/cli.js` dispatches to it from its `default` branch (keeps `cli.js` under the 1000-line limit) |
 | `lib/settings-targets.js` | `settingsTargets` — the settings.json files for `--global` (user + ccgp profiles) or `--local`/`--cwd`; shared by `cah rewake` and `cah checkpoint-idle` |
 | `lib/sentinel-hooks.js` | `createHookEditor` — add/update/remove a sentinel-tagged (`cah-hook:v1`, `cah-name`) hook set in one settings.json under the shared lock with CAS publish; `rewake.js` and `nobg.js` are thin wrappers around it |
+| `lib/settings-file.js` | `parseSettings` / `settingsText` / `editSettings` and `SettingsFileError` — the one settings.json reader, renderer (keeps indent, BOM-free, CRLF-aware) and lock + CAS edit behind `sentinel-hooks.js`, `checkpoint-watch.js` and `checkpoint-idle.js` |
 | `bin/cah-nobg.js` | `PreToolUse` Bash hook: `findDetached(command)` returns the deny reason (the catch list is in its header comment), the hook answers `permissionDecision: deny`; any error allows |
 | `lib/cli-probe.js` | `cah probe statusline start\|stop\|status` (kept out of `cli.js`, which has a 1000-line limit) |
 | `lib/marked-section.js` | `createMarkedSection` — add, refresh and remove one marker-delimited block in a user file (Codex `AGENTS.md`, OMP `APPEND_SYSTEM.md`): CRLF-aware, a file that held only the block is removed with it |

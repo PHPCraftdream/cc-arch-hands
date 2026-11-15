@@ -326,36 +326,40 @@ export function registerStampStateCases() {
       false, 'lease loss before fencing must not leave a cleanup fence');
   });
 
-  it('recovers and retries a sidecar cleanup fence left by a crashed process', () => {
-    const dir = isolatedDir();
-    const tp = writeTranscript(dir, 'claude-opus-4-7', 46_000);
-    const throttle = join(dir, 'last-stamp.json');
-    const stale = join(dirname(stampSidecarPath(throttle, 'sidecar-crash-recovery')),
-      `last-stamp.json.session-${'h'.repeat(64)}.json`);
-    writeFileSync(stale, 'stale-sidecar');
-    const old = Date.now() / 1000 - 30 * 24 * 60 * 60;
-    utimesSync(stale, old, old);
-    const baseEnv = {
-      CAH_STAMP_THROTTLE_PATH: throttle,
-      CAH_STAMP_MIN_INTERVAL_MS: '1',
-      CAH_TEST_ONLY: '1',
-    };
-    const crashed = runStamp(
-      { session_id: 'sidecar-crash-recovery', transcript_path: tp },
-      { ...baseEnv, CAH_TEST_ONLY_STAMP_SIDECAR_CRASH: 'after-fence' },
-    );
-    assert.notEqual(crashed.status, 0, 'the crash must leave recovery state');
-    assert.equal(existsSync(stale), true);
-    assert.ok(readdirSync(dirname(stale)).some((name) => name.includes('.cah-stamp-sidecar-') && name.endsWith('.fence')));
+  // A crash between the fence and the final unlink leaves the sidecar (or, once
+  // it is unlinked, only the fence); the next run must converge either way.
+  for (const point of ['after-fence', 'before-unlink', 'after-unlink']) {
+    it(`recovers and retries a sidecar cleanup fence left by a process crashed ${point}`, () => {
+      const dir = isolatedDir();
+      const tp = writeTranscript(dir, 'claude-opus-4-7', 46_000);
+      const throttle = join(dir, 'last-stamp.json');
+      const stale = join(dirname(stampSidecarPath(throttle, 'sidecar-crash-recovery')),
+        `last-stamp.json.session-${'h'.repeat(64)}.json`);
+      writeFileSync(stale, 'stale-sidecar');
+      const old = Date.now() / 1000 - 30 * 24 * 60 * 60;
+      utimesSync(stale, old, old);
+      const baseEnv = {
+        CAH_STAMP_THROTTLE_PATH: throttle,
+        CAH_STAMP_MIN_INTERVAL_MS: '1',
+        CAH_TEST_ONLY: '1',
+      };
+      const crashed = runStamp(
+        { session_id: 'sidecar-crash-recovery', transcript_path: tp },
+        { ...baseEnv, CAH_TEST_ONLY_STAMP_SIDECAR_CRASH: point },
+      );
+      assert.notEqual(crashed.status, 0, 'the crash must leave recovery state');
+      assert.equal(existsSync(stale), point !== 'after-unlink');
+      assert.ok(readdirSync(dirname(stale)).some((name) => name.includes('.cah-stamp-sidecar-') && name.endsWith('.fence')));
 
-    const recovered = runStamp(
-      { session_id: 'sidecar-crash-recovery', transcript_path: tp }, baseEnv,
-    );
-    assert.equal(recovered.status, 0);
-    assert.equal(existsSync(stale), false);
-    assert.equal(readdirSync(dirname(stale)).some((name) => name.includes('.cah-stamp-sidecar-')),
-      false, 'recovery must converge without fence or quarantine growth');
-  });
+      const recovered = runStamp(
+        { session_id: 'sidecar-crash-recovery', transcript_path: tp }, baseEnv,
+      );
+      assert.equal(recovered.status, 0);
+      assert.equal(existsSync(stale), false);
+      assert.equal(readdirSync(dirname(stale)).some((name) => name.includes('.cah-stamp-sidecar-')),
+        false, 'recovery must converge without fence or quarantine growth');
+    });
+  }
 
   it('makes bounded progress through stale records and crash fences beyond the scan cap', () => {
     const dir = isolatedDir();

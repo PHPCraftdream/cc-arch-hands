@@ -11,6 +11,7 @@ import {
   markerClaimOwned, releaseMarkerClaim, publishMarker, finishMarkerTransaction,
   abortMarkerTransaction,
 } from '../lib/marker-state.js';
+import { crashForTest, testCrashPoint } from '../lib/lease-lock.js';
 
 const THRESHOLD = 0.9;
 const THRESHOLD_PCT = Math.round(THRESHOLD * 100);
@@ -38,19 +39,15 @@ function markerOptions(markerDir, testHooks = {}) {
 
 function markDelivered(claim, markerDir, testHooks = {}) {
   if (!markerClaimOwned(claim)) return false;
-  if (process.env.CAH_TEST_ONLY === '1'
-      && (process.env.CAH_TEST_ONLY_MARKER_CRASH === 'before-durable'
-        || process.env.CAH_TEST_ONLY_MARKER_CRASH === 'before-marker'
-        || process.env.CAH_TEST_ONLY_MARKER_WRITE_FAILURE === 'crash')) {
+  if (testCrashPoint('before-durable') || testCrashPoint('before-marker')
+      || (process.env.CAH_TEST_ONLY === '1' && process.env.CAH_TEST_ONLY_MARKER_WRITE_FAILURE === 'crash')) {
     abortMarkerTransaction(claim);
     process.exit(91);
   }
   const ok = publishMarker(claim,
     JSON.stringify({ nonce: claim.owner.nonce || claim.owner.token, deliveredAt: Date.now() }) + '\n',
     markerOptions(markerDir, testHooks));
-  if (ok && process.env.CAH_TEST_ONLY === '1'
-      && (process.env.CAH_TEST_ONLY_CAPACITY_CRASH === 'after-marker-publish'
-        || process.env.CAH_TEST_ONLY_MARKER_CRASH === 'after-marker-publish')) process.exit(94);
+  if (ok) crashForTest('after-marker-publish', 94);
   return ok;
 }
 

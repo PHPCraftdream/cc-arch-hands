@@ -18,10 +18,11 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import {
-  ProbeBusyError, UNSAFE_STATUSLINE_CHARS, enableProbe,
+  ProbeBusyError, enableProbe,
 } from '../lib/probe.js';
+import { UNSAFE_SHELL_CHARS } from '../lib/settings-file.js';
 import {
-  acquireSettingsLock, releaseSettingsLock, settingsLockOwned, settingsLockPath,
+  acquireSettingsLock, releaseSettingsLock, settingsLockOwned,
 } from '../lib/settings-lock.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -157,11 +158,11 @@ describe('published clock/checkpoint-watch settings instructions', () => {
   it('the documented unsafe-character list matches the library refusal policy exactly', () => {
     const refused = ['"', '`', '$', '&', '<', '>', '|', ';', '^', '!', '%'];
     for (const ch of refused) {
-      assert.equal(UNSAFE_STATUSLINE_CHARS.test(ch), true,
+      assert.equal(UNSAFE_SHELL_CHARS.test(ch), true,
         `the library must refuse ${JSON.stringify(ch)} like the templates document`);
     }
     for (const ch of ['(', ')', ' ', '-', '_', '.', ',', "'", '+', '=', '@', '#']) {
-      assert.equal(UNSAFE_STATUSLINE_CHARS.test(ch), false,
+      assert.equal(UNSAFE_SHELL_CHARS.test(ch), false,
         `the library must treat ${JSON.stringify(ch)} as safe like the templates promise`);
     }
     for (const [name, text] of [['clock', CLOCK]]) {
@@ -171,7 +172,7 @@ describe('published clock/checkpoint-watch settings instructions', () => {
       const end = text.indexOf('```', start + 3);
       const documented = text.slice(start + 3, end).trim().split(/\s+/).sort();
       assert.deepEqual(documented, [...refused].sort(),
-        `${name}: documented unsafe characters must mirror UNSAFE_STATUSLINE_CHARS`);
+        `${name}: documented unsafe characters must mirror UNSAFE_SHELL_CHARS`);
       assert.match(text, /control characters \(code points U\+0000 through U\+001F\)/,
         `${name}: the control-character refusal must be documented`);
       assert.match(text, /Refuse unsafe home paths before writing anything/,
@@ -479,7 +480,6 @@ const WITH_LOCK = ${withLock};
 const [settingsPath, hookName] = process.argv.slice(2);
 const bin = hookName === 'clock' ? 'cah-stamp.js' : 'cah-rewake.js';
 
-function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 function awaitMessage() {
   return new Promise((resolve) => { process.once('message', resolve); });
 }

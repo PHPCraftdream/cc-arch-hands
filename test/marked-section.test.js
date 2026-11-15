@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createMarkedSection } from '../lib/marked-section.js';
+import { createMarkedSection, markerRange } from '../lib/marked-section.js';
 import { OMP_AGENT_TAGS_BEGIN, removeOmpInstructions, writeOmpInstructions } from '../lib/omp-instructions.js';
 
 const BEGIN = '<!-- t:start -->';
@@ -74,6 +74,32 @@ describe('marked section', () => {
       assert.throws(() => section.remove(path), /Test file/, name);
       assert.equal(readFileSync(path, 'utf8'), content, name);
     }
+  });
+});
+
+describe('markerRange', () => {
+  const begin = Buffer.from(BEGIN);
+  const end = Buffer.from(END);
+  const range = (text) => markerRange(Buffer.from(text), begin, end, 'Test file');
+
+  it('finds the one block between marker lines, and none when there is no marker', () => {
+    assert.equal(range('plain text\n'), null);
+    const text = `before\n${BEGIN}\nbody\n${END}\nafter\n`;
+    const found = range(text);
+    assert.equal(text.slice(found.start, found.end), `${BEGIN}\nbody\n${END}`);
+  });
+
+  it('refuses a lone, repeated or reversed marker, naming the file', () => {
+    for (const text of [`${BEGIN}\n`, `${END}\n`, `${BEGIN}\n${BEGIN}\n${END}\n`, `${END}\n${BEGIN}\n`]) {
+      assert.throws(() => range(text), /Test file has incomplete or duplicate markers/, text);
+    }
+  });
+
+  it('refuses a marker that shares its line with other text', () => {
+    assert.throws(() => range(`text ${BEGIN}\nbody\n${END}\n`),
+      /Test file markers must occupy their own lines/);
+    assert.throws(() => range(`${BEGIN}\nbody\n${END} text\n`),
+      /Test file markers must occupy their own lines/);
   });
 });
 

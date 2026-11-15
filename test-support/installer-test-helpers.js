@@ -25,8 +25,13 @@ export const FABLE_ORACLE = [
 
 const tmpDirs = new Set();
 
+// Best effort: a leftover scratch directory must never fail a test.
 afterEach(() => {
-  for (const dir of tmpDirs) rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  for (const dir of tmpDirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    } catch { /* left for the OS temp cleanup */ }
+  }
   tmpDirs.clear();
 });
 
@@ -167,6 +172,8 @@ export function runAtomicRetryWorker(dest, interlock) {
         CAH_TEST_ONLY_FSUTIL_INTERLOCK: workerData.interlock,
         CAH_TEST_ONLY_FSUTIL_INTERLOCK_PHASE: 'rename-retry',
       });
+      // The first rename fails as a transient EPERM; the writer pauses before its retry.
+      process.env.CAH_TEST_ONLY_FSUTIL_RENAME_TRANSIENT_FAILURES = '1';
       const fsutil = await import(workerData.fsutilUrl);
       const snapshot = fsutil.captureRegularFileSnapshot(workerData.dest);
       fsutil.writeFileAtomic(workerData.dest, 'new managed body\\n', {

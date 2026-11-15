@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DENY_AMPERSAND, decide, detachedWord, findDetached } from '../bin/cah-nobg.js';
-import { HookSettingsError } from '../lib/sentinel-hooks.js';
+import { SettingsFileError } from '../lib/settings-file.js';
 import { nobgHooks, readNobgState, updateNobg } from '../lib/nobg.js';
 import { DEFAULT_CLI_TIMEOUT_MS } from '../test-support/process-batches.js';
 
@@ -267,9 +267,9 @@ describe('nobg settings wiring', () => {
 
     const broken = join(dir, 'broken.json');
     writeFileSync(broken, '{ nope');
-    assert.throws(() => updateNobg(broken, 'enable', { binPath: BIN }), HookSettingsError);
+    assert.throws(() => updateNobg(broken, 'enable', { binPath: BIN }), SettingsFileError);
     assert.equal(readFileSync(broken, 'utf8'), '{ nope');
-    assert.throws(() => nobgHooks('C:/Users/$me/cah-nobg.js'), HookSettingsError);
+    assert.throws(() => nobgHooks('C:/Users/$me/cah-nobg.js'), SettingsFileError);
   });
 });
 

@@ -7,7 +7,6 @@ import {
 import { join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { run, classifyPath } from '../lib/cli.js';
-import { BinFiles } from '../lib/binstall.js';
 import { SentinelBin, SetForBin } from '../lib/sentinel.js';
 import { symlinkOrSkip } from '../test-support/symlink.js';
 

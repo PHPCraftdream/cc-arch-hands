@@ -1754,7 +1754,7 @@ describe('removeBins', () => {
     writeBins(dst, src);
     const importer = join(dst, 'bin', 'cah-status.js');
     let preserved = false;
-    const result = removeBins(dst, src, {
+    const result = removeBins(dst, {
       testInterlock: (phase, dest) => {
         if (phase === 'binstall-before-leaf-remove'
             && dest === 'bin/cah-status.js' && !preserved) {
@@ -1785,7 +1785,7 @@ describe('removeBins', () => {
     );
     const importer = join(dst, 'bin', 'cah-status.js');
     let preserved = false;
-    const result = removeBins(dst, src, {
+    const result = removeBins(dst, {
       testInterlock: (phase, dest) => {
         if (phase === 'binstall-before-leaf-remove'
             && dest === 'bin/cah-status.js' && !preserved) {
@@ -1810,7 +1810,7 @@ describe('removeBins', () => {
     writeBins(dst, src);
     const library = join(dst, 'lib', 'update-check.js');
     let preserved = false;
-    const result = removeBins(dst, src, {
+    const result = removeBins(dst, {
       testInterlock: (phase, dest) => {
         if (phase === 'binstall-before-leaf-remove'
             && dest === 'lib/update-check.js' && !preserved) {

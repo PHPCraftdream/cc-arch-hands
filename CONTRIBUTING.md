@@ -51,7 +51,7 @@ If a new skill needs to install a Stop hook or a statusLine in user `settings.js
 
 - The `/crush` slash-command (`<!-- crush-slash-command:v1 -->`) is not managed by `cah`. Never add install/remove logic for it.
 - `agentGitSafetyClause` and `agentTestScopeClause` in `lib/agents.js` are contract text shared across all generated agents. Edit with care.
-- The cache-aware token sum in `lib/transcript-stats.js` `findContextTokens` — if you change the formula, also update the link to the official `code.claude.com/docs/en/statusline` reference comment.
+- The cache-aware token sum in `lib/transcript-stats.js` `contextTokensFromUsage` — if you change the formula, also update the link to the official `code.claude.com/docs/en/statusline` reference comment.
 
 ## License
 

@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { captureRegularFileSnapshot, writeFileAtomic } from '../lib/fs-atomic.js';
 import { publishWithFence, recoverPublicationFence } from '../lib/fs-atomic-publication.js';
-import { runWorker, DEFAULT_CHILD_DEADLINE_MS, waitForPath } from '../test-support/process-batches.js';
+import { runWorker, waitForPath } from '../test-support/process-batches.js';
 
 function runWrite(dest, interlock, payload, expected = true) {
   const fsutilUrl = new URL('../lib/fsutil.js', import.meta.url).href;

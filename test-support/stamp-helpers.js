@@ -1,6 +1,6 @@
 import { afterEach } from 'node:test';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync, mkdirSync, unlinkSync, rmdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -41,6 +41,8 @@ export function stampInvocationEnv(env = {}) {
       CAH_TEST_ONLY: '0',
       CLAUDE_CODE_AUTO_COMPACT_WINDOW: '',
       ANTHROPIC_AUTH_TOKEN: '',
+      CAH_LOCALE: '',
+      CAH_WEEKDAY_LOCALE: '',
       ...env,
       HOME: hintHome,
       USERPROFILE: hintHome,
@@ -181,12 +183,6 @@ export function stampSidecars(base) {
 export function writeClaim(path, owner) {
   mkdirSync(path);
   writeFileSync(join(path, 'owner.json'), JSON.stringify(owner));
-}
-
-export function replaceClaim(path, owner) {
-  unlinkSync(join(path, 'owner.json'));
-  rmdirSync(path);
-  writeClaim(path, owner);
 }
 
 export function readClaim(path) {

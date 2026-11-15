@@ -3,10 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { OpenCodeScope, StrictMissingOpencodeRootError } from '../lib/opencode-scope.js';
-
-const worktree = fileURLToPath(new URL('..', import.meta.url));
 
 function sandbox(t) {
   const dir = mkdtempSync(join(tmpdir(), 'cah-opencode-scope-'));

@@ -1,6 +1,6 @@
 ---
 name: clock
-description: "Install a Claude Code statusLine with model, context-window usage and, for Pro/Max, 5-hour and weekly quota use with reset times, plus a chat-stamp hook (`cah-stamp`, Stop and PostToolUse) that prints an `HH:MM · model · X% · 5h N% · wk N%` audit line after every tool call. Refreshes every 60 s and on each turn. Default global; `--here` for this project, `--off` to remove, `--status` to inspect."
+description: "Install a Claude Code statusLine with model, context-window usage and, for Pro/Max, 5-hour and weekly quota use with reset times, plus a chat-stamp hook (`cah-stamp`, Stop and PostToolUse) that prints an `HH:MM:SS · model · X% · 5h N% · wk N%` audit line after every tool call. Refreshes every 60 s and on each turn. Default global; `--here` for this project, `--off` to remove, `--status` to inspect."
 ---
 
 # clock
@@ -47,7 +47,7 @@ Install (or remove, or inspect) three Claude Code settings entries:
    not shown: they cannot be derived from context usage.
 
 2. A **chat-stamp hook** (`cah-stamp`) installed on **BOTH** `Stop` AND
-   `PostToolUse`. It emits an `HH:MM · model · X% · 5h N% · wk N%` line as a
+   `PostToolUse`. It emits an `HH:MM:SS · model · X% · 5h N% · wk N%` line as a
    `systemMessage` into the chat scrollback, both after every tool call AND at
    end of turn. This gives a fine-grained, timestamped audit trail: going back
    through the conversation you can see when each tool fired and how the
@@ -289,7 +289,8 @@ Never write in this mode.
   `hooks.Stop` (e.g. from `/rewake`) or in `hooks.PostToolUse`
   (any third-party tool) must be preserved exactly.
 - **Lock `settings.json` for the whole read-modify-write cycle.** Cooperating
-  cah settings writers (`/clock`, `/rewake`, `/nobg`, `/checkpoint-watch`) — and
+  cah settings writers (`/clock`, `/rewake`, `/nobg`, `/checkpoint-watch`,
+  `/checkpoint-idle`) — and
   `cah probe statusline start` / `cah probe statusline stop`, which take the same lock — can run at
   the same time, and verification alone cannot stop two in-flight writers from
   passing the same check just before both rename — the second rename would

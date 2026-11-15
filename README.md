@@ -324,7 +324,7 @@ npx cc-arch-hands install --omp --omp-profile work
 After updating the package, repeat `install --omp` to refresh all owned OMP
 artifacts. Restart OMP after changes. The ordinary profile is the default;
 named profiles must be selected explicitly. Every registered agent is installed,
-including all seven Ultra aliases, without querying OMP capabilities.
+including all six Ultra aliases, without querying OMP capabilities.
 
 ### Optional OMP agents
 
@@ -530,7 +530,7 @@ Reusable capability packs Claude Code loads on demand. Each is invoked as
 |---|---|
 | `/task` | Analyze a free-form request, decompose it into prioritized sub-tasks with dependencies, and register them in the session via TaskCreate. Plans only — does not execute. Usage: `/task <description>`. |
 | `/babygoal` | Investigate the problem domain first (skipped if already covered by the session — uses `/repo-sight` or focused reads when needed), choose an execution strategy, decompose the work into tasks via TaskCreate with the strategy and key findings recorded in each `description`, mark the first ready task `in_progress`, and hand off to `/babysit`. TaskList-driven — does NOT use `/goal`. Usage: `/babygoal [interval] <description>`. |
-| `/babysit` | Start a `/loop` (default `15m`) that monitors the TaskList: resumes stalled `in_progress` tasks, picks the next ready `pending` when nothing is in flight, and stops itself when the list has no open tasks. Usage: `/babysit [interval]`. |
+| `/babysit` | Install a recurring cron job (default `15m`) that monitors the TaskList: resumes stalled `in_progress` tasks, picks the next ready `pending` when nothing is in flight, and stops itself when the list has no open tasks. Usage: `/babysit [interval]`. |
 
 **Session memory**
 
@@ -1057,6 +1057,7 @@ cc-arch-hands/
 │   ├── marker-capacity-stage.js  # bounded marker transaction staging/recovery
 │   ├── marker-capacity-recovery.js # generation-aware transaction retirement/recovery
 │   ├── fs-atomic.js             # atomic publication, identity, quarantine helpers
+│   ├── settings-file.js         # read, render and lock-edit one settings.json (keeps indent and line ends)
 │   ├── sentinel-hooks.js        # add/update/remove a sentinel-tagged hook set in a settings.json (lock + CAS)
 │   ├── nobg.js                  # the cah-nobg PreToolUse hook in a settings.json
 │   ├── cli-hook-command.js      # shared body of `cah nobg` and `cah rewake`

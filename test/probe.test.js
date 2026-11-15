@@ -40,7 +40,7 @@ import {
 } from '../lib/probe.js';
 import { regularFileIdentity, sameFileIdentity } from '../lib/fsutil.js';
 import { recoverPublicationFence } from '../lib/fs-atomic-publication.js';
-import { runWorker, DEFAULT_CHILD_DEADLINE_MS, waitForPath } from '../test-support/process-batches.js';
+import { runWorker, waitForPath } from '../test-support/process-batches.js';
 import { symlinkOrSkip } from '../test-support/symlink.js';
 
 function harness() {

@@ -17,7 +17,7 @@ import { proxyModelDisplayName } from '../lib/proxy-model.js';
 import { captureRegularFileSnapshot, isOlderThan, writeFileAtomic } from '../lib/fsutil.js';
 import { acquireLease, renewLease, pathIdentity, releaseLease, streamDirectoryEntries,
   recoverOwnedFileFences, removeOwnedFileForGeneration, readDirectoryScanStats,
-  resetDirectoryScanStats } from '../lib/lease-lock.js';
+  resetDirectoryScanStats, crashForTest, testCrashPoint } from '../lib/lease-lock.js';
 import {
   sessionHash, markerNamespace, migrateMarkerState, pruneMarkers, claimMarker,
   markerClaimOwned, releaseMarkerClaim, publishMarker, finishMarkerTransaction,
@@ -239,9 +239,7 @@ function writeLastStamp(path, sessionId, ts, requestId, fingerprint, deliverySta
   const sidecar = sessionStatePath(path, sessionId);
   try {
     if (process.env.CAH_TEST_ONLY === '1'
-        && (process.env.CAH_TEST_ONLY_STAMP_STATE_WRITE_FAILURE === '1'
-          || process.env.CAH_TEST_ONLY_STATE_WRITE_FAILURE === '1'
-          || process.env.CAH_TEST_ONLY_STAMP_STATE_WRITE_ERROR === '1')) return false;
+        && process.env.CAH_TEST_ONLY_STAMP_STATE_WRITE_FAILURE === '1') return false;
     if (!renewLease(lease)) return false;
     const expectedDestination = captureRegularFileSnapshot(sidecar).expectedDestination;
     writeFileAtomic(sidecar, JSON.stringify({ version: 3, requestIdEncoding: 'sha256',
@@ -273,19 +271,15 @@ function transcriptFingerprint(path) {
 
 function markUpdateDelivered(claim, markerDir, testHooks = {}) {
   if (!markerClaimOwned(claim)) return false;
-  if (process.env.CAH_TEST_ONLY === '1'
-      && (process.env.CAH_TEST_ONLY_MARKER_CRASH === 'before-durable'
-        || process.env.CAH_TEST_ONLY_MARKER_CRASH === 'before-marker'
-        || process.env.CAH_TEST_ONLY_MARKER_WRITE_FAILURE === 'crash')) {
+  if (testCrashPoint('before-durable') || testCrashPoint('before-marker')
+      || (process.env.CAH_TEST_ONLY === '1' && process.env.CAH_TEST_ONLY_MARKER_WRITE_FAILURE === 'crash')) {
     abortMarkerTransaction(claim);
     process.exit(92);
   }
   const ok = publishMarker(claim,
     JSON.stringify({ nonce: claim.owner.nonce || claim.owner.token, deliveredAt: Date.now() }) + '\n',
     markerOptions(markerDir, testHooks));
-  if (ok && process.env.CAH_TEST_ONLY === '1'
-      && (process.env.CAH_TEST_ONLY_CAPACITY_CRASH === 'after-marker-publish'
-        || process.env.CAH_TEST_ONLY_MARKER_CRASH === 'after-marker-publish')) process.exit(94);
+  if (ok) crashForTest('after-marker-publish', 94);
   return ok;
 }
 

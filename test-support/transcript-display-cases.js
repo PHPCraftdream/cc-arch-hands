@@ -15,6 +15,10 @@ import {
   toDisplayName,
 } from '../lib/transcript-stats.js';
 
+// These cases assert the default (English) reset times whatever the developer's shell holds.
+delete process.env.CAH_LOCALE;
+delete process.env.CAH_WEEKDAY_LOCALE;
+
 // ---------------------------------------------------------------------------
 // toDisplayName — context-size annotation stripping
 // ---------------------------------------------------------------------------

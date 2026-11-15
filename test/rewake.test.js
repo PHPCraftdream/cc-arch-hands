@@ -7,7 +7,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_CLI_TIMEOUT_MS } from '../test-support/process-batches.js';
 import { MAX_ATTEMPTS, delayFor, reset, wait } from '../bin/cah-rewake.js';
-import { RewakeSettingsError, readRewakeState, rewakeHooks, updateRewake } from '../lib/rewake.js';
+import { readRewakeState, rewakeHooks, updateRewake } from '../lib/rewake.js';
+import { SettingsFileError } from '../lib/settings-file.js';
 
 const bin = fileURLToPath(new URL('../bin/cah-rewake.js', import.meta.url));
 const cli = fileURLToPath(new URL('../bin/cah.js', import.meta.url));
@@ -144,9 +145,9 @@ describe('rewake settings wiring', () => {
 
     const broken = join(dir, 'broken.json');
     writeFileSync(broken, '{ nope');
-    assert.throws(() => updateRewake(broken, 'enable', { binPath: BIN }), RewakeSettingsError);
+    assert.throws(() => updateRewake(broken, 'enable', { binPath: BIN }), SettingsFileError);
     assert.equal(readFileSync(broken, 'utf8'), '{ nope');
-    assert.throws(() => rewakeHooks('C:/Users/$me/cah-rewake.js'), RewakeSettingsError);
+    assert.throws(() => rewakeHooks('C:/Users/$me/cah-rewake.js'), SettingsFileError);
   });
 });
 
