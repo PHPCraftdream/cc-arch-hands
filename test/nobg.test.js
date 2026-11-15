@@ -80,6 +80,14 @@ describe('cah-nobg: what it denies', () => {
     ['find -exec sh -c', "find . -name '*.sh' -exec sh -c 'server &' ;"],
     ['a heredoc piped to bash', "cat <<'EOF' | bash\nserver &\nEOF"],
     ['flock running a shell', "flock /tmp/l sh -c 'server &'"],
+    ['a heredoc piped through a wrapper to bash', 'cat <<EOF | sudo bash\nserver &\nEOF'],
+    ['a heredoc piped to bash -s with arguments', 'cat <<EOF | bash -s -- arg\nserver &\nEOF'],
+    ['xargs with glued numeric options', 'ls | xargs -0n 1 nohup ./run.sh', 'nohup'],
+    ['su -c', "su - www -c 'server &'"],
+    ['su --command', 'su www --command "nohup x"', 'nohup'],
+    ['$SHELL -c', '$SHELL -c "server &"'],
+    ['${SHELL} -c', '${SHELL} -c "server &"'],
+    ['a job after an array literal', 'x=(a b); server &'],
     ['start /b', 'start /b server.exe', 'start'],
     ['at with a time and a file', 'at 5pm -f job.sh', 'at'],
     ['unquoted Start-Process', 'powershell Start-Process server.exe', 'Start-Process'],
@@ -155,6 +163,13 @@ describe('cah-nobg: what it leaves alone', () => {
     ['at without a time', 'at -l'],
     ['a case statement then other commands', 'case $x in start) echo a;; esac; echo done'],
     ['a substitution reaped by wait', 'x=`server &`; wait'],
+    ['an array literal named like detachers', 'modes=(batch stream)\necho ${modes[0]}'],
+    ['an array literal as a declare argument', 'declare -a steps=(start stop)'],
+    ['a variable named like a detacher', '$batch --run'],
+    ['variables named like detachers as arguments', 'echo $start $at ${batch}'],
+    ['a heredoc piped through a wrapper to a tool', 'cat <<EOF | sudo grep x\nserver &\nEOF'],
+    ['a heredoc piped to bash -c', "cat <<EOF | bash -c 'cat'\na & b\nEOF"],
+    ['a commit message heredoc in a substitution', "git commit -m \"$(cat <<'EOF'\nfix a & b\nEOF\n)\""],
   ];
   for (const [name, command] of allowed) {
     it(`allows ${name}`, () => {

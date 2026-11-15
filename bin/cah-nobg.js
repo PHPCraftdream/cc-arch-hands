@@ -31,6 +31,7 @@ export const detachedWord = (word) => `cah-nobg: \`${word}\` starts a detached b
 
 const DETACHERS = new Set(['nohup', 'setsid', 'disown', 'coproc', 'daemonize', 'systemd-run', 'batch']);
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'ash', 'busybox']);
+const SHELL_VARS = new Set(['$SHELL', '${SHELL}', '$BASH', '${BASH}']);
 const SHELL_C = /^-[A-Za-z]*c[A-Za-z]*$/;
 const POWERSHELLS = new Set(['powershell', 'pwsh']);
 const PS_DETACH = /\bStart-(?:Process|Job)\b/i;
@@ -209,7 +210,7 @@ export function findDetached(command, depth = 0) {
         if (wrapper === 'env' && raw.startsWith('--split-string=')) { nested.push(raw.slice(15)); return null; }
         const options = WRAPPERS[wrapper];
         if (options.includes(raw)) optArgNext = true;
-        else if (/^-[A-Za-z]{2,}$/.test(raw) && options.includes(`-${raw.at(-1)}`)) optArgNext = true;
+        else if (/^-[A-Za-z0-9]{2,}$/.test(raw) && options.includes(`-${raw.at(-1)}`)) optArgNext = true;
         return null;
       }
       if (wrapper === 'timeout' && DURATION.test(raw)) return null;
@@ -225,7 +226,7 @@ export function findDetached(command, depth = 0) {
     wrapper = null;
     cmd = base;
     argCount = 0;
-    shellSeen = SHELLS.has(base);
+    shellSeen = SHELLS.has(base) || SHELL_VARS.has(raw);
     if (shellSeen && afterPipe && heredocs.length > 0) {
       // `cat <<EOF | bash`: the heredoc is the shell's program, unless it is given one.
       for (const doc of heredocs) doc.code = true;
@@ -244,10 +245,13 @@ export function findDetached(command, depth = 0) {
     argCount += 1;
     // The program text after `-c`.
     if (codeNext) { nested.push(raw); codeNext = false; return null; }
+    // `su user -c 'cmd'` runs cmd through the user's shell.
+    if ((cmd === 'su' || cmd === 'runuser') && (raw === '-c' || raw === '--command')) { codeNext = true; return null; }
     if (shellSeen && SHELL_C.test(raw)) { codeNext = true; shellC = true; shellTakesProgram(); return null; }
     if (shellSeen && raw === '-s') { shellStdin = true; return null; }
     if (shellSeen && !shellC && !raw.startsWith('-')) {
-      if (!shellScript) { shellScript = true; shellTakesProgram(); }
+      // A script operand means no program on stdin, unless -s says the operands are only arguments.
+      if (!shellScript) { shellScript = true; if (!shellStdin) shellTakesProgram(); }
       return null;
     }
     if (EXEC_RUNNERS.has(cmd) && SHELLS.has(baseName(raw))) { shellSeen = true; return null; }
@@ -286,8 +290,10 @@ export function findDetached(command, depth = 0) {
     lastEnd = end;
     if (glued) return null;
     lastAssign = false;
-    const reason = atCommand ? commandWord(raw, end) : argWord(raw);
-    afterPipe = false;
+    const inCommand = atCommand;
+    const reason = inCommand ? commandWord(raw, end) : argWord(raw);
+    // A wrapper (`| sudo bash`) or an assignment keeps the position right after the pipe.
+    if (!(inCommand && atCommand)) afterPipe = false;
     return reason;
   };
 
@@ -312,6 +318,15 @@ export function findDetached(command, depth = 0) {
       continue;
     }
     if (c === ' ' || c === '\t' || c === '\r') { i += 1; continue; }
+    if (c === '$' && /[A-Za-z_]/.test(s[i + 1] ?? '')) {
+      // `$batch`: a variable, not the word `batch`.
+      let j = i + 1;
+      while (j < s.length && /\w/.test(s[j])) j += 1;
+      const reason = word(s.slice(i, j), i, j);
+      if (reason) return reason;
+      i = j;
+      continue;
+    }
     if (c === '$' && s[i + 1] === "'") {
       let j = i + 2;
       while (j < s.length && s[j] !== "'") j += s[j] === '\\' ? 2 : 1;
@@ -325,6 +340,10 @@ export function findDetached(command, depth = 0) {
       const end = braceEnd(s, i + 1);
       const inner = s.slice(i + 2, end === -1 ? s.length : end - 1);
       nested.push(...substitutions(inner));
+      if (end !== -1 && /^[A-Za-z_]\w*$/.test(inner)) {
+        const reason = word(`\${${inner}}`, i, end);
+        if (reason) return reason;
+      }
       i = end === -1 ? s.length : end;
       continue;
     }
@@ -393,6 +412,13 @@ export function findDetached(command, depth = 0) {
       reset();
       afterPipe = false;
       i += 1;
+      continue;
+    }
+    if (c === '(' && s[i - 1] === '=') {
+      // `modes=(batch stream)`: an array literal, not a subshell.
+      const end = arithmeticEnd(s, i);
+      nested.push(...substitutions(s.slice(i + 1, end === -1 ? s.length : end - 1)));
+      i = end === -1 ? s.length : end;
       continue;
     }
     if (c === '(') parens += 1;

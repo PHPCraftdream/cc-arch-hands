@@ -30,7 +30,11 @@ What it catches, with one quote-aware scan and no shell grammar:
 
 Left alone: `&&`, `||`, `|&`, `&>`, `2>&1`, `;&` in `case`, an `&` in quotes, a
 comment, a plain heredoc body, `$(( ))`, `(( ))`, `tmux attach -d`, `screen -dr`.
-A command the bin cannot read is allowed.
+Words that only look like a detacher are not commands: a case pattern
+(`start)`), a function definition (`start() {`), a relative script
+(`./bin/start`), an assignment value (`MODE="batch" x`, `modes=(batch)`), a
+variable (`$batch`) and an argument (`echo start`). A command the bin cannot
+read is allowed.
 
 ## Usage
 
