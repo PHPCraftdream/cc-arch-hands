@@ -744,7 +744,9 @@ Claude Code has no setting against it (`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` on
   `eval …` and a heredoc fed to a shell (`bash <<EOF`).
 
 Left alone: `&&`, `||`, `|&`, `&>`, `2>&1`, `;&` in `case`, an `&` in quotes, a comment, a plain heredoc body,
-`$(( ))`, `(( ))`, `tmux attach -d`, `screen -dr`. Anything the bin cannot read allows the call.
+`$(( ))`, `(( ))`, `tmux attach -d`, `screen -dr`. A word that only looks like a detacher is not a command: a case
+pattern (`start)`), a function definition, a relative script (`./bin/start`), an assignment value
+(`MODE="batch" x`), a variable (`$batch`) or an argument (`echo start`). Anything the bin cannot read allows the call.
 
 Global by default (`~/.claude/settings.json` plus every ccgp profile); `--local`/`--cwd` (`/nobg --here`) target one
 project. Only the sentinel-tagged hook (`cah-hook:v1`, `cah-name: nobg`) is added or removed, under the shared
@@ -962,7 +964,8 @@ npx cc-arch-hands rewake off                        # remove our hooks only
 capturing bin and backs up the original. `stop` restores the original and
 prints the parsed envelope so you can see exactly which fields Claude Code
 delivers on your account (e.g. whether `rate_limits.five_hour.resets_at` is
-populated). No manual `settings.json` edits.
+populated). No manual `settings.json` edits. It rewires only `~/.claude/settings.json`,
+not a ccgp profile's: probe from a session that runs there.
 
 For intermittent context-meter gaps, the normal renderer also supports an
 opt-in, allowlisted `CAH_CONTEXT_TRACE_DIR` capture without replacing the panel
