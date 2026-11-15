@@ -1,10 +1,11 @@
 import { it } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, readFileSync, readdirSync, existsSync, utimesSync, mkdirSync, unlinkSync, rmdirSync, symlinkSync, lstatSync, linkSync, rmSync } from 'node:fs';
+import { writeFileSync, readFileSync, readdirSync, existsSync, utimesSync, mkdirSync, unlinkSync, rmdirSync, lstatSync, linkSync, rmSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { runStamp, runStampAsync, isolatedDir, writeTranscript, stampSidecarPath, stampSidecars, waitForPath, writeClaim, readClaim } from './stamp-helpers.js';
 import { runConcurrentBatches } from './process-batches.js';
+import { symlinkOrSkip } from './symlink.js';
 
 export function registerStampStateCases() {
   it('throttle: a second stamp within MIN_INTERVAL is suppressed', () => {
@@ -152,20 +153,9 @@ export function registerStampStateCases() {
       { session_id: sessionId, transcript_path: tp }, env,
     );
     await waitForPath(`${interlock}.ready`);
-    // The lease TTL bounds two different things, both of which need real
-    // margin under heavy concurrent test-suite load (many parallel test
-    // files each spawning real child processes): (1) this wait must
-    // comfortably exceed the TTL so the predecessor's lease reliably reads
-    // as stale despite scheduling jitter around the successor's own process
-    // spawn -- a too-tight TTL here previously needed successive 1.5x -> 4x
-    // -> 8x widenings; (2) the successor's OWN multi-step publish sequence
-    // (write pending, renew, emit stdout, renew, write delivered -- each
-    // internally re-checking the lease) must complete within ITS OWN
-    // lease's TTL from acquisition, and a too-tight TTL there let a single
-    // slow CI run's renewLease() check inside the final write silently fail
-    // (unchecked return value) and leave deliveryState stuck at 'pending'
-    // even though the successor had already published to stdout. A larger
-    // absolute TTL fixes both without needing an ever-larger multiplier.
+    // The wait must comfortably exceed the lease TTL so the paused hook reads as
+    // stale, and the TTL must leave the successor's own multi-step publish
+    // (pending, renew, stdout, renew, delivered) room to finish under suite load.
     await new Promise((resolve) => setTimeout(resolve, 5000));
     writeFileSync(tp, JSON.stringify({
       type: 'assistant', requestId: 'successor-request',
@@ -479,15 +469,7 @@ export function registerStampStateCases() {
     const sidecarHardlink = join(stateDir, `last-stamp.json.session-${'f'.repeat(64)}.json`);
     mkdirSync(sidecarDir);
     writeFileSync(sidecarTarget, 'target');
-    try {
-      symlinkSync(sidecarTarget, sidecarLink, 'file');
-    } catch (error) {
-      if (process.platform === 'win32' && error && ['EPERM', 'EACCES', 'EINVAL'].includes(error.code)) {
-        t.skip('file symlinks are unavailable on this Windows host');
-        return;
-      }
-      throw error;
-    }
+    if (!symlinkOrSkip(t, sidecarTarget, sidecarLink, 'file')) return;
     writeFileSync(sidecarHardlink, 'hard-linked');
     const hardlinkPeer = join(dir, 'hardlink-peer');
     // A hard link is a regular file but is not a single-link managed sidecar.
@@ -512,15 +494,7 @@ export function registerStampStateCases() {
     const victim = join(dir, 'foreign-victim.txt');
     writeFileSync(victim, 'foreign-content');
     const legacyTemp = `${sidecar}.12345.1700000000000.1.tmp`;
-    try {
-      symlinkSync(victim, legacyTemp, 'file');
-    } catch (error) {
-      if (process.platform === 'win32' && error && ['EPERM', 'EACCES', 'EINVAL'].includes(error.code)) {
-        t.skip('file symlinks are unavailable on this Windows host');
-        return;
-      }
-      throw error;
-    }
+    if (!symlinkOrSkip(t, victim, legacyTemp, 'file')) return;
     const result = runStamp(
       { session_id: sessionId, transcript_path: tp },
       { CAH_STAMP_THROTTLE_PATH: throttle },

@@ -1,8 +1,9 @@
-import { mkdtempSync, existsSync } from 'node:fs';
+import { afterEach } from 'node:test';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
-import { runWorker, DEFAULT_CHILD_DEADLINE_MS } from './process-batches.js';
+import { runWorker } from './process-batches.js';
 
 export const FABLE_ORACLE = [
   ['fl', 'claude-fable-5-2', 'low'],
@@ -22,31 +23,25 @@ export const FABLE_ORACLE = [
   ['f2xx', 'claude-fable-5', 'max'],
 ];
 
+const tmpDirs = new Set();
+
+afterEach(() => {
+  for (const dir of tmpDirs) rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  tmpDirs.clear();
+});
+
+// A scratch directory, removed after the test that asked for it.
 export function tmpDir() {
-  return mkdtempSync(join(tmpdir(), 'cah-test-'));
+  const dir = mkdtempSync(join(tmpdir(), 'cah-test-'));
+  tmpDirs.add(dir);
+  return dir;
 }
 
 export function waitForWorker(worker) {
   return runWorker(worker, { label: 'atomic-write worker', requireMessage: false }).then(() => undefined);
 }
 
-export function waitForPath(path, timeoutMs = DEFAULT_CHILD_DEADLINE_MS) {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const poll = () => {
-      if (existsSync(path)) {
-        resolve();
-        return;
-      }
-      if (Date.now() >= deadline) {
-        reject(new Error(`timed out waiting for ${path}`));
-        return;
-      }
-      setTimeout(poll, 10);
-    };
-    poll();
-  });
-}
+export { waitForPath } from './process-batches.js';
 
 export function runSkillWorker(action, dir, interlock, phase, subset = undefined) {
   const skillsUrl = new URL('../lib/skills.js', import.meta.url).href;

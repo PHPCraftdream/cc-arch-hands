@@ -2,13 +2,14 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync,
-  mkdirSync, writeFileSync, symlinkSync, linkSync,
+  mkdirSync, writeFileSync, linkSync,
 } from 'node:fs';
 import { join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import { run, classifyPath } from '../lib/cli.js';
 import { BinFiles } from '../lib/binstall.js';
 import { SentinelBin, SetForBin } from '../lib/sentinel.js';
+import { symlinkOrSkip } from '../test-support/symlink.js';
 
 // os.homedir() reads $HOME / %USERPROFILE% on each call, so we can sandbox the
 // always-global bin directory to a temp dir for the duration of a test.
@@ -172,15 +173,7 @@ describe('doctor/list and install preflight agree on runtime leaf structure', ()
     const target = join(home, 'lease-clock-symlink-target.js');
     writeFileSync(target, original);
     rmSync(leaf);
-    try {
-      symlinkSync(target, leaf, 'file');
-    } catch (error) {
-      if (process.platform === 'win32' && (error.code === 'EPERM' || error.code === 'EACCES')) {
-        t.skip('file symlinks are unavailable on this Windows runner');
-        return;
-      }
-      throw error;
-    }
+    if (!symlinkOrSkip(t, target, leaf, 'file')) return;
     assert.equal(
       readFileSync(target, 'utf8').includes(SentinelBin),
       true,

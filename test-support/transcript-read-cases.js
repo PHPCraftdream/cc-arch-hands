@@ -346,29 +346,15 @@ describe('readTranscriptStats', () => {
     assert.equal(fullRead, false, 'missing optional requestId must not read the transcript prefix');
   });
 
-  it('does not recurse into arbitrary nested JSON for model extraction', () => {
+  it('takes no model from arbitrary nested JSON, however deep', () => {
     const dir = isolatedDir();
     const tp = join(dir, 'transcript.jsonl');
-    // Build an object with model nested 8 levels deep (depth 0 through 7 → 8th call has depth=8 which is NOT > 8)
-    // depth starts at 0. At depth 8, the check is `depth > 8` → false, so depth 8 is still searched.
-    // The object: { a: { b: { c: { d: { e: { f: { g: { h: { model: '...' } } } } } } } } }
-    // At each recursive call, depth increments. Root call = depth 0.
-    // Finding model.model at level 8: traversal depths are 0,1,2,3,4,5,6,7,8 → 9 levels → depth 8 call has depth=8, 8>8 is false → searches.
-    const nested8 = { a: { b: { c: { d: { e: { f: { g: { h: { model: 'claude-haiku-4-5' } } } } } } } } };
-    writeFileSync(tp, JSON.stringify(nested8) + '\n');
-    const result = readTranscriptStats(tp);
-    assert.equal(result, null);
-  });
-
-  it('depth-bounded recursion: model 9 levels deep → NOT found', () => {
-    const dir = isolatedDir();
-    const tp = join(dir, 'transcript.jsonl');
-    // 9 levels of nesting → depth=9 which IS > 8 → stops
-    const nested9 = { a: { b: { c: { d: { e: { f: { g: { h: { i: { model: 'claude-haiku-4-5' } } } } } } } } } };
-    writeFileSync(tp, JSON.stringify(nested9) + '\n');
-    const result = readTranscriptStats(tp);
-    // usedTokens and modelId both null → result is null
-    assert.equal(result, null);
+    for (const wrappers of [8, 9]) {
+      let nested = { model: 'claude-haiku-4-5' };
+      for (let i = 0; i < wrappers; i += 1) nested = { wrapper: nested };
+      writeFileSync(tp, JSON.stringify(nested) + '\n');
+      assert.equal(readTranscriptStats(tp), null, `${wrappers} wrappers`);
+    }
   });
 
   it('returns null when file has no parseable lines', () => {
@@ -392,7 +378,7 @@ describe('readTranscriptStats', () => {
     assert.equal(result.modelId, null);
   });
 
-  it('ignores usage AND model nested in a user tool-result entry (review L16/P2a)', () => {
+  it('ignores usage AND model nested in a user tool-result entry', () => {
     const dir = isolatedDir();
     const tp = join(dir, 'transcript.jsonl');
     writeFileSync(
@@ -421,7 +407,7 @@ describe('readTranscriptStats', () => {
     assert.equal(result.modelId, 'claude-sonnet-4-6', 'must not pair with the user-entry model');
   });
 
-  it('reads usage from the tail of a large transcript (review M7)', () => {
+  it('reads usage from the tail of a large transcript', () => {
     const dir = isolatedDir();
     const tp = join(dir, 'transcript.jsonl');
     // Pad with many bulky non-usage user lines, then the real assistant turn

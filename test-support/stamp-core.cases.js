@@ -305,7 +305,7 @@ export function registerStampCoreCases() {
     );
     assert.equal(status, 0);
     const parsed = JSON.parse(stdout.trim());
-    assert.match(parsed.systemMessage, /· 5h 23% →[\dч м<]+ · wk 67% →.+ \d{2}\.\d{2} \d{2}:\d{2}$/, parsed.systemMessage);
+    assert.match(parsed.systemMessage, /· 5h 23% →[\dhm <]+ · wk 67% →.+ \d{2}\.\d{2} \d{2}:\d{2}$/, parsed.systemMessage);
     assert.ok(!/[█▓░▒▏▎▍▌▋▊▉]/.test(parsed.systemMessage),
       `stamp should be bar-free: ${parsed.systemMessage}`);
   });

@@ -3,10 +3,12 @@ import { afterEach, describe, it } from 'node:test';
 import { spawn } from 'node:child_process';
 import { Worker } from 'node:worker_threads';
 import { basename, join } from 'node:path';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { acquireLease, LEASE_MAX_MS, leaseOwned, releaseLease, RELEASE_TOTAL_WAIT_MS, renewLease } from '../lib/lease-lock.js';
-import { DEFAULT_CHILD_DEADLINE_MS } from '../test-support/process-batches.js';
+import {
+  probeUntilRenameBlocked, renameBlockedWhileChildHoldsCwd, waitForPathSync,
+} from '../test-support/rename-block.js';
 import { leaseExpired, FUTURE_SKEW_TOLERANCE_MS } from '../lib/lease-clock.js';
 
 const fixtures = new Set();
@@ -19,16 +21,6 @@ afterEach(() => {
 function spinWait(ms) {
   const until = Date.now() + ms;
   while (Date.now() < until) { /* synchronous settle */ }
-}
-
-// Synchronous busy-poll for a ready-file signal, replacing a guess at how
-// long a child process needs to start (same pattern as marker-state.test.js).
-function waitForPathSync(path, deadlineMs = DEFAULT_CHILD_DEADLINE_MS) {
-  const deadline = Date.now() + deadlineMs;
-  while (!existsSync(path)) {
-    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`);
-    spinWait(5);
-  }
 }
 
 // Restores a sabotaged fence directory's mode after a fixed delay, from an
@@ -47,54 +39,9 @@ const deadline = Date.now() + workerData.delayMs;
 })();
 `;
 
-// Windows refuses to rename a directory that a live child process holds as
-// its CWD (EBUSY). Other platforms rename it freely, so the repro below can
-// only be built where this probe fails to rename.
-async function childCwdBlocksRename() {
-  const probe = mkdtempSync(join(tmpdir(), 'cah-lease-cwd-probe-'));
-  fixtures.add(probe);
-  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120)'], {
-    cwd: probe, stdio: 'ignore',
-  });
-  spinWait(60);
-  let blocked = false;
-  try {
-    renameSync(probe, `${probe}-moved`);
-    renameSync(`${probe}-moved`, probe);
-  } catch {
-    blocked = true;
-  }
-  await new Promise((resolve) => child.once('exit', resolve));
-  return blocked;
-}
-
-// Bounded rename-probe loop: rename `dir` aside and immediately back, until
-// the rename FAILS — which on Windows (EPERM/EBUSY/ENOTEMPTY) proves the
-// child process provably holds the directory (via an open handle / CWD).
-// Returns true only
-// when the block was actually observed before the ~5s deadline.
-function probeUntilRenameBlocked(dir) {
-  const probePath = `${dir}.probe`;
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    try {
-      renameSync(dir, probePath);
-      renameSync(probePath, dir); // rename succeeded: child hasn't taken its CWD yet
-      spinWait(5);
-    } catch (err) {
-      assert.ok(
-        ['EPERM', 'EBUSY', 'ENOTEMPTY'].includes(err.code),
-        `probe rename failed with unexpected code ${err.code} (dir must not have vanished)`,
-      );
-      return true;
-    }
-  }
-  return false;
-}
-
 describe('lease release recovery budget', () => {
   it('retries transient contention with a fresh budget even for a long-held lease', async function () {
-    if (!(await childCwdBlocksRename())) {
+    if (!(await renameBlockedWhileChildHoldsCwd())) {
       return this.skip('platform does not block rename of a directory held as a child process CWD');
     }
     const home = mkdtempSync(join(tmpdir(), 'cah-lease-release-'));

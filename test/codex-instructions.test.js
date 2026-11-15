@@ -41,7 +41,7 @@ describe('managed Codex AGENTS.md section', () => {
     const codexDir = join(dir, '.codex');
     mkdirSync(codexDir);
     const path = join(codexDir, 'AGENTS.md');
-    const original = Buffer.from('# My rules\r\n\r\n- Пользовательский текст\r\n', 'utf8');
+    const original = Buffer.from('# My rules\r\n\r\n- Keep my rules: naïve café ✓\r\n', 'utf8');
     writeFileSync(path, original);
     const scope = new Scope({ cwd: dir });
     assert.equal(writeCodexInstructions(scope).written, 1);

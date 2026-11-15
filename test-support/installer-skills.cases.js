@@ -8,6 +8,7 @@ import { AllSkills } from '../lib/manifest.js';
 import { Scope, SKILL_MANIFEST_LEAF } from '../lib/scope.js';
 import { writeSkills, removeSkills } from '../lib/skills.js';
 import { embeddedTemplates, diskTemplates } from '../lib/templates.js';
+import { symlinkOrSkip } from './symlink.js';
 
 // ---------------------------------------------------------------------------
 // WriteSkills
@@ -19,15 +20,7 @@ describe('writeSkills', { concurrency: false }, () => {
     const realScope = join(dir, 'real-scope');
     const linkedScope = join(dir, 'linked-scope');
     mkdirSync(realScope);
-    try {
-      symlinkSync(realScope, linkedScope, process.platform === 'win32' ? 'junction' : 'dir');
-    } catch (e) {
-      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
-        t.skip('junction creation is unavailable in this Windows test environment');
-        return;
-      }
-      throw e;
-    }
+    if (!symlinkOrSkip(t, realScope, linkedScope, 'dir')) return;
     const scope = new Scope({ cwd: linkedScope });
     writeSkills(embeddedTemplates(), scope, { subset: [AllSkills[0]] });
     assert.ok(existsSync(join(realScope, '.claude', 'skills', AllSkills[0], SKILL_MANIFEST_LEAF)));
@@ -39,15 +32,7 @@ describe('writeSkills', { concurrency: false }, () => {
     const realClaude = join(dir, 'real-claude');
     const linkedClaude = join(dir, '.claude');
     mkdirSync(realClaude);
-    try {
-      symlinkSync(realClaude, linkedClaude, process.platform === 'win32' ? 'junction' : 'dir');
-    } catch (e) {
-      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
-        t.skip('junction creation is unavailable in this Windows test environment');
-        return;
-      }
-      throw e;
-    }
+    if (!symlinkOrSkip(t, realClaude, linkedClaude, 'dir')) return;
     const scope = new Scope({ cwd: dir });
     writeSkills(embeddedTemplates(), scope, { subset: [AllSkills[0]] });
     assert.ok(existsSync(join(realClaude, 'skills', AllSkills[0], SKILL_MANIFEST_LEAF)));
@@ -60,15 +45,7 @@ describe('writeSkills', { concurrency: false }, () => {
     const linkedSkills = join(dir, '.claude', 'skills');
     mkdirSync(realSkills, { recursive: true });
     mkdirSync(join(dir, '.claude'));
-    try {
-      symlinkSync(realSkills, linkedSkills, process.platform === 'win32' ? 'junction' : 'dir');
-    } catch (e) {
-      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
-        t.skip('junction creation is unavailable in this Windows test environment');
-        return;
-      }
-      throw e;
-    }
+    if (!symlinkOrSkip(t, realSkills, linkedSkills, 'dir')) return;
 
     const scope = new Scope({ cwd: dir });
     const name = AllSkills[0];
@@ -155,15 +132,7 @@ describe('writeSkills', { concurrency: false }, () => {
     mkdirSync(outside);
     writeFileSync(join(destDir, SKILL_MANIFEST_LEAF), 'foreign manifest\n');
     writeFileSync(join(outside, 'data.txt'), 'outside data\n');
-    try {
-      symlinkSync(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
-    } catch (e) {
-      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
-        t.skip('junction creation is unavailable in this Windows test environment');
-        return;
-      }
-      throw e;
-    }
+    if (!symlinkOrSkip(t, outside, link, 'dir')) return;
     const tpl = {
       skillTree: () => [
         { relPath: SKILL_MANIFEST_LEAF, bytes: Buffer.from('# managed template\n') },
@@ -187,15 +156,7 @@ describe('writeSkills', { concurrency: false }, () => {
     mkdirSync(outside);
     writeFileSync(join(destDir, SKILL_MANIFEST_LEAF), `# old managed\n${SentinelSkill}\n`);
     writeFileSync(join(outside, 'data.txt'), 'outside data\n');
-    try {
-      symlinkSync(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
-    } catch (e) {
-      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
-        t.skip('junction creation is unavailable in this Windows test environment');
-        return;
-      }
-      throw e;
-    }
+    if (!symlinkOrSkip(t, outside, link, 'dir')) return;
     const tpl = {
       skillTree: () => [
         { relPath: SKILL_MANIFEST_LEAF, bytes: Buffer.from('# current managed\n') },
@@ -221,19 +182,7 @@ describe('writeSkills', { concurrency: false }, () => {
     mkdirSync(unrelatedDir, { recursive: true });
     mkdirSync(outside);
     writeFileSync(join(unrelatedDir, SKILL_MANIFEST_LEAF), 'foreign manifest\n');
-    try {
-      symlinkSync(
-        outside,
-        join(unrelatedDir, 'user-link'),
-        process.platform === 'win32' ? 'junction' : 'dir',
-      );
-    } catch (e) {
-      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
-        t.skip('junction creation is unavailable in this Windows test environment');
-        return;
-      }
-      throw e;
-    }
+    if (!symlinkOrSkip(t, outside, join(unrelatedDir, 'user-link'), 'dir')) return;
     const tpl = {
       skillTree: () => [
         { relPath: SKILL_MANIFEST_LEAF, bytes: Buffer.from('# selected\n') },
@@ -446,15 +395,7 @@ describe('writeSkills', { concurrency: false }, () => {
     mkdirSync(destDir, { recursive: true });
     mkdirSync(outside);
 
-    try {
-      symlinkSync(outside, join(destDir, 'assets'), process.platform === 'win32' ? 'junction' : 'dir');
-    } catch (e) {
-      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
-        t.skip('junction creation is unavailable in this Windows test environment');
-        return;
-      }
-      throw e;
-    }
+    if (!symlinkOrSkip(t, outside, join(destDir, 'assets'), 'dir')) return;
 
     const tpl = {
       skillTree: () => [
@@ -521,17 +462,9 @@ describe('writeSkills', { concurrency: false }, () => {
     writeFileSync(manifest, `${SentinelSkill}\n`);
     writeFileSync(join(outside, SKILL_MANIFEST_LEAF), 'outside must survive\n');
 
-    try {
-      const probe = join(dir, 'directory-link-probe');
-      symlinkSync(outside, probe, process.platform === 'win32' ? 'junction' : 'dir');
-      unlinkSync(probe);
-    } catch (e) {
-      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
-        t.skip('junction creation is unavailable in this Windows test environment');
-        return;
-      }
-      throw e;
-    }
+    const probe = join(dir, 'directory-link-probe');
+    if (!symlinkOrSkip(t, outside, probe, 'dir')) return;
+    unlinkSync(probe);
 
     const running = runSkillWorker('write', dir, interlock, 'write-before-owned-write');
     await waitForPath(`${interlock}.ready`);

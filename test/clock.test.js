@@ -59,7 +59,7 @@ describe('cah-status steady-state renders do not write the cache', () => {
     assert.equal(run(body, env).status, 0);
     const first = snapshot(cache);
     const names = Object.keys(first);
-    for (const expected of ['rate-limits.json']) assert.ok(names.includes(expected), names.join(', '));
+    assert.ok(names.includes('rate-limits.json'), names.join(', '));
     assert.ok(names.some((name) => name.startsWith('rate-context')), 'context sidecar is written once');
     assert.ok(names.some((name) => name.startsWith('rate-quota')), 'quota sidecar is written once');
     assert.ok(names.some((name) => name.startsWith('context-measured')), 'measured record is written once');
@@ -153,6 +153,8 @@ function run(stdinData, env) {
       ...process.env,
       CLAUDE_CODE_AUTO_COMPACT_WINDOW: '',
       CAH_CONTEXT_TRACE_DIR: '',
+      CAH_LOCALE: '',
+      CAH_WEEKDAY_LOCALE: '',
       ANTHROPIC_AUTH_TOKEN: '',
       ...(env || {}),
       CAH_RATE_LIMITS_CACHE: cacheOverride,
@@ -644,7 +646,7 @@ describe('cah-status bin', () => {
     });
     const { stdout, status } = run(payload, { CAH_RATE_LIMITS_CACHE: cachePath });
     assert.equal(status, 0);
-    assert.match(stdout, /· 5h \[[█▏▎▍▌▋▊▉░]{10}\] 23% →[\dч м<]+ · wk \[[█▏▎▍▌▋▊▉░]{10}\] 67% →.+ \d{2}\.\d{2} \d{2}:\d{2}$/, stdout);
+    assert.match(stdout, /· 5h \[[█▏▎▍▌▋▊▉░]{10}\] 23% →[\dhm <]+ · wk \[[█▏▎▍▌▋▊▉░]{10}\] 67% →[a-z]{3} \d{2}\.\d{2} \d{2}:\d{2}$/, stdout);
     assert.ok(existsSync(cachePath), 'cache file should be written');
     const cached = JSON.parse(readFileSync(cachePath, 'utf8'));
     assert.equal(cached.fiveHour.used, 23);

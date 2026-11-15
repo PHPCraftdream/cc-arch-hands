@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-// cah-stamp — Claude Code Stop hook.
+// cah-stamp — Claude Code Stop and PostToolUse hook: one `HH:MM:SS · model · X% · 5h · wk`
+// line per assistant message into the chat (throttled, deduplicated by request id), plus a
+// once-per-session update notice on Stop. Fail-silent, always exits 0.
 
 import { readFileSync, realpathSync, writeFileSync, writeSync, statSync, lstatSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
@@ -206,7 +208,7 @@ function pruneStampSidecarsScan(path, nowMs, lease, testInterlock = null) {
   const prefix = basename(path) + STAMP_STATE_PREFIX;
   const candidates = [];
   let owned = true;
-  const scan = streamDirectoryEntries(stateDir, MAX_STAMP_SESSIONS * 2 + 8, (entry) => {
+  const scan = streamDirectoryEntries(stateDir, STAMP_SIDECAR_RECOVERY_LIMIT, (entry) => {
     if (!entry.name.startsWith(prefix) || !entry.name.endsWith('.json')) return;
     const sidecar = join(stateDir, entry.name);
     try {
@@ -269,8 +271,6 @@ function transcriptFingerprint(path) {
   try { const stat = statSync(path, { bigint: true }); return `${stat.size}:${stat.mtimeNs}`; } catch { return null; }
 }
 
-function updateMarkerClaimOwned(claim) { return markerClaimOwned(claim); }
-function releaseUpdateMarkerClaim(claim) { return releaseMarkerClaim(claim); }
 function markUpdateDelivered(claim, markerDir, testHooks = {}) {
   if (!markerClaimOwned(claim)) return false;
   if (process.env.CAH_TEST_ONLY === '1'
@@ -309,14 +309,14 @@ function buildUpdateNotice(payload, nowMs, testHooks = {}) {
 }
 
 function settleUpdateNotice(notice, lease, testHooks = {}) {
-  if (!notice || !renewLease(lease) || !updateMarkerClaimOwned(notice.claim)) return false;
+  if (!notice || !renewLease(lease) || !markerClaimOwned(notice.claim)) return false;
   try {
     if (markUpdateDelivered(notice.claim, notice.markerDir, testHooks)) {
       finishMarkerTransaction(notice.claim);
       pruneMarkers({ ...markerOptions(notice.markerDir), nowMs: Date.now() });
     } else abortMarkerTransaction(notice.claim);
     return true;
-  } finally { releaseUpdateMarkerClaim(notice.claim); }
+  } finally { releaseMarkerClaim(notice.claim); }
 }
 
 export async function main(testHooks = {}) {
@@ -359,7 +359,7 @@ export async function main(testHooks = {}) {
     const anonymousSuppressed = requestId === null && fingerprint !== null && fingerprint === last.fingerprint
       && age !== null && (pendingFresh || (last.deliveryState === 'delivered' && age <= ANONYMOUS_CLAIM_TTL_MS));
     if (timeSuppressed || requestSuppressed || anonymousSuppressed) {
-      if (notice?.claim && updateMarkerClaimOwned(notice.claim)) {
+      if (notice?.claim && markerClaimOwned(notice.claim)) {
         if (!renewLease(lock)) return;
         writeSync(1, JSON.stringify({ continue: true, systemMessage: notice.text }) + '\n');
         if (settleUpdateNotice(notice, lock, testHooks)) notice = null;
@@ -381,7 +381,7 @@ export async function main(testHooks = {}) {
       usedTokens: stats?.usedTokens !== null && stats?.modelId ? stats.usedTokens : null,
       limit: stats?.usedTokens !== null && stats?.modelId ? limit : null,
       fiveHour: cached?.fiveHour || null, sevenDay: cached?.sevenDay || null, bars: false });
-    if (notice && !updateMarkerClaimOwned(notice.claim)) { notice = null; }
+    if (notice && !markerClaimOwned(notice.claim)) { notice = null; }
     const out = JSON.stringify({ continue: true, systemMessage: line + (notice ? notice.text : '') });
     if (!writeLastStamp(STAMP_THROTTLE_PATH, payload.session_id, nowMs, requestId, fingerprint,
       'pending', lock, testHooks.testInterlock)) return;
@@ -392,7 +392,7 @@ export async function main(testHooks = {}) {
     writeLastStamp(STAMP_THROTTLE_PATH, payload.session_id, nowMs, requestId, fingerprint,
       'delivered', lock, testHooks.testInterlock);
   } finally {
-    if (notice) { abortMarkerTransaction(notice.claim); releaseUpdateMarkerClaim(notice.claim); }
+    if (notice) { abortMarkerTransaction(notice.claim); releaseMarkerClaim(notice.claim); }
     releaseLease(lock);
   }
 }

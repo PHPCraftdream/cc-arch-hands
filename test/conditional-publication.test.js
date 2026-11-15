@@ -9,19 +9,7 @@ import { tmpdir } from 'node:os';
 import { Worker } from 'node:worker_threads';
 import { captureRegularFileSnapshot, writeFileAtomic } from '../lib/fs-atomic.js';
 import { publishWithFence, recoverPublicationFence } from '../lib/fs-atomic-publication.js';
-import { runWorker, DEFAULT_CHILD_DEADLINE_MS } from '../test-support/process-batches.js';
-
-function waitForPath(path) {
-  const deadline = Date.now() + DEFAULT_CHILD_DEADLINE_MS;
-  return new Promise((resolve, reject) => {
-    const poll = () => {
-      if (existsSync(path)) return resolve();
-      if (Date.now() >= deadline) return reject(new Error(`timed out waiting for ${path}`));
-      setTimeout(poll, 5);
-    };
-    poll();
-  });
-}
+import { runWorker, DEFAULT_CHILD_DEADLINE_MS, waitForPath } from '../test-support/process-batches.js';
 
 function runWrite(dest, interlock, payload, expected = true) {
   const fsutilUrl = new URL('../lib/fsutil.js', import.meta.url).href;

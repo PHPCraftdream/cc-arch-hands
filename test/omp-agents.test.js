@@ -51,7 +51,7 @@ describe('OMP installer', () => {
     const root = join(home, '.omp', 'agent');
     mkdirSync(root, { recursive: true });
     const rule = join(root, 'APPEND_SYSTEM.md');
-    const original = Buffer.from('# Personal rules\r\nПравило пользователя.\r\n');
+    const original = Buffer.from('# Personal rules\r\nKeep my rules: naïve café ✓.\r\n');
     writeFileSync(rule, original);
     ok(home, 'install', '--omp-agents');
     for (const agent of OmpAgents) {
@@ -138,6 +138,7 @@ describe('OMP installer', () => {
     writeFileSync(join(home, '.omp', 'agent', 'agents', 'hs.md'), 'foreign');
     assert.equal(call(home, 'doctor').status, 2);
   });
+
   it('manages all OMP artifacts through --omp without installing Claude defaults', (t) => {
     const home = sandbox(t);
     const root = join(home, '.omp', 'agent');

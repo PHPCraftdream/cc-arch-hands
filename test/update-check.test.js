@@ -9,7 +9,6 @@ import {
   unlinkSync,
   writeFileSync,
   readFileSync,
-  symlinkSync,
   lstatSync,
 } from 'node:fs';
 import { spawn } from 'node:child_process';
@@ -19,27 +18,10 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { isNewerVersion, getLatestVersion, cachedLatestVersion, CURRENT_VERSION } from '../lib/update-check.js';
 import { isOlderThan, mtimeMsForAge, sameDeviceIdentity, sameFileIdentity, writeFileAtomic } from '../lib/fsutil.js';
-import { runWorker, DEFAULT_CHILD_DEADLINE_MS } from '../test-support/process-batches.js';
+import { runWorker, DEFAULT_CHILD_DEADLINE_MS, waitForPath } from '../test-support/process-batches.js';
+import { symlinkOrSkip } from '../test-support/symlink.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-
-function waitForPath(path, timeoutMs = DEFAULT_CHILD_DEADLINE_MS) {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const poll = () => {
-      if (existsSync(path)) {
-        resolve();
-        return;
-      }
-      if (Date.now() >= deadline) {
-        reject(new Error(`timed out waiting for ${path}`));
-        return;
-      }
-      setTimeout(poll, 5);
-    };
-    poll();
-  });
-}
 
 async function resolveWithin(promise, timeoutMs, label) {
   let timer;
@@ -216,19 +198,6 @@ describe('getLatestVersion caching', () => {
     return join(dir, 'update-check.json');
   }
 
-  function makeSymlinkOrSkip(t, linkPath, targetPath) {
-    try {
-      symlinkSync(targetPath, linkPath, 'file');
-      return true;
-    } catch (e) {
-      if (process.platform === 'win32' && (e.code === 'EPERM' || e.code === 'EACCES')) {
-        t.skip('symbolic links are unavailable on this Windows runner');
-        return false;
-      }
-      throw e;
-    }
-  }
-
   it('terminates a deterministically hung worker before rejecting', async () => {
     const cachePath = isolatedCachePath();
     const started = Date.now();
@@ -259,12 +228,15 @@ describe('getLatestVersion caching', () => {
     writeFileSync(cachePath, JSON.stringify({ latestVersion: '8.8.8', checkedAt: 0 }));
     const now = Date.now();
 
-    const result = getLatestVersion(cachePath, 24 * 60 * 60 * 1000, now);
+    const result = getLatestVersion(cachePath, 24 * 60 * 60 * 1000, now, {
+      fetchLatestVersion: () => '9.9.9',
+    });
 
+    assert.equal(result, '9.9.9');
     assert.equal(readFileSync(tempPath, 'utf8'), foreignTemp);
     const published = JSON.parse(readFileSync(cachePath, 'utf8'));
     assert.equal(published.checkedAt, now);
-    assert.equal(published.latestVersion, result);
+    assert.equal(published.latestVersion, '9.9.9');
   });
 
   it('does not follow a pre-existing .tmp symlink while refreshing JSON', (t) => {
@@ -274,31 +246,27 @@ describe('getLatestVersion caching', () => {
     const victim = '{"victim":"untouched"}\n';
     writeFileSync(victimPath, victim);
     writeFileSync(cachePath, JSON.stringify({ latestVersion: '8.8.8', checkedAt: 0 }));
-    if (!makeSymlinkOrSkip(t, tempPath, victimPath)) return;
+    if (!symlinkOrSkip(t, victimPath, tempPath, 'file')) return;
     const now = Date.now();
 
-    const result = getLatestVersion(cachePath, 24 * 60 * 60 * 1000, now);
+    const result = getLatestVersion(cachePath, 24 * 60 * 60 * 1000, now, {
+      fetchLatestVersion: () => '9.9.9',
+    });
 
+    assert.equal(result, '9.9.9');
     assert.equal(lstatSync(tempPath).isSymbolicLink(), true);
     assert.equal(readFileSync(tempPath, 'utf8'), victim);
     assert.equal(readFileSync(victimPath, 'utf8'), victim);
     const published = JSON.parse(readFileSync(cachePath, 'utf8'));
     assert.equal(published.checkedAt, now);
-    assert.equal(published.latestVersion, result);
+    assert.equal(published.latestVersion, '9.9.9');
   });
 
-  it('returns null on a cold cache read (missing file, no crash)', () => {
-    const cachePath = join(tmpdir(), 'cah-update-check-missing-dir', 'nonexistent.json');
-    // Do not assert on the fetch outcome (network-dependent) — only that a
-    // stale/missing cache is read as "no cached value" rather than throwing.
-    const cached = (() => {
-      try {
-        return JSON.parse(readFileSync(cachePath, 'utf8'));
-      } catch {
-        return null;
-      }
-    })();
-    assert.equal(cached, null);
+  it('returns null on a cold cache when the fetch fails, without throwing', () => {
+    const cachePath = isolatedCachePath();
+    assert.equal(getLatestVersion(cachePath, 24 * 60 * 60 * 1000, Date.now(), {
+      fetchLatestVersion: () => null,
+    }), null);
   });
 
   it('serializes stale refreshes: a slow failed fetch consumes the TTL once', async () => {

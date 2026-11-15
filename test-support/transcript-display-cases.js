@@ -8,6 +8,7 @@ import {
   currentHhMmSs,
   formatFiveHourReset,
   formatWeeklyReset,
+  resetLocale,
   contextWindowLimit,
   validContextWindowSize,
   makeBar,
@@ -229,28 +230,28 @@ describe('currentHhMmSs', () => {
 // ---------------------------------------------------------------------------
 
 describe('formatFiveHourReset (remaining time)', () => {
-  it('returns "Hч Mм" when more than an hour remains', () => {
+  it('returns "Hh Mm" when more than an hour remains', () => {
     const now = new Date(2024, 5, 1, 10, 0, 0);
     const reset = new Date(2024, 5, 1, 13, 25, 0).toISOString();
-    assert.equal(formatFiveHourReset(reset, now), '3ч 25м');
+    assert.equal(formatFiveHourReset(reset, now), '3h 25m');
   });
 
-  it('returns "Mм" when less than an hour remains', () => {
+  it('returns "Mm" when less than an hour remains', () => {
     const now = new Date(2024, 5, 1, 10, 0, 0);
     const reset = new Date(2024, 5, 1, 10, 23, 0).toISOString();
-    assert.equal(formatFiveHourReset(reset, now), '23м');
+    assert.equal(formatFiveHourReset(reset, now), '23m');
   });
 
-  it('returns "<1м" for sub-minute remainder', () => {
+  it('returns "<1m" for sub-minute remainder', () => {
     const now = new Date(2024, 5, 1, 10, 0, 0);
     const reset = new Date(2024, 5, 1, 10, 0, 30).toISOString();
-    assert.equal(formatFiveHourReset(reset, now), '<1м');
+    assert.equal(formatFiveHourReset(reset, now), '<1m');
   });
 
-  it('returns "0м" when reset is in the past', () => {
+  it('returns "0m" when reset is in the past', () => {
     const now = new Date(2024, 5, 1, 10, 0, 0);
     const reset = new Date(2024, 5, 1, 9, 50, 0).toISOString();
-    assert.equal(formatFiveHourReset(reset, now), '0м');
+    assert.equal(formatFiveHourReset(reset, now), '0m');
   });
 
   it('returns null for null / undefined / empty / malformed', () => {
@@ -275,6 +276,67 @@ describe('formatWeeklyReset (weekday + date + time)', () => {
   });
 });
 
+describe('reset time language (CAH_LOCALE)', () => {
+  // 5 January 2024 was a Friday.
+  const weekly = new Date(2024, 0, 5, 3, 0, 0).toISOString();
+  const now = new Date(2024, 5, 1, 10, 0, 0);
+  const fiveHour = new Date(2024, 5, 1, 13, 25, 0).toISOString();
+
+  function withLocale(values, check) {
+    const names = ['CAH_LOCALE', 'CAH_WEEKDAY_LOCALE'];
+    const saved = names.map((name) => process.env[name]);
+    for (const name of names) {
+      if (values[name] === undefined) delete process.env[name];
+      else process.env[name] = values[name];
+    }
+    try {
+      check();
+    } finally {
+      names.forEach((name, i) => {
+        if (saved[i] === undefined) delete process.env[name];
+        else process.env[name] = saved[i];
+      });
+    }
+  }
+
+  it('is English by default', () => {
+    withLocale({}, () => {
+      assert.equal(resetLocale(), 'en-US');
+      assert.equal(formatWeeklyReset(weekly), 'fri 05.01 03:00');
+      assert.equal(formatFiveHourReset(fiveHour, now), '3h 25m');
+    });
+  });
+
+  it('names the weekday in the language CAH_LOCALE asks for', () => {
+    withLocale({ CAH_LOCALE: 'ru-RU' }, () => {
+      // The Russian short Friday and hour/minute letters, as escapes.
+      assert.equal(formatWeeklyReset(weekly), '\u043f\u0442 05.01 03:00');
+      assert.equal(formatFiveHourReset(fiveHour, now), '3\u0447 25\u043c');
+    });
+    withLocale({ CAH_LOCALE: 'fr-FR' }, () => {
+      assert.equal(formatWeeklyReset(weekly), 'ven 05.01 03:00');
+      assert.equal(formatFiveHourReset(fiveHour, now), '3h 25m', 'h/m letters outside Russian');
+    });
+  });
+
+  it('follows a change of the variable inside one process', () => {
+    withLocale({ CAH_LOCALE: 'fr-FR' }, () => assert.match(formatWeeklyReset(weekly), /^ven /));
+    withLocale({}, () => assert.match(formatWeeklyReset(weekly), /^fri /));
+  });
+
+  it('still reads the earlier CAH_WEEKDAY_LOCALE, and CAH_LOCALE wins over it', () => {
+    withLocale({ CAH_WEEKDAY_LOCALE: 'fr-FR' }, () => assert.match(formatWeeklyReset(weekly), /^ven /));
+    withLocale({ CAH_LOCALE: 'en-US', CAH_WEEKDAY_LOCALE: 'fr-FR' },
+      () => assert.match(formatWeeklyReset(weekly), /^fri /));
+  });
+
+  it('falls back to English for a tag Intl does not know', () => {
+    withLocale({ CAH_LOCALE: 'not a locale!!' }, () => {
+      assert.equal(formatWeeklyReset(weekly), 'fri 05.01 03:00');
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // formatStatusLine with rate_limits
 // ---------------------------------------------------------------------------
@@ -294,7 +356,7 @@ describe('formatStatusLine rate_limits', () => {
       sevenDay: { used: 67, resetsAt: resetWk },
       now,
     });
-    assert.match(line, /^Opus 4\.7 · \[[█▏▎▍▌▋▊▉░]{10}\] 45% \(90k\/200k\) · 5h \[[█▏▎▍▌▋▊▉░]{10}\] 23% →[\dч м<]+ · wk \[[█▏▎▍▌▋▊▉░]{10}\] 67% →.+ 05\.06 03:00$/, line);
+    assert.match(line, /^Opus 4\.7 · \[[█▏▎▍▌▋▊▉░]{10}\] 45% \(90k\/200k\) · 5h \[[█▏▎▍▌▋▊▉░]{10}\] 23% →[\dhm <]+ · wk \[[█▏▎▍▌▋▊▉░]{10}\] 67% →.+ 05\.06 03:00$/, line);
   });
 
   it('omits rate_limits parts when missing', () => {
@@ -317,7 +379,7 @@ describe('formatStatusLine rate_limits', () => {
       sevenDay: null,
       now,
     });
-    assert.match(line, /^Opus 4\.7 · 5h \[░{10}\] 0% →[\dч м<]+$/);
+    assert.match(line, /^Opus 4\.7 · 5h \[░{10}\] 0% →[\dhm <]+$/);
   });
 
   it('formats slot without reset time when resetsAt is null', () => {
@@ -347,27 +409,18 @@ describe('formatStatusLine rate_limits', () => {
 // ---------------------------------------------------------------------------
 
 describe('makeBar', () => {
-  it('0% → 10 empty cells in square brackets, limit mode', () => {
+  it('0% → 10 empty cells in square brackets', () => {
     assert.equal(makeBar(0), '[░░░░░░░░░░]');
   });
 
-  it('100% → 10 full block cells in square brackets, limit mode', () => {
+  it('100% → 10 full block cells in square brackets', () => {
     assert.equal(makeBar(100), '[██████████]');
   });
 
-  it('limit mode uses 8-level subblock partial', () => {
+  it('uses an 8-level subblock partial', () => {
     // 23% → 2 full + a partial near ▍ (round((3/10)*8)=2 → ▎)
     const bar = makeBar(23);
     assert.match(bar, /^\[██[▏▎▍▌▋▊▉]░{7}\]$/, bar);
-  });
-
-  it('time mode uses ▓ fill and ▒ partial inside round brackets', () => {
-    const bar = makeBar(25, 'time');
-    assert.match(bar, /^\(▓▓▒░{7}\)$/, bar);
-  });
-
-  it('time mode at 100% → 10 ▓ cells', () => {
-    assert.equal(makeBar(100, 'time'), '(▓▓▓▓▓▓▓▓▓▓)');
   });
 
   it('clamps over-range and under-range', () => {
@@ -375,7 +428,7 @@ describe('makeBar', () => {
     assert.equal(makeBar(120), '[██████████]');
   });
 
-  it('limit mode rounds remainder up to full block when ≥ 7.5/8', () => {
+  it('rounds the remainder up to full block when ≥ 7.5/8', () => {
     // 99% → 9 full + remainder 9, eighths = round(9/10*8)=7 → ▉
     const bar = makeBar(99);
     assert.equal(bar, '[█████████▉]');

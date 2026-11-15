@@ -48,7 +48,7 @@ const JOB_SCHEMA = {
 const TOOLS = [
   {
     name: 'run',
-    title: 'Запустить задачу',
+    title: 'Run a task',
     description: 'Run potentially long CLI jobs such as tests, builds, compilation, copies, and CI watches. Use native tools directly for quick git, search, and source-reading commands. '
       + 'Give each run a taskName; the immediate queue acknowledgment contains only that name and the assigned UID. Queue delivery reports one concise completion for the whole task; inline delivery returns results directly for native spawned agents.',
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
@@ -67,7 +67,7 @@ const TOOLS = [
   },
   {
     name: 'status',
-    title: 'Статус задачи',
+    title: 'Task status',
     description: 'Read task status by UID or exact task name. A reused name selects its most recent run.',
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {
@@ -79,7 +79,7 @@ const TOOLS = [
   },
   {
     name: 'logs',
-    title: 'Логи задачи',
+    title: 'Task logs',
     description: 'Read saved job output by task UID or exact name (most recent run for repeated names). Returns bounded tails, never full unbounded logs.',
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     inputSchema: {

@@ -65,7 +65,7 @@ runs that command. The checkpoint, status, and stamp bins share
 (`input_tokens + cache_creation_input_tokens + cache_read_input_tokens`),
 model→limit mapping, per-turn `requestId` extraction (used by `cah-stamp` for
 per-message dedup so a long turn produces one chat stamp, not many), and the
-`HH:MM · <model> [effort] · X% (Nk/Mk)` formatter. **Don't recompute these
+`HH:MM · <model> [effort] · X% (Nk/Mk)` formatter. The language of the reset times (`→1h 23m`, `→sat 27.06 16:19`) is English unless `CAH_LOCALE` holds a BCP 47 tag (`resetLocale()` in that module; `CAH_WEEKDAY_LOCALE` is the older name); nothing the package writes or prints is in another language. **Don't recompute these
 values inline in any new bin — extend `transcript-stats.js`.** The `effort`
 level (`low/medium/high/xhigh/max`) is rendered as a one-letter bracketed
 suffix matching the slash-command convention (`/sl /sm /sh /sx /sxx` →
@@ -143,6 +143,7 @@ is never exposed before its complete mirrored dependency chain is present.
 | `lib/marker-capacity-recovery.js` | Generation-aware transaction retirement, publication recovery, and victim restoration |
 | `lib/marker-state.js` | Shared marker migration, claims, and bounded capacity transactions for hook bins |
 | `lib/update-check.js` | `CURRENT_VERSION`, `isNewerVersion`, `getLatestVersion` — TTL-cached npm registry check shared by `cah-status`/`cah-stamp` |
+| `lib/leaf-installer.js` | `writeLeaves` / `removeLeaves` — the one flat-directory installer behind model commands, model agents and the Codex, OMP and OpenCode agents: writes owned or missing leaves, never a foreign one, prunes owned orphans |
 | `lib/commands.js` | `writeModelCommands` / `removeModelCommands` |
 | `lib/agents.js` | `writeModelAgents` / `removeModelAgents`, git-safety & test-scope clauses |
 | `lib/codex-agents.js` | `writeCodexAgents` / `removeCodexAgents` for optional Codex TOML custom agents |
@@ -167,6 +168,7 @@ is never exposed before its complete mirrored dependency chain is present.
 | `lib/cli-probe.js` | `cah probe statusline start\|stop\|status` (kept out of `cli.js`, which has a 1000-line limit) |
 | `lib/marked-section.js` | `createMarkedSection` — add, refresh and remove one marker-delimited block in a user file (Codex `AGENTS.md`, OMP `APPEND_SYSTEM.md`): CRLF-aware, a file that held only the block is removed with it |
 | `lib/nobg.js` | `updateNobg` / `readNobgState` — the one `PreToolUse` `Bash` hook of `cah-nobg` (`cah-name: nobg`) |
+| `lib/cli-hook-command.js` | `createHookCommand` — the body of `cah <name> on` / `off` / `status` for one companion bin's hook set in settings.json; `cli-nobg.js` and `cli-rewake.js` are thin wrappers (rewake adds its log tail to `status`) |
 | `lib/cli-nobg.js` | `cah nobg on` / `off` / `status`, with `--global` (user + ccgp profiles), `--local` or `--cwd PATH` |
 | `lib/rewake.js` | `updateRewake` / `readRewakeState` — add/remove the sentinel-tagged (`cah-hook:v1`, `cah-name: rewake`) StopFailure/Stop hooks in one settings.json with lock + CAS publish |
 | `lib/cli-rewake.js` | `cah rewake on` / `off` / `status`, with `--global`, `--local` or `--cwd PATH`: global = `~/.claude/settings.json` + every ccgp profile |

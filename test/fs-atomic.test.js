@@ -15,6 +15,7 @@ import {
 } from '../lib/stale-temps.js';
 import { recoverPublicationFence } from '../lib/fs-atomic-publication.js';
 import { renewLease } from '../lib/lease-lock.js';
+import { waitForPath } from '../test-support/process-batches.js';
 
 describe('empty atomic-removal reservations', () => {
   it('reclaims an identity-stable empty reservation before removing its leaf', () => {
@@ -315,15 +316,6 @@ function spawnPublisher(dest, payload, interlockBase, phase) {
   child.stdout.on('data', (chunk) => { stdout += chunk; });
   const exited = new Promise((resolve) => child.once('close', (code) => resolve({ code, stdout })));
   return { child, exited };
-}
-
-async function waitForPath(path, timeoutMs, message) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (existsSync(path)) return;
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  throw new Error(message || `timed out waiting for ${path}`);
 }
 
 // A real publisher holding a lifecycle lease across its publication, the way
@@ -886,11 +878,7 @@ describe('transient publication-fence mkdir failures', () => {
   }
 
   it('survives exactly one transient EPERM on the publication-fence mkdir and still publishes', () => {
-    // Structural guard: without the new bounded retry, the very first
-    // synthesized EPERM would propagate out of beginFence() and fail this
-    // test at the writeFileAtomic call below (demonstrated by reverting the
-    // lib change; not re-run here by design).
-    const dir = mkdtempSync(join(tmpdir(), 'cah-fence-eparm-'));
+    const dir = mkdtempSync(join(tmpdir(), 'cah-fence-eperm-'));
     const dest = join(dir, 'leaf');
     const payload = 'fence-retry-payload\n';
     writeFileSync(dest, 'seed\n');
@@ -918,7 +906,7 @@ describe('transient publication-fence mkdir failures', () => {
   });
 
   it('a persistent EPERM on the publication-fence mkdir fails bounded with the original error and no residue', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'cah-fence-eparm-'));
+    const dir = mkdtempSync(join(tmpdir(), 'cah-fence-eperm-'));
     const dest = join(dir, 'leaf');
     writeFileSync(dest, 'untouched\n');
     const prior = setEnv({
@@ -943,7 +931,7 @@ describe('transient publication-fence mkdir failures', () => {
 
 describe('stale atomic temp sweep', () => {
   const token = '0123456789abcdef0123456789abcdef';
-  const stale = (name) => new Date(Date.now() - 2 * 24 * 3600 * 1000);
+  const stale = () => new Date(Date.now() - 2 * 24 * 3600 * 1000);
   function fixture() {
     const dir = mkdtempSync(join(tmpdir(), 'cah-stale-temps-'));
     const make = (name, aged = true) => {

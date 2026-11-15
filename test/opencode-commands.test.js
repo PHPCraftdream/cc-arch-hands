@@ -39,7 +39,7 @@ function list(home, ...args) {
 }
 
 describe('OpenCode command installer', () => {
-  it('installs nine commands with frontmatter, $ARGUMENTS and helper substitution', (t) => {
+  it('installs every command with frontmatter, $ARGUMENTS and helper substitution', (t) => {
     const home = sandbox(t);
     ok(home, 'install', '--opencode-commands');
     const dir = join(home, '.config', 'opencode', 'commands');

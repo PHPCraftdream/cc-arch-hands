@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import {
   copyFileSync, existsSync, mkdirSync, mkdtempSync as rawMkdtempSync, readdirSync, readFileSync,
-  renameSync, unlinkSync, writeFileSync, rmSync, utimesSync,
+  unlinkSync, writeFileSync, rmSync, utimesSync,
 } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -14,14 +14,15 @@ import {
   migrateLegacyStateFiles, migrateMarkerState,
 } from '../lib/marker-state.js';
 import { acquireLease, releaseLease } from '../lib/lease-lock.js';
-import { sleepSyncWait } from '../lib/lease-clock.js';
-import { semanticFreshness } from '../lib/marker-capacity-ops.js';
 import {
-  recoverLegacyCapacityState, transactionRetirementPath, victimFencePath,
+  recoverLegacyCapacityState, semanticFreshness, transactionRetirementPath, victimFencePath,
 } from '../lib/marker-capacity-ops.js';
 import {
-  DEFAULT_CHILD_DEADLINE_MS, killChild, terminateChild,
+  DEFAULT_CHILD_DEADLINE_MS, killChild, terminateChild, waitForPath,
 } from '../test-support/process-batches.js';
+import {
+  probeUntilRenameBlocked, renameBlockedWhileChildHoldsCwd, waitForPathSync,
+} from '../test-support/rename-block.js';
 
 const markerChildren = new Set();
 const markerFixtures = new Set();
@@ -30,51 +31,6 @@ function mkdtempSync(...args) {
   const path = rawMkdtempSync(...args);
   markerFixtures.add(path);
   return path;
-}
-
-// Windows refuses to rename a directory that a live child process holds as
-// its CWD (EBUSY). Other platforms rename it freely, so the CWD-busy repro
-// can only be built where this probe fails to rename.
-async function renameBlockedWhileChildHoldsCwd() {
-  const probe = mkdtempSync(join(tmpdir(), 'cah-cwd-probe-'));
-  markerFixtures.add(`${probe}-moved`);
-  const child = spawnMarker(process.execPath, ['-e', 'setTimeout(() => {}, 120)'], {
-    cwd: probe, stdio: 'ignore',
-  });
-  sleepSyncWait(60);
-  let blocked = false;
-  try {
-    renameSync(probe, `${probe}-moved`);
-    renameSync(`${probe}-moved`, probe);
-  } catch {
-    blocked = true;
-  }
-  await new Promise((resolve) => child.once('exit', resolve));
-  return blocked;
-}
-
-// Bounded rename-probe loop: rename `dir` aside and immediately back, until
-// the rename FAILS — which on Windows (EPERM/EBUSY/ENOTEMPTY) proves the
-// child process provably holds the directory (via an open handle / CWD).
-// Returns true only
-// when the block was actually observed before the ~5s deadline.
-function probeUntilRenameBlocked(dir) {
-  const probePath = `${dir}.probe`;
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    try {
-      renameSync(dir, probePath);
-      renameSync(probePath, dir); // rename succeeded: child hasn't taken its CWD yet
-      sleepSyncWait(5);
-    } catch (err) {
-      assert.ok(
-        ['EPERM', 'EBUSY', 'ENOTEMPTY'].includes(err.code),
-        `probe rename failed with unexpected code ${err.code} (dir must not have vanished)`,
-      );
-      return true;
-    }
-  }
-  return false;
 }
 
 function spawnMarker(...args) {
@@ -120,25 +76,6 @@ function markerConfig(markerDir, overrides = {}) {
     markerNameRe: /^marker-[a-f0-9]{64}$/,
     ...overrides,
   };
-}
-
-// Readiness files come from freshly spawned Node children: budget for a cold
-// Windows start (seconds), not a fixed attempt count (~1.5s at 15ms timer ticks).
-async function waitForPath(path, deadlineMs = DEFAULT_CHILD_DEADLINE_MS) {
-  const deadline = Date.now() + deadlineMs;
-  while (!existsSync(path)) {
-    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-}
-
-// Synchronous readiness wait for filesystem callbacks.
-function waitForPathSync(path, deadlineMs = DEFAULT_CHILD_DEADLINE_MS) {
-  const deadline = Date.now() + deadlineMs;
-  while (!existsSync(path)) {
-    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`);
-    sleepSyncWait(5);
-  }
 }
 
 function runPausedReconciler(home, markerDir) {
@@ -1123,19 +1060,10 @@ describe('legacy claim migration lease release', () => {
       ownerTestEnv: 'CAH_STAMP_OWNER_MAX_LEASE_MS',
       testInterlock: (phase) => {
         if (phase === 'legacy-claim-reclaim-release' && child === null) {
-          // Fixed hold durations raced the process-spawn + scheduling delay
-          // that can elapse under heavy CI load before the probe loop even
-          // starts (200ms, then 500ms, both observed to let the child
-          // open-then-close its handle before the probe's first rename
-          // attempt ever ran on a sufficiently loaded runner). Instead the
-          // child signals a ready file the moment it actually holds the
-          // handle; the probe only starts once that's observed, so the
-          // spawn/scheduling gap no longer matters -- only the much smaller
-          // gap between the child's own write and the probe's first
-          // synchronous rename attempt does. The 300ms post-ready hold stays
-          // well under releaseLease()'s own RELEASE_FENCE_WAIT_MS (750ms)
-          // retry budget so the release this test exercises still has room
-          // to actually recover afterward.
+          // The child writes a ready file once it holds the handle, so the
+          // probe starts only then, whatever the spawn delay. The 300ms hold
+          // stays under releaseLease()'s RELEASE_FENCE_WAIT_MS (750ms), so
+          // the release can still recover afterwards.
           const readyPath = `${targetLock}.holder-ready`;
           child = spawnMarker(process.execPath, ['-e', `const p=require('path'),f=require('fs');const q=p.join(process.cwd(),'held');const h=f.openSync(q,'w');f.writeFileSync(${JSON.stringify(readyPath)},'ready');setTimeout(() => { try { f.unlinkSync(q); } finally { f.closeSync(h); } }, 300)`], {
             cwd: targetLock,

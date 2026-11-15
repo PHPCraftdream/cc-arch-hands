@@ -24,6 +24,7 @@ import {
   DEFAULT_CHILD_DEADLINE_MS, DEFAULT_WORKER_DEADLINE_MS, TERMINATION_GRACE_MS, runWorker,
 } from '../test-support/process-batches.js';
 import { stampInvocationEnv, stampSidecarPath, writeTranscript } from '../test-support/stamp-helpers.js';
+import { symlinkOrSkip } from '../test-support/symlink.js';
 
 function tmpDir() {
   return mkdtempSync(join(tmpdir(), 'cah-bin-test-'));
@@ -726,15 +727,7 @@ describe('writeBins', () => {
     writeFileSync(target, `#!/usr/bin/env node\n${SentinelBin}\nforeign target\n`);
     const linked = join(dst, 'bin', 'cah-status.js');
     mkdirSync(dirname(linked), { recursive: true });
-    try {
-      symlinkSync(target, linked, 'file');
-    } catch (error) {
-      if (process.platform === 'win32' && (error.code === 'EPERM' || error.code === 'EACCES')) {
-        t.skip('symbolic links are unavailable on this Windows runner');
-        return;
-      }
-      throw error;
-    }
+    if (!symlinkOrSkip(t, target, linked, 'file')) return;
 
     assert.throws(() => writeBins(dst, src), /foreign managed runtime leaf.*cah-status\.js.*symbolic link/);
     assert.ok(existsSync(linked), 'the valid symlink must survive preflight');
@@ -1847,15 +1840,7 @@ describe('removeBins', () => {
     rmSync(conflict, { recursive: true, force: true });
     const target = join(dst, 'foreign-target.js');
     writeFileSync(target, 'foreign target\n');
-    try {
-      symlinkSync(target, conflict, 'file');
-    } catch (error) {
-      if (process.platform === 'win32' && (error.code === 'EPERM' || error.code === 'EACCES')) {
-        t.skip('symbolic links are unavailable on this Windows runner');
-        return;
-      }
-      throw error;
-    }
+    if (!symlinkOrSkip(t, target, conflict, 'file')) return;
     assert.throws(() => removeBins(dst), /foreign managed runtime leaf.*fsutil\.js.*symbolic link/);
     assert.ok(existsSync(join(dst, 'bin', 'cah-status.js')));
   });

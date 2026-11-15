@@ -1,12 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, existsSync, symlinkSync, unlinkSync } from 'node:fs';
+import { chmodSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { tmpDir, waitForWorker, waitForPath, runOwnedRemovalWorker, runAtomicRetryWorker } from './installer-test-helpers.js';
 import { runWorker } from './process-batches.js';
 import { SentinelModelCommand } from '../lib/sentinel.js';
 import { enumerateRecoveryArtifacts, removeOwnedRegularFile, regularFileIdentity, sameFileIdentity, sweepRecoveryArtifacts, writeFileAtomic } from '../lib/fsutil.js';
+import { symlinkOrSkip } from './symlink.js';
 
 // ---------------------------------------------------------------------------
 // Atomic file writes
@@ -64,15 +65,7 @@ describe('writeFileAtomic', { concurrency: false }, () => {
     const predictable = `${dest}.cah-tmp`;
     writeFileSync(victim, 'outside stays intact\n');
 
-    try {
-      symlinkSync(victim, predictable, 'file');
-    } catch (e) {
-      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
-        t.skip('file symlink creation is unavailable in this Windows test environment');
-        return;
-      }
-      throw e;
-    }
+    if (!symlinkOrSkip(t, victim, predictable, 'file')) return;
 
     writeFileAtomic(dest, 'complete payload\n');
     assert.equal(readFileSync(dest, 'utf8'), 'complete payload\n');

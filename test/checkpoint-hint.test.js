@@ -1,15 +1,16 @@
 import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, utimesSync, readdirSync, unlinkSync, rmdirSync, symlinkSync, lstatSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, utimesSync, readdirSync, unlinkSync, rmdirSync, lstatSync, rmSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import {
   armChildDeadline, timeoutError, DEFAULT_CHILD_DEADLINE_MS, TERMINATION_GRACE_MS,
-  runConcurrentBatches, terminateChild,
+  runConcurrentBatches, terminateChild, waitForPath,
 } from '../test-support/process-batches.js';
+import { symlinkOrSkip } from '../test-support/symlink.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RUNNER = join(__dirname, '..', 'test-support', 'run-companion.js');
@@ -114,15 +115,6 @@ function cacheDir(home) {
   return join(home, '.claude', 'cah-bin', 'cache', 'hint-markers');
 }
 
-async function waitForPath(path, timeoutMs = DEFAULT_CHILD_DEADLINE_MS) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (existsSync(path)) return;
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  assert.fail(`timed out waiting for ${path}`);
-}
-
 // Write a JSONL transcript with one line carrying model + usage.input_tokens.
 function writeTranscript(home, model, usedTokens) {
   const path = join(home, 'transcript.jsonl');
@@ -220,10 +212,9 @@ describe('cah-checkpoint-hint bin', () => {
     assert.ok(existsSync(home), 'fixture remains available until the child closes');
   });
 
-  it('marker already exists → silent, no duplicate hint', () => {
+  it('a hashed marker left in the old location → silent, no duplicate hint, marker migrated', () => {
     const home = isolatedHome();
     const sessionId = 'dup-session';
-    // Pre-create the marker.
     mkdirSync(join(home, '.claude'), { recursive: true });
     const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
     writeFileSync(join(home, '.claude', `cah-hint-shown-${hash}`), '');
@@ -322,15 +313,7 @@ describe('cah-checkpoint-hint bin', () => {
     const target = join(home, 'target-marker');
     const legacy = join(legacyDir, `cah-hint-shown-${sessionId}`);
     writeFileSync(target, 'target');
-    try {
-      symlinkSync(target, legacy, 'file');
-    } catch (error) {
-      if (error && ['EPERM', 'EACCES', 'UNKNOWN'].includes(error.code)) {
-        t.skip('file symlinks are unavailable on this host');
-        return;
-      }
-      throw error;
-    }
+    if (!symlinkOrSkip(t, target, legacy, 'file')) return;
     const tp = writeTranscript(home, 'claude-opus-4-8', 950_000);
     const result = runHint(JSON.stringify({ session_id: sessionId, transcript_path: tp }), home);
     assert.equal(result.stdout, EXPECTED);

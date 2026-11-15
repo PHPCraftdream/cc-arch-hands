@@ -827,6 +827,19 @@ describe('checkpoint-watch engine: a cycle that stops', () => {
     assert.equal(reloaded.calls.command.length, 1, 'no second request when the old turn ends');
   });
 
+  it('after such a reload a queued prompt that starts a turn is told it is held, not that the context is full', async () => {
+    const h = harness();
+    await h.emit('turn.start', { turnId: 'T1', text: 'work' });
+    await h.emit('tool.call', { tool: 'Bash' });
+    const reloaded = harness();
+    reloaded.state = h.state;
+    await reloaded.emit('session.start', {});
+    await reloaded.emit('turn.complete', { turnId: 'T1', reason: 'answer' });
+    await reloaded.emit('turn.start', { turnId: 'T9', text: 'typed earlier' });
+    assert.equal((await reloaded.emit('tool.call', { tool: 'Read' })).deny, HOLD_REASON);
+    assert.equal(reloaded.w.cycle.held.length, 1);
+  });
+
   it('a compaction retry after a reload resumes instead of compacting again once the context shrank', async () => {
     const h = harness();
     const name = await startCycle(h);

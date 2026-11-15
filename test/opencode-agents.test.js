@@ -33,7 +33,7 @@ function ok(home, ...args) {
 }
 
 describe('OpenCode agent installer', () => {
-  it('writes all 46 agents with openai models, literal efforts, no variant key', (t) => {
+  it('writes every agent with openai models, literal efforts, no variant key', (t) => {
     const home = sandbox(t);
     ok(home, 'install', '--opencode-agents');
     const dir = join(home, '.config', 'opencode', 'agents');

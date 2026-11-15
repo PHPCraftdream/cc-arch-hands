@@ -2,14 +2,15 @@
 // cah-status — Claude Code statusLine bin.
 //
 // Reads a JSON envelope from stdin (Claude Code statusLine protocol),
-// then emits a single line:  <display_name> · X% (Nk/Mk)
+// then emits a single line:
+//   <display_name> [effort] · X% (Nk/Mk) · 5h N% (→reset) · wk N% (→reset) [· 🔵 vX.Y.Z]
 // Falls back gracefully: if context_window is null → omit the usage part;
-// if model is missing → output a single dash; on any error → "—".
+// no rate_limits → omit the quotas; if model is missing or on any error → "—".
 //
 // Time intentionally NOT included: a per-second tick is incompatible
 // with Node cold-start on Windows (1–3s), which causes the harness to
 // cancel in-flight scripts and the status bar to disappear. The chat
-// audit-trail Stop hook (cah-stamp) carries the timestamp instead.
+// audit-trail Stop/PostToolUse hook (cah-stamp) carries the timestamp instead.
 //
 // Never crashes, never produces empty stdout (the harness would blank
 // the bar), always exits 0.

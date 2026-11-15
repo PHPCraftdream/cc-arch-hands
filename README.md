@@ -6,7 +6,6 @@ skills. Requires Node.js >=24 and has zero runtime dependencies — only
 Node.js built-ins.
 
 ```
-├── bin/cah-nobg.js              # PreToolUse Bash hook bin: deny a command that detaches a jobbash
 npx cc-arch-hands install        # that's it — installs commands, agents & skills into ~/.claude/
 ```
 
@@ -78,19 +77,19 @@ executable from becoming visible before its complete sibling dependency chain.
 
 The companion runtime bins:
 - **`cah-checkpoint-hint`** — Stop hook bin of the pre-mod `/checkpoint-watch` (one `[hint] Context at 90%…` per session). Still shipped for projects that keep the old hook; `cah checkpoint-watch on|off` removes that hook.
-- **`cah-status`** — statusLine command invoked by `/clock`. Renders `<model> [effort] · X.XX% (Nk/Mk)` with a usage bar and, for Pro/Max accounts, the 5-hour and weekly quota use with reset info (`5h N% →48м · wk N% →сб 27.06 16:19`). The bracketed effort code matches the slash-command suffix convention — `[l]/[m]/[h]/[x]/[xx]` for low/medium/high/xhigh/max; omitted for models without effort support (Haiku). Refreshes every 60 s (`refreshInterval: 60`, in seconds) and on every turn boundary.
+- **`cah-status`** — statusLine command invoked by `/clock`. Renders `<model> [effort] · X.XX% (Nk/Mk)` with a usage bar and, for Pro/Max accounts, the 5-hour and weekly quota use with reset info (`5h N% →48m · wk N% →sat 27.06 16:19`). The bracketed effort code matches the slash-command suffix convention — `[l]/[m]/[h]/[x]/[xx]` for low/medium/high/xhigh/max; omitted for models without effort support (Haiku). Refreshes every 60 s (`refreshInterval: 60`, in seconds) and on every turn boundary.
 - **`cah-stamp`** — Stop hook bin invoked by `/clock` on both `Stop` AND `PostToolUse`. Emits an `HH:MM:SS · model · X.XX% · 5h N% · wk N%` line as a `systemMessage` (no effort suffix or bars; compact text). Two safeguards prevent scrollback spam: **per-message dedup** (every assistant entry of the same turn shares an API `requestId` — if we already stamped this turn, the next hook of the same turn is suppressed) and a **session-scoped time-throttle safety net** (default 10 s, configurable via `CAH_STAMP_MIN_INTERVAL_MS`). A newer-version notice is Stop-only, even when PostToolUse already deduped the turn.
 - **`cah-rewake`** — `StopFailure` + `Stop` hook bin wired by `/rewake` (`cah rewake on`). Wakes a session whose turn an API error cut off; see [Wake after a dropped connection](#wake-after-a-dropped-connection-rewake).
 - **`cah-nobg`** — `PreToolUse` hook bin for the Bash tool wired by `/nobg` (`cah nobg on`). Denies a command that detaches a job; see [No detached shell jobs](#no-detached-shell-jobs-nobg).
 - **`cah-status-probe`** — diagnostic statusLine bin armed by `cah probe statusline start`. Captures the raw stdin envelope to a JSONL log so you can inspect exactly which fields Claude Code delivers on your account (added in 0.4.1).
 
-**Квоты `/clock`.** В statusLine показываются использование квоты и время сброса: `wk 67% →сб 27.06 16:19`; время сброса — локальное. Если в Claude-сессии временно отсутствует `five_hour`, панель повторно использует последнее измерение той же сессии до 5 минут и только пока его reset ещё впереди; Codex-модели и другие сессии не наследуют чужой 5h-квотомер. Старые и истёкшие измерения не показываются.
+**`/clock` quotas.** The statusLine shows quota use and the reset time: `wk 67% →sat 27.06 16:19`; the reset time is local. If `five_hour` is briefly absent in a Claude session, the bar reuses the last measurement of the same session for up to 5 minutes and only while its reset is still ahead; Codex models and other sessions never inherit someone else's 5h meter. Old and expired measurements are not shown. Reset times use English letters and weekday names by default (`→1h 23m`, `→sat`); set `CAH_LOCALE` to a BCP 47 tag (`ru-RU`, `de-DE`, `fr-FR`, …) in the environment Claude Code runs in, for example in the `env` block of `settings.json`, for another language (the weekday name follows it; the letters stay `h`/`m` outside Russian). An unknown tag falls back to English; the earlier name `CAH_WEEKDAY_LOCALE` is still read.
 
 Context and quotas use standard Claude Code statusLine/transcript data, not proxy configuration or credentials files. Missing quota fields are not treated as zero, and context support does not imply subscription quota support.
 
 **Optional ccgp model labels.** Sessions launched through `ccgp` or `ccgpy` can show the configured backend model instead of Claude Code's request alias. Both the statusLine and Stop/PostToolUse chat-stamps use the local proxy's authenticated `/call/<token>/model?requested=<alias>` endpoint, which uses ccgp's own routing resolver. They share the same metadata cache. Only the display label changes; context identity, model checks and quota rules still use the original envelope/transcript model. Stamp deduplication and throttling are unchanged, suppressed stamps do not request metadata, and stamps still omit effort. This is the configured route, not proof of the model ultimately selected by an upstream provider. Responses, including unavailable metadata, are cached for 60 seconds by authenticated endpoint and requested model; hot routing edits may therefore take up to 60 seconds to appear. Local metadata requests have a 200 ms deadline, a 4 KiB response cap, and never follow redirects. The cache contains only the label and an endpoint hash, never its token or URL, and uses at most 64 slots. Outside an explicit ccgp launcher environment, no request or cache access occurs. Missing ccgp executables, older proxy versions, stopped servers and invalid metadata leave the original label intact. No CLI dependency, proxy config parser, or API key is added. Remote proxy URLs are not queried for labels.
 
-Контекст берётся из `total_input_tokens`, с fallback на сумму input/cache компонентов `current_usage`. Если во время stream приходит нулевой placeholder, панель может сохранить на экране последнее положительное измерение той же модели из стандартного `transcript_path`, без дополнительных служебных подписей. Это последнее измерение, а не оценка ещё не посчитанного запроса. Ограниченный обратный обход не пересекает `compact_boundary`; при `current_usage: null` (старт/compaction) fallback не используется. Если подходящего измерения нет, блок контекста временно не показывается; название модели и доступные квоты остаются. Лимит отображения — минимум окна Claude Code и валидного `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (целое число токенов от 100000 до 1000000). Например, при `context_window_size: 1000000`, переменной `922000` и input 831000 панель покажет `90.13% (831k/922k)`. Без переменной или при невалидном значении используется штатное окно; меньшее окно модели никогда не увеличивается. Тот же расчёт применяется к chat-stamp и 90%-подсказке checkpoint. Это заполнение эффективного окна, не точный процент до сжатия: резерв ответа и `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` могут сдвигать момент сжатия. В session cache сохраняется исходное окно Claude Code, а не уменьшенный лимит отображения.
+The context comes from `total_input_tokens`, falling back to the sum of the input/cache components of `current_usage`. When a zero placeholder arrives during a stream, the bar may keep the last positive measurement of the same model from the standard `transcript_path`, with no extra labels. It is the last measurement, not an estimate of a request not counted yet. The bounded reverse scan never crosses a `compact_boundary`; with `current_usage: null` (start/compaction) no fallback is used. With no suitable measurement the context block is hidden for the moment; the model name and any quotas stay. The display limit is the smaller of Claude Code's window and a valid `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (an integer number of tokens from 100000 to 1000000). For example, with `context_window_size: 1000000`, the variable at `922000` and an input of 831000 the bar shows `90.13% (831k/922k)`. Without the variable or with an invalid value the regular window is used; a smaller model window is never enlarged. The same calculation applies to the chat stamp and the 90% checkpoint hint. This is how full the effective window is, not the exact percentage left before compaction: the reply reserve and `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` can move the compaction point. The session cache keeps Claude Code's original window, not the reduced display limit.
 
 The checkpoint, status, and stamp bins share `lib/transcript-stats.js` for transcript
 parsing — including the **cache-aware** token sum (`input_tokens +
@@ -116,7 +115,7 @@ command name encodes model letter + version + effort suffix:
 
 ```
 /oh   run this turn on Opus (top) at high effort
-/o2x  run this turn on Opus 4.7 (2 releases behind top) at xhigh effort
+/o2x  run this turn on Opus 4.8 (2 releases behind top) at xhigh effort
 /sm   Sonnet (top), medium effort
 /fxx  Fable 5.2, max effort
 /hm   Haiku 5.5 (top), medium effort
@@ -148,8 +147,8 @@ clauses: a **git-safety** rule (no mutating git commands in a shared
 worktree) and a **test-scope** rule (run only scoped tests, not the whole
 suite).
 
-**v0.2.0 dropped the `a` prefix on agent names.** Old `aoh`, `ao47x`,
-`afxx` are now plain `oh`, `o47x`, `fxx` — the same string as the command
+**v0.2.0 dropped the `a` prefix on agent names.** Old `aoh`, `ao2x`,
+`afxx` are now plain `oh`, `o2x`, `fxx` — the same string as the command
 and the model selector. Slash commands and the `Agent` tool use separate
 lookup tables, so there is no namespace collision. Upgrade is automatic:
 `cah install` 0.2.0 deletes the old `a*.md` files (sentinel-gated) and
@@ -455,7 +454,7 @@ installs only OpenCode artifacts; combined with `--only` it adds all three
 classes. Nothing is queried at install time: OpenCode, the provider connection
 and model availability are never checked.
 
-- **`--opencode-agents`** — all 46 subagents from the Codex model/alias
+- **`--opencode-agents`** — all <!--gen:count:codex-agents-->46<!--/gen--> subagents from the Codex model/alias
   registry (see the Codex-agents table above). Each `<name>.md` lands in
   `<root>/agents/` with `mode: subagent`, `model: openai/<manifest model>`
   and a literal `options.reasoningEffort` (including `max` and `ultra`; no
@@ -624,6 +623,20 @@ automatically; that decision stays with you — unless you use
 with ordinary `git add` + `git commit --only` (unrelated staged changes stay
 staged; never a push).
 
+What `/resume` does:
+
+1. Locates `docs/checkpoints/` of the repository's main folder (no
+   `~/.claude/` fallback) plus `docs/checkpoints/` of every linked worktree, where a session confined to its worktree leaves a fallback checkpoint.
+2. With `--list`: prints a table (name, size, mtime, title) and stops.
+3. Otherwise resolves the target file by exact-match or prefix-match
+   (ambiguous prefix → asks, never silently picks).
+4. Re-creates pending/in_progress tasks via TaskCreate, re-wires
+   `blockedBy` by `subject` matching (IDs will differ from the snapshot).
+5. Prints the prior goal as a copy-paste `/goal <text>` block — `/goal`
+   is a user-side command, so you re-arm the Stop hook yourself.
+6. Warns if the checkpoint is older than 7 days, since repo state may
+   have drifted.
+
 ### Automatic checkpoint, compact and resume (`/checkpoint-watch`)
 
 Claude Code hooks cannot start a compaction; a Claude Code mod (a plugin hooks
@@ -780,20 +793,6 @@ may keep the hooks it loaded at start: if `/hooks` does not list them, restart i
 `StopFailure` output is documented as ignored; waking through `asyncRewake` with exit code 2 works in practice
 (verified by others on Claude Code 2.1.308) but is not documented, so a future Claude Code may change it.
 
-What `/resume` does:
-
-1. Locates `docs/checkpoints/` of the repository's main folder (no
-   `~/.claude/` fallback) plus `docs/checkpoints/` of every linked worktree, where a session confined to its worktree leaves a fallback checkpoint.
-2. With `--list`: prints a table (name, size, mtime, title) and stops.
-3. Otherwise resolves the target file by exact-match or prefix-match
-   (ambiguous prefix → asks, never silently picks).
-4. Re-creates pending/in_progress tasks via TaskCreate, re-wires
-   `blockedBy` by `subject` matching (IDs will differ from the snapshot).
-5. Prints the prior goal as a copy-paste `/goal <text>` block — `/goal`
-   is a user-side command, so you re-arm the Stop hook yourself.
-6. Warns if the checkpoint is older than 7 days, since repo state may
-   have drifted.
-
 ### Where it goes
 
 | Artifact | Count | Destination |
@@ -805,7 +804,7 @@ What `/resume` does:
 | Codex skills | <!--gen:count:codex-skills-->4<!--/gen--> | `<scope>/.codex/skills/<name>/` (only with `--codex-skills`) |
 | OMP agents and tag rule | Full registry + rule | `~/.omp/agent/agents/<name>.md` and `~/.omp/agent/APPEND_SYSTEM.md` (only with `--omp-agents`; `--omp-profile NAME` selects `~/.omp/profiles/NAME/agent/`) |
 | OMP workflow commands | 9 commands + 2 runtime files | `~/.omp/agent/commands/`, `extensions/cah-babysit.js` and `cah/commit-checkpoint.mjs` (only with `--omp-commands`; supports `--omp-profile NAME`) |
-| OpenCode subagents + tag rule | 46 | `<cfg>/agents/<name>.md` and a marked section in `<cfg>/AGENTS.md` (only with `--opencode-agents`; `<cfg>` = `$OPENCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`) |
+| OpenCode subagents + tag rule | <!--gen:count:codex-agents-->46<!--/gen--> | `<cfg>/agents/<name>.md` and a marked section in `<cfg>/AGENTS.md` (only with `--opencode-agents`; `<cfg>` = `$OPENCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`) |
 | OpenCode skills | 9 | `<cfg>/skills/<name>/SKILL.md` (only with `--opencode-skills`) |
 | OpenCode commands + runtime | 9 commands + 3 runtime files | `<cfg>/commands/<name>.md`, `<cfg>/cah-opencode/` (scheduler + helper) and `<cfg>/plugins/cah-babysit.js` (only with `--opencode-commands`) |
 
@@ -982,8 +981,9 @@ node bin/cah.js list --json
 
 ## Ownership and safety
 
-Every file `cah` writes carries one of three HTML-comment sentinels
-buried at the end of the file:
+Every file `cah` writes carries a sentinel. Claude commands, agents and skills
+end with one of three HTML comments (the companion bins carry `// cah-bin:v1`;
+the Codex, OMP and OpenCode files have markers of their own):
 
 ```
 <!-- cah-model-command:v1 -->
@@ -1041,6 +1041,7 @@ cc-arch-hands/
 ├── bin/cah-stamp.js             # Stop+PostToolUse bin: chat audit-trail line (#!/usr/bin/env node)
 ├── bin/cah-status-probe.js      # diagnostic statusLine bin used by `cah probe statusline`
 ├── bin/cah-rewake.js            # StopFailure/Stop hook bin: wake a session an API error cut off
+├── bin/cah-nobg.js              # PreToolUse Bash hook bin: deny a command that detaches a job
 ├── lib/
 │   ├── cli.js                   # dispatch, arg parsing (node:util parseArgs), --only resolver
 │   ├── manifest.js              # AllModelCommands (67 definitions), AllCodexAgents (46), AllSkills (16), SkillDeps, SkillSkillDeps
@@ -1058,8 +1059,10 @@ cc-arch-hands/
 │   ├── fs-atomic.js             # atomic publication, identity, quarantine helpers
 │   ├── sentinel-hooks.js        # add/update/remove a sentinel-tagged hook set in a settings.json (lock + CAS)
 │   ├── nobg.js                  # the cah-nobg PreToolUse hook in a settings.json
+│   ├── cli-hook-command.js      # shared body of `cah nobg` and `cah rewake`
 │   ├── cli-nobg.js              # `cah nobg on|off|status` (global + ccgp profiles, or one project)
 │   ├── transcript-stats.js      # shared: stats, formatStatusLine, makeBar, reset formatters
+│   ├── leaf-installer.js        # flat-directory installer shared by the single-file artefacts below and the Codex/OMP/OpenCode agents
 │   ├── commands.js              # render + install + remove (67 .md bodies)
 │   ├── agents.js                # render + install + remove (67 .md bodies)
 │   ├── skills.js                # mirror templates/skills/<n>/ tree, optional subset
@@ -1094,7 +1097,8 @@ cc-arch-hands/
 │   ├── probe.test.js            # lib/probe.js enable/disable/readLog tests
 │   ├── rewake.test.js           # cah-rewake bin + `cah rewake` settings wiring
 │   ├── nobg.test.js             # cah-nobg detection + `cah nobg` settings wiring
-│   └── checkpoint-watch.test.js # checkpoint-watch mod engine (fake $), settings wiring, `cah checkpoint-watch`
+│   ├── checkpoint-watch.test.js # checkpoint-watch mod engine (fake $), settings wiring, `cah checkpoint-watch`
+│   └── …                        # one file per feature; `npm test` runs them all
 ├── .github/workflows/ci.yml    # CI: licenses, mod validation, npm test on 3 OS (Node 24)
 ├── install.sh / install.bat     # quick install wrappers
 ├── reinstall.sh / reinstall.bat # uninstall + install

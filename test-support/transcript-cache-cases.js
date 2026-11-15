@@ -6,7 +6,6 @@ import {
   lstatSync,
   readFileSync,
   readdirSync,
-  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
@@ -26,6 +25,7 @@ import {
   runRateCacheWorker,
   waitForPath,
 } from './transcript-test-helpers.js';
+import { symlinkOrSkip } from './symlink.js';
 
 // ---------------------------------------------------------------------------
 // readRateLimitsCache
@@ -120,15 +120,7 @@ describe('readRateLimitsCache', () => {
     const fixedNow = 1_700_000_123_456;
     const predictable = `${path}.${process.pid}.${fixedNow}.1.tmp`;
     writeFileSync(victim, 'victim stays intact\n');
-    try {
-      symlinkSync(victim, predictable, 'file');
-    } catch (e) {
-      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
-        t.skip('file symlink creation is unavailable in this Windows test environment');
-        return;
-      }
-      throw e;
-    }
+    if (!symlinkOrSkip(t, victim, predictable, 'file')) return;
 
     const realDateNow = Date.now;
     try {

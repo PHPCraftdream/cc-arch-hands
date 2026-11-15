@@ -412,16 +412,16 @@ describe('published clock/checkpoint-watch settings instructions', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cah-skill-contract-hooks-'));
     try {
       const settingsPath = join(dir, 'settings.json');
-      const checkpointHook = {
+      const rewakeHook = {
         matcher: '',
         hooks: [{
           type: 'command',
-          command: 'node "C:/Users/Alice/.claude/cah-bin/bin/cah-checkpoint-hint.js"',
+          command: 'node "C:/Users/Alice/.claude/cah-bin/bin/cah-rewake.js" reset',
           'cah-sentinel': 'cah-hook:v1',
           'cah-name': 'rewake',
         }],
       };
-      writeFileSync(settingsPath, JSON.stringify({ hooks: { Stop: [checkpointHook] } }, null, 2) + '\n');
+      writeFileSync(settingsPath, JSON.stringify({ hooks: { Stop: [rewakeHook] } }, null, 2) + '\n');
 
       const result = documentedAtomicSave(settingsPath, (value) => {
         // /clock's own merge rule: append our Stop matcher entry, never
@@ -477,7 +477,7 @@ import { acquireSettingsLock, releaseSettingsLock, settingsLockOwned } from '${S
 
 const WITH_LOCK = ${withLock};
 const [settingsPath, hookName] = process.argv.slice(2);
-const bin = hookName === 'clock' ? 'cah-stamp.js' : 'cah-checkpoint-hint.js';
+const bin = hookName === 'clock' ? 'cah-stamp.js' : 'cah-rewake.js';
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 function awaitMessage() {
@@ -559,7 +559,7 @@ process.disconnect();
 // Spawns two real child writers (clock first, rewake second) and
 // forces the review's interleave via IPC phase gates: both read before either
 // rechecks, both recheck before either renames, and the rename order is
-// clock-then-watch. `withLock` switches the documented lock step in the child
+// clock-then-rewake. `withLock` switches the documented lock step in the child
 // template on (the primary test) or off (the load-bearing companion test).
 async function runTwoWriterRace(withLock) {
   const dir = mkdtempSync(join(tmpdir(), 'cah-skill-contract-2proc-'));
@@ -729,9 +729,7 @@ describe('two real cooperating writer processes at the commit boundary', () => {
 // ---------------------------------------------------------------------------
 // Round-4 regression races: each test pins one review observation about the
 // settings-lock lifecycle itself (initialization gap, verified-fence reclaim,
-// stale releaser, probe interleave) or demonstrates, as an in-process
-// transcription, why the OLD published reclaim protocol the review reproved
-// was load-bearing-wrong (the "fails-without" companions).
+// stale releaser, probe interleave).
 // ---------------------------------------------------------------------------
 
 // Template for a lock-race child process. Writes a real .mjs that imports the
@@ -883,7 +881,7 @@ function walkCollect(root, out = []) {
   return out;
 }
 
-describe('settings-lock lifecycle races (round-4 review observations)', () => {
+describe('settings-lock lifecycle races', () => {
   it('a fresh ownerless reservation survives a concurrent reader (observation A)', async () => {
     // Observation A: a crash between mkdir and the owner write leaves a
     // FRESH OWNERLESS reservation. A concurrent acquirer must see "busy",
@@ -940,25 +938,6 @@ describe('settings-lock lifecycle races (round-4 review observations)', () => {
     }
   });
 
-  it('the round-3 published protocol destroys a fresh ownerless reservation (load-bearing fails-without)', () => {
-    // IN-PROCESS transcription of the OLD published reclaim rule ("owner
-    // missing = abandoned → rename aside + delete"), kept to show the exact
-    // behavior the round-4 review reproved: it destroys a reservation that
-    // is merely initializing. This is the behavior test 1 pins as fixed.
-    const dir = mkdtempSync(join(tmpdir(), 'cah-skill-race-oldproto-'));
-    try {
-      const lock = join(dir, 'settings.json.lock');
-      mkdirSync(lock); // no owner.json — old rule reads this as "abandoned"
-      const aside = lock + '.stale.' + Math.random().toString(36).slice(2);
-      renameSync(lock, aside);
-      rmSync(aside, { recursive: true, force: true });
-      assert.equal(existsSync(lock), false,
-        'the old protocol destroys the fresh ownerless reservation outright');
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
   it('reclaiming an abandoned ownerless lock preserves unrecognized content (observation A)', () => {
     // Observation A: when the aged ownerless claim IS reclaimed, reclaim
     // must go through lease-lock's verified fence — anything unrecognized
@@ -994,28 +973,6 @@ describe('settings-lock lifecycle races (round-4 review observations)', () => {
         assert.equal(releaseSettingsLock(handle), true,
           'the reclaimed lock must release cleanly');
       }
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it('the round-3 published protocol destroys foreign content in a reclaimed lock (load-bearing fails-without)', () => {
-    // IN-PROCESS transcription of the OLD published reclaim rule, kept to
-    // show the exact destruction the review reproved: blind delete of the
-    // renamed-aside lock destroys foreign content inside it. This is the
-    // behavior test 3 pins as fixed.
-    const dir = mkdtempSync(join(tmpdir(), 'cah-skill-race-oldcontent-'));
-    try {
-      const lock = join(dir, 'settings.json.lock');
-      mkdirSync(lock); // no owner.json — old rule reads this as "abandoned"
-      writeFileSync(join(lock, 'user-recovery.txt'), 'user-recovery-data\n');
-      const aside = lock + '.stale.' + Math.random().toString(36).slice(2);
-      renameSync(lock, aside);
-      rmSync(aside, { recursive: true, force: true });
-      assert.equal(existsSync(join(aside, 'user-recovery.txt')), false,
-        'the old protocol destroys the foreign content with the renamed copy');
-      assert.deepEqual(walkCollect(dir).filter((p) => p.endsWith('user-recovery.txt')), [],
-        'the foreign content is gone from the entire sandbox');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -1065,66 +1022,6 @@ describe('settings-lock lifecycle races (round-4 review observations)', () => {
       assert.ok(handle, 'the parent must acquire only after the child released');
       assert.equal(releaseSettingsLock(handle), true,
         'the parent\'s post-child acquisition must release cleanly');
-    } finally {
-      if (child && !childGone) child.kill();
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it('the round-3 protocol lets both writers believe they own the lock (observation B, two real processes)', async () => {
-    // Deterministic port of the review's reproduction: the child holds the
-    // mkdir→owner-write gap open; the OLD protocol (transcribed in-process)
-    // steals the reservation and writes its own owner; then the child
-    // resumes and overwrites the owner with its own. Both believers end up
-    // "owning" — the defect this suite pins as fixed.
-    const dir = mkdtempSync(join(tmpdir(), 'cah-skill-race-bothbelieve-'));
-    let child = null;
-    let childGone = false;
-    try {
-      const settingsPath = join(dir, 'settings.json');
-      writeFileSync(settingsPath, JSON.stringify({ kept: true }, null, 2) + '\n');
-      const childPath = join(dir, 'raw-mkdir-gap-child.mjs');
-      // Minimal non-cooperating writer: raw mkdir, gap, then owner write.
-      writeFileSync(childPath, `import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-const [settingsPath] = process.argv.slice(2);
-const lockDir = settingsPath + '.lock';
-function awaitMessage() {
-  return new Promise((resolve) => { process.once('message', resolve); });
-}
-mkdirSync(lockDir);
-process.send({ type: 'gap' });
-await awaitMessage(); // 'go'
-writeFileSync(join(lockDir, 'owner.json'),
-  JSON.stringify({ pid: process.pid, timestamp: Date.now() }) + '\\n');
-process.send({ type: 'resumed' });
-process.disconnect();
-`);
-      child = spawn(process.execPath, [childPath, settingsPath],
-        { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
-      child.once('exit', () => { childGone = true; });
-
-      await awaitChildMessage(child, 'gap');
-      const lockDir = join(dir, 'settings.json.lock');
-      // OLD PUBLISHED PROTOCOL, in-process: owner missing → "abandoned" →
-      // rename aside + blind recursive delete → recreate and self-own.
-      const aside = lockDir + '.stale.' + Math.random().toString(36).slice(2);
-      renameSync(lockDir, aside);
-      rmSync(aside, { recursive: true, force: true });
-      mkdirSync(lockDir);
-      writeFileSync(join(lockDir, 'owner.json'),
-        JSON.stringify({ pid: process.pid, timestamp: Date.now() }) + '\n');
-      const bBelievesOwned = true; // the old protocol gave B a clean acquire
-      child.send('go');
-
-      await awaitChildMessage(child, 'resumed');
-      const owner = JSON.parse(readFileSync(join(lockDir, 'owner.json'), 'utf8'));
-      const aOverwroteB = owner.pid !== process.pid;
-      assert.equal(bBelievesOwned, true,
-        'the old protocol reported success to the second writer');
-      assert.equal(aOverwroteB, true,
-        'the old protocol then let the first writer overwrite the owner.json: '
-        + `owner pid is now ${owner.pid}, not the parent's ${process.pid} — two believers`);
     } finally {
       if (child && !childGone) child.kill();
       rmSync(dir, { recursive: true, force: true });
@@ -1206,7 +1103,7 @@ process.disconnect();
     }
   });
 
-  it('enableProbe cannot interleave with a skill holding the settings lock (round-4 P2-1)', async () => {
+  it('enableProbe cannot interleave with a skill holding the settings lock', async () => {
     // P2-1: probe rewiring shares the skills' settings.json.lock namespace.
     // With the old separate settings.json.probe-lock name this interleave
     // let enableProbe succeed DURING the skill's hold and the skill's final

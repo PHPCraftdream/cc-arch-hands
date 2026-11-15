@@ -11,6 +11,7 @@ import { Scope, StrictMissingRootError, SKILL_MANIFEST_LEAF } from '../lib/scope
 import { writeModelCommands } from '../lib/commands.js';
 import { writeSkills, removeSkills } from '../lib/skills.js';
 import { embeddedTemplates } from '../lib/templates.js';
+import { symlinkOrSkip } from './symlink.js';
 
 
 // ---------------------------------------------------------------------------
@@ -138,15 +139,7 @@ describe('removeSkills', { concurrency: false }, () => {
     writeFileSync(manifest, `# managed\n${SentinelSkill}\n`);
     writeFileSync(outsideFile, 'outside stays\n');
 
-    try {
-      symlinkSync(outside, join(destDir, 'assets'), process.platform === 'win32' ? 'junction' : 'dir');
-    } catch (e) {
-      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
-        t.skip('junction creation is unavailable in this Windows test environment');
-        return;
-      }
-      throw e;
-    }
+    if (!symlinkOrSkip(t, outside, join(destDir, 'assets'), 'dir')) return;
 
     const tpl = {
       skillTree: () => [
@@ -191,7 +184,7 @@ describe('removeSkills', { concurrency: false }, () => {
 });
 
 // ---------------------------------------------------------------------------
-// Skill data-loss protection (review H1/H2/M5)
+// Skill data-loss protection
 // ---------------------------------------------------------------------------
 
 describe('skill data-loss protection', { concurrency: false }, () => {
@@ -368,15 +361,7 @@ describe('skill data-loss protection', { concurrency: false }, () => {
     mkdirSync(outside);
     writeFileSync(join(orphanDir, SKILL_MANIFEST_LEAF), `# orphan\n${SentinelSkill}\n`);
     writeFileSync(join(outside, 'data.txt'), 'outside stays\n');
-    try {
-      symlinkSync(outside, link, process.platform === 'win32' ? 'junction' : 'dir');
-    } catch (e) {
-      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
-        t.skip('junction creation is unavailable in this Windows test environment');
-        return;
-      }
-      throw e;
-    }
+    if (!symlinkOrSkip(t, outside, link, 'dir')) return;
 
     const result = writeSkills(embeddedTemplates(), scope);
     assert.equal(result.pruned, 0);
@@ -432,17 +417,9 @@ describe('skill data-loss protection', { concurrency: false }, () => {
     writeFileSync(manifest, `# orphan\n${SentinelSkill}\n`);
     writeFileSync(outside, 'foreign target\n');
 
-    try {
-      const probe = join(dir, 'symlink-probe');
-      symlinkSync(outside, probe, 'file');
-      unlinkSync(probe);
-    } catch (e) {
-      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
-        t.skip('file symlink creation is unavailable in this Windows test environment');
-        return;
-      }
-      throw e;
-    }
+    const probe = join(dir, 'symlink-probe');
+    if (!symlinkOrSkip(t, outside, probe, 'file')) return;
+    unlinkSync(probe);
 
     const running = runSkillWorker('write', dir, interlock, 'prune-before-manifest-remove');
     await waitForPath(`${interlock}.ready`);
@@ -491,17 +468,9 @@ describe('skill data-loss protection', { concurrency: false }, () => {
     writeFileSync(manifest, `${SentinelSkill}\n`);
     writeFileSync(join(outside, SKILL_MANIFEST_LEAF), 'outside must survive\n');
 
-    try {
-      const probe = join(dir, 'directory-link-probe');
-      symlinkSync(outside, probe, process.platform === 'win32' ? 'junction' : 'dir');
-      unlinkSync(probe);
-    } catch (e) {
-      if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(e.code)) {
-        t.skip('junction creation is unavailable in this Windows test environment');
-        return;
-      }
-      throw e;
-    }
+    const probe = join(dir, 'directory-link-probe');
+    if (!symlinkOrSkip(t, outside, probe, 'dir')) return;
+    unlinkSync(probe);
 
     const running = runSkillWorker('remove', dir, interlock, 'remove-before-owned-delete');
     await waitForPath(`${interlock}.ready`);

@@ -1,30 +1,14 @@
-import { existsSync, mkdtempSync } from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { runWorker, DEFAULT_CHILD_DEADLINE_MS } from './process-batches.js';
+import { runWorker } from './process-batches.js';
 
 export function isolatedDir() {
   return mkdtempSync(join(tmpdir(), 'cah-ts-'));
 }
 
-export function waitForPath(path, timeoutMs = DEFAULT_CHILD_DEADLINE_MS) {
-  const deadline = Date.now() + timeoutMs;
-  return new Promise((resolve, reject) => {
-    const poll = () => {
-      if (existsSync(path)) {
-        resolve();
-        return;
-      }
-      if (Date.now() >= deadline) {
-        reject(new Error(`timed out waiting for ${path}`));
-        return;
-      }
-      setTimeout(poll, 5);
-    };
-    poll();
-  });
-}
+export { waitForPath } from './process-batches.js';
 
 export function runRateCacheWorker(cachePath, nowMs, interlock) {
   const transcriptStatsUrl = new URL('../lib/transcript-stats.js', import.meta.url).href;

@@ -72,4 +72,4 @@ Keep reports brief: actual results or the precise reason for waiting or blockage
 - A cron stores a copy of the tick prompt: editing this file does not update existing jobs. Step 1 reports the difference and stops; the job is replaced only on the user's request, as above.
 - The skill loader does not execute the cron for you. **Reading this file is not the same as installing the cron.** Don't move on until step 3 above has logged a confirmed `<job-id>`.
 - This skill changes neither the goal nor the plan — it only nudges existing work forward. New tasks come from `/task` or `/babygoal`. List hygiene comes from `/triage`.
-- If `CronList` shows the TaskList is empty of your work but other agents' tasks are still alive — leave their tasks alone, but do call CronDelete on your own job. It's not yours to babysit.
+- If the TaskList holds none of your work but other agents' tasks are still alive — leave their tasks alone, but do call CronDelete on your own job. It's not yours to babysit.

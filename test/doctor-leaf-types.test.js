@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { it } from 'node:test';
+import { symlinkOrSkip } from '../test-support/symlink.js';
 import { classifyPath, run } from '../lib/cli.js';
 import { AllModelCommands } from '../lib/manifest.js';
 import { SentinelModelAgent, SetForModelAgent } from '../lib/sentinel.js';
@@ -13,23 +14,13 @@ function fixture(t) {
   return root;
 }
 
-function link(t, target, path) {
-  try { symlinkSync(target, path, 'file'); return true; } catch (error) {
-    if (process.platform === 'win32' && ['EPERM', 'EACCES'].includes(error.code)) {
-      t.skip('file symlinks unavailable');
-      return false;
-    }
-    throw error;
-  }
-}
-
 for (const present of [false, true]) {
   it(`non-runtime classification refuses a ${present ? 'valid' : 'dangling'} symlink`, (t) => {
     const root = fixture(t);
     const target = join(root, 'target.md');
     const path = join(root, 'agent.md');
     if (present) writeFileSync(target, SentinelModelAgent);
-    if (!link(t, target, path)) return;
+    if (!symlinkOrSkip(t, target, path, 'file')) return;
     assert.equal(classifyPath(path, SetForModelAgent), 'foreign');
     assert.ok(lstatSync(path).isSymbolicLink());
     assert.equal(existsSync(target), present);
@@ -53,7 +44,7 @@ it('doctor rejects an agent symlink that an actual install cannot replace', (t) 
     const original = readFileSync(path, 'utf8');
     writeFileSync(target, original);
     unlinkSync(path);
-    if (!link(t, target, path)) return;
+    if (!symlinkOrSkip(t, target, path, 'file')) return;
     assert.equal(run(['install', '--only', 'agents']), 1);
     assert.equal(run(['doctor']), 2);
     assert.ok(lstatSync(path).isSymbolicLink());

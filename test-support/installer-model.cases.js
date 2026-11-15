@@ -1,21 +1,21 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, lstatSync, existsSync, symlinkSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, statSync, lstatSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpDir } from './installer-test-helpers.js';
-import { FABLE_ORACLE } from './installer-test-helpers.js';
+import { FABLE_ORACLE, tmpDir } from './installer-test-helpers.js';
 import { SentinelModelCommand, SentinelModelAgent, LegacyModelCommand, LegacyModelAgent, SetForModelCommand, Ownership, classifyContent } from '../lib/sentinel.js';
 import { AllModelCommands, AllCodexAgents } from '../lib/manifest.js';
 import { Scope } from '../lib/scope.js';
 import { writeModelCommands, removeModelCommands } from '../lib/commands.js';
 import { writeModelAgents, removeModelAgents } from '../lib/agents.js';
+import { symlinkOrSkip } from './symlink.js';
 
 // ---------------------------------------------------------------------------
 // Fable model contract (fixed oracle, independent of manifest values)
 // ---------------------------------------------------------------------------
 
 describe('Fable model contract', { concurrency: false }, () => {
-  it('keeps all ten aliases pinned to their literal model and effort', () => {
+  it('keeps every Fable alias pinned to their literal model and effort', () => {
     for (const [name, model, effort] of FABLE_ORACLE) {
       const matches = AllModelCommands.filter((entry) => entry.name === name);
       assert.equal(matches.length, 1, `${name} must occur exactly once in the model registry`);
@@ -228,7 +228,7 @@ describe('removeModelCommands', { concurrency: false }, () => {
     writeFileSync(foreignPath, foreignBody);
 
     const { removed, skipped } = removeModelCommands(scope);
-       assert.equal(removed, 2);
+    assert.equal(removed, 2);
     assert.deepEqual(skipped, ['o2l.md']);
 
     assert.throws(() => statSync(minePath), { code: 'ENOENT' });
@@ -484,15 +484,7 @@ describe('removeModelAgents', { concurrency: false }, () => {
     const target = join(dir, 'outside-agent.md');
     const alias = join(agentsDir, 'a-removed-agent.md');
     writeFileSync(target, 'outside user data\n');
-    try {
-      symlinkSync(target, alias, 'file');
-    } catch (error) {
-      if (error.code === 'EPERM' || error.code === 'EACCES') {
-        t.skip('symlinks are unavailable on this host');
-        return;
-      }
-      throw error;
-    }
+    if (!symlinkOrSkip(t, target, alias, 'file')) return;
 
     const result = removeModelAgents(scope);
     assert.deepEqual(result.skipped, ['a-removed-agent.md']);

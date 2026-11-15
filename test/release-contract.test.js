@@ -23,7 +23,6 @@ function read(name) {
   return readFileSync(new URL(name, ROOT), 'utf8').replaceAll('\r\n', '\n');
 }
 
-
 // Installed text: shared fragments expanded, exactly as every installer sees it.
 function installed(kind, name, leaf) {
   const file = embeddedTemplates().skillTree(name, kind).find((entry) => entry.relPath === leaf);
@@ -81,13 +80,13 @@ function makeCheckpointRepo(prefix = 'cah-ccheckpoint-') {
   return repo;
 }
 
-// Runs the published commands as separate calls, as the skill instructs, and
-// stops at the first failure. Returns one spawnSync result per command run.
 // The main folder as the skill resolves it: the parent of the common git dir.
 function mainFolder(cwd) {
   return dirname(runGit(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']));
 }
 
+// Runs the published commands as separate calls, as the skill instructs, and
+// stops at the first failure. Returns one spawnSync result per command run.
 function runCheckpointCommands(cwd, stem = 'state', commands = CHECKPOINT_COMMANDS) {
   const results = [];
   for (const command of commands) {
@@ -122,10 +121,6 @@ function committedNames(repo) {
 
 describe('release and generated-doc contracts', () => {
   it('ignores /wrush task worktrees and nothing else agent-tree-shaped', () => {
-    // /wrush now legitimately creates worktrees/ under this repo (unrelated
-    // to the agent-tree extraction this test used to guard against), so the
-    // ignore entry is expected -- assert its exact, intentional shape
-    // instead of a blanket absence.
     const gitignore = read('.gitignore');
     assert.match(gitignore, /^\/worktrees\/$/m);
     assert.doesNotMatch(gitignore, /agent-tree/i);

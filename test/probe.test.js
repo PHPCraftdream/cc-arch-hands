@@ -7,7 +7,6 @@ import {
   existsSync,
   mkdirSync,
   unlinkSync,
-  symlinkSync,
   linkSync,
   lstatSync,
   openSync,
@@ -41,7 +40,8 @@ import {
 } from '../lib/probe.js';
 import { regularFileIdentity, sameFileIdentity } from '../lib/fsutil.js';
 import { recoverPublicationFence } from '../lib/fs-atomic-publication.js';
-import { runWorker, DEFAULT_CHILD_DEADLINE_MS } from '../test-support/process-batches.js';
+import { runWorker, DEFAULT_CHILD_DEADLINE_MS, waitForPath } from '../test-support/process-batches.js';
+import { symlinkOrSkip } from '../test-support/symlink.js';
 
 function harness() {
   const root = mkdtempSync(join(tmpdir(), 'cah-probe-'));
@@ -51,14 +51,6 @@ function harness() {
     logPath: join(root, 'cache', 'envelope-probe.log'),
     probeBinAbsPath: join(root, 'bin', 'cah-status-probe.js'),
   };
-}
-
-async function waitForPath(path) {
-  const deadline = Date.now() + DEFAULT_CHILD_DEADLINE_MS;
-  while (!existsSync(path)) {
-    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`);
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
 }
 
 function runProbeWorker(
@@ -148,19 +140,6 @@ function mutateSettingsInPlace(path) {
   return mutated;
 }
 
-function makeSymlinkOrSkip(t, linkPath, targetPath) {
-  try {
-    symlinkSync(targetPath, linkPath, 'file');
-    return true;
-  } catch (e) {
-    if (process.platform === 'win32' && (e.code === 'EPERM' || e.code === 'EACCES')) {
-      t.skip('symbolic links are unavailable on this Windows runner');
-      return false;
-    }
-    throw e;
-  }
-}
-
 describe('enableProbe', () => {
   it('creates settings.json with probe entry when file is missing', () => {
     const h = harness();
@@ -204,7 +183,7 @@ describe('enableProbe', () => {
     const victimPath = `${h.settingsPath}.victim`;
     const victim = '{"victim":"untouched"}\n';
     writeFileSync(victimPath, victim);
-    if (!makeSymlinkOrSkip(t, tempPath, victimPath)) return;
+    if (!symlinkOrSkip(t, victimPath, tempPath, 'file')) return;
 
     enableProbe(h);
 
@@ -249,7 +228,7 @@ describe('enableProbe', () => {
     const victim = 'foreign log data\n';
     mkdirSync(join(h.logPath, '..'), { recursive: true });
     writeFileSync(victimPath, victim);
-    if (!makeSymlinkOrSkip(t, h.logPath, victimPath)) return;
+    if (!symlinkOrSkip(t, victimPath, h.logPath, 'file')) return;
     const settingsBefore = JSON.stringify({ statusLine: { type: 'command', command: 'original' } });
     writeFileSync(h.settingsPath, settingsBefore);
 
@@ -338,7 +317,7 @@ describe('disableProbe', () => {
     });
   });
 
-  it('tolerates a UTF-8 BOM in settings.json (review M6)', () => {
+  it('tolerates a UTF-8 BOM in settings.json', () => {
     const h = harness();
     const original = { type: 'command', command: 'foo', padding: 0 };
     // editor-added BOM in front of otherwise valid JSON
@@ -663,7 +642,7 @@ describe('probe concurrency', () => {
   });
 });
 
-describe('probe command portability (review M10/L12)', () => {
+describe('probe command portability', () => {
   it('normalizes path separators and keeps shell-safe paths working', () => {
     const h = harness();
     enableProbe(h);
@@ -716,16 +695,29 @@ describe('probe command portability (review M10/L12)', () => {
       'direct argv-array invocation must behave identically');
   });
 
-  it('preserves 4-space indentation of an existing settings.json (review L15)', () => {
+  it('preserves 4-space indentation of an existing settings.json', () => {
     const h = harness();
     writeFileSync(h.settingsPath, JSON.stringify({ other: 'keep' }, null, 4));
     enableProbe(h);
     const text = readFileSync(h.settingsPath, 'utf8');
     assert.match(text, /\n {4}"other"/, 'indentation must stay 4-space');
   });
+
+  it('keeps the CRLF line ends of an existing settings.json through enable and disable', () => {
+    const h = harness();
+    writeFileSync(h.settingsPath, '{\r\n  "other": "keep"\r\n}\r\n');
+    const bareLf = /(?<!\r)\n/;
+    enableProbe(h);
+    const armed = readFileSync(h.settingsPath, 'utf8');
+    assert.match(armed, /\r\n/);
+    assert.doesNotMatch(armed, bareLf);
+    disableProbe(h);
+    const restored = readFileSync(h.settingsPath, 'utf8');
+    assert.equal(restored, '{\r\n  "other": "keep"\r\n}\r\n');
+  });
 });
 
-describe('probe committed-publication rollback (review P1-2)', () => {
+describe('probe committed-publication rollback', () => {
   function interlockThrowingAt(targetPhase, occurrence) {
     let seen = 0;
     return (phase) => {
@@ -821,7 +813,7 @@ describe('probe committed-publication rollback (review P1-2)', () => {
   });
 });
 
-describe('probe backup vs ordinary settings edits (review round 2 P1-1)', () => {
+describe('probe backup vs ordinary settings edits', () => {
   it('keeps the backup when an external editor re-saves settings with an unrelated key', () => {
     const h = harness();
     const original = { type: 'command', command: 'original-user-command', padding: 0 };
@@ -864,8 +856,8 @@ describe('probe backup vs ordinary settings edits (review round 2 P1-1)', () => 
   });
 });
 
-describe('probe settings root validation (review round-5 P2-1)', () => {
-  it('refuses a valid-JSON non-object settings root on enable, disable, and status without any side effects (round-5 P2-1)', async () => {
+describe('probe settings root validation', () => {
+  it('refuses a valid-JSON non-object settings root on enable, disable, and status without any side effects', async () => {
     for (const root of ['[]', '"just a string"', '42', 'true', 'null']) {
       const h = harness();
       writeFileSync(h.settingsPath, root + '\n');
@@ -886,7 +878,7 @@ describe('probe settings root validation (review round-5 P2-1)', () => {
     }
   });
 
-  it('still enables and disables normally for a plain object root (round-5 P2-1 regression guard)', () => {
+  it('still enables and disables normally for a plain object root', () => {
     const h = harness();
     writeFileSync(h.settingsPath, JSON.stringify({ editorSetting: 'keep' }, null, 2) + '\n');
 
@@ -905,8 +897,8 @@ describe('probe settings root validation (review round-5 P2-1)', () => {
   });
 });
 
-describe('probe lease expiry vs successor backup (review round-5 P1-1)', () => {
-  it('an enable that lost its lease must not overwrite the successor backup, settings, or log (round-5 P1-1)', async () => {
+describe('probe lease expiry vs successor backup', () => {
+  it('an enable that lost its lease must not overwrite the successor backup, settings, or log', async () => {
     const h = harness();
     writeFileSync(h.settingsPath, JSON.stringify({
       statusLine: { type: 'command', command: 'original-before-edit', padding: 0 },

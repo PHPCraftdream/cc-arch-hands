@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+
 // Keep process races broad while bounding OS child-process fan-out.  The
 // helpers in this file are test infrastructure only; the deadlines are here
 // so a broken fixture cannot leave a test process (or a batch) alive forever.
@@ -13,6 +15,19 @@ export const DEFAULT_CLI_TIMEOUT_MS = 120_000;
 export const DEFAULT_WORKER_DEADLINE_MS = 120_000;
 export const TERMINATION_GRACE_MS = 250;
 export const DEFAULT_BATCH_TASK_DEADLINE_MS = DEFAULT_CHILD_DEADLINE_MS + 2_000;
+
+// Polls until `path` exists; rejects after `timeoutMs`.
+export async function waitForPath(
+  path,
+  timeoutMs = DEFAULT_CHILD_DEADLINE_MS,
+  message = `timed out waiting for ${path}`,
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(message);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
 
 export function timeoutError(label = 'child') {
   const error = new Error(`${label} exceeded its test deadline`);

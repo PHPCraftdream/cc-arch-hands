@@ -1,11 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync, utimesSync, mkdirSync, unlinkSync, rmdirSync, symlinkSync, lstatSync, rmSync } from 'node:fs';
+import { writeFileSync, readFileSync, readdirSync, existsSync, utimesSync, mkdirSync, unlinkSync, rmdirSync, lstatSync, rmSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { runStamp, runStampAsync, isolatedDir, writeTranscript, updateMarkerDir, waitForPath, writeClaim, readClaim, stampSidecarPath } from './stamp-helpers.js';
 import { runConcurrentBatches } from './process-batches.js';
+import { symlinkOrSkip } from './symlink.js';
 
 export function registerStampUpdateCases() {
   describe('update notice', () => {
@@ -19,7 +20,7 @@ export function registerStampUpdateCases() {
       const dir = isolatedDir();
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
-      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const hintHome = isolatedDir();
       const payload = { session_id: 'update-session', transcript_path: tp, hook_event_name: 'Stop' };
       const env = { CAH_UPDATE_CHECK_CACHE: updateCache, CAH_STAMP_HINT_HOME: hintHome };
 
@@ -42,7 +43,7 @@ export function registerStampUpdateCases() {
       const dir = isolatedDir();
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
-      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const hintHome = isolatedDir();
       const sessionId = 'legacy-update-marker';
       const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
       const legacyDir = join(hintHome, '.claude');
@@ -65,7 +66,7 @@ export function registerStampUpdateCases() {
       const dir = isolatedDir();
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
-      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const hintHome = isolatedDir();
       const sessionId = '550e8400-e29b-41d4-a716-446655440000';
       const legacyDir = join(hintHome, '.claude');
       mkdirSync(legacyDir, { recursive: true });
@@ -89,7 +90,7 @@ export function registerStampUpdateCases() {
       const dir = isolatedDir();
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
-      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const hintHome = isolatedDir();
       const legacyDir = join(hintHome, '.claude');
       mkdirSync(legacyDir, { recursive: true });
       const target = join(hintHome, 'target-marker');
@@ -99,15 +100,7 @@ export function registerStampUpdateCases() {
       writeFileSync(stale, 'stale');
       const old = Date.now() / 1000 - 30 * 24 * 60 * 60;
       utimesSync(stale, old, old);
-      try {
-        symlinkSync(target, symlink, 'file');
-      } catch (error) {
-        if (error && ['EPERM', 'EACCES', 'UNKNOWN'].includes(error.code)) {
-          t.skip('file symlinks are unavailable on this host');
-          return;
-        }
-        throw error;
-      }
+      if (!symlinkOrSkip(t, target, symlink, 'file')) return;
       const result = runStamp(
         { session_id: `../escape/${'x'.repeat(400)}`, transcript_path: tp, hook_event_name: 'Stop' },
         {
@@ -126,7 +119,7 @@ export function registerStampUpdateCases() {
       const dir = isolatedDir();
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
-      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const hintHome = isolatedDir();
       const { stdout } = runStamp(
         { session_id: 'tool-session', transcript_path: tp, hook_event_name: 'PostToolUse' },
         { CAH_UPDATE_CHECK_CACHE: updateCache, CAH_STAMP_HINT_HOME: hintHome },
@@ -139,7 +132,7 @@ export function registerStampUpdateCases() {
       const dir = isolatedDir();
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
-      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const hintHome = isolatedDir();
       const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
       const oldTime = Date.now() / 1000 - 60 * 60;
@@ -164,7 +157,7 @@ export function registerStampUpdateCases() {
       const dir = isolatedDir();
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
-      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const hintHome = isolatedDir();
       const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
       const now = Date.now() / 1000;
@@ -207,7 +200,7 @@ export function registerStampUpdateCases() {
         message: { role: 'assistant', model: 'claude-opus-4-7', usage: { input_tokens: 1000 } },
       }) + '\n');
       const updateCache = freshUpdateCache(dir, '99.0.0');
-      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const hintHome = isolatedDir();
       const throttle = join(dir, 'last-stamp.json');
       const env = { CAH_UPDATE_CHECK_CACHE: updateCache, CAH_STAMP_HINT_HOME: hintHome, CAH_STAMP_THROTTLE_PATH: throttle };
       const post = runStamp({ session_id: 'stop-after-tool', transcript_path: tp, hook_event_name: 'PostToolUse' }, env);
@@ -226,7 +219,7 @@ export function registerStampUpdateCases() {
       const dir = isolatedDir();
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '0.0.1');
-      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const hintHome = isolatedDir();
       const { stdout } = runStamp(
         { session_id: 'no-update-session', transcript_path: tp, hook_event_name: 'Stop' },
         { CAH_UPDATE_CHECK_CACHE: updateCache, CAH_STAMP_HINT_HOME: hintHome },
@@ -239,7 +232,7 @@ export function registerStampUpdateCases() {
       const dir = isolatedDir();
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '0.0.1');
-      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const hintHome = isolatedDir();
       const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
       for (let i = 0; i < 64; i += 1) {
@@ -262,7 +255,7 @@ export function registerStampUpdateCases() {
       t.after(() => rmSync(dir, { recursive: true, force: true }));
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
-      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const hintHome = isolatedDir();
       t.after(() => rmSync(hintHome, { recursive: true, force: true }));
       const throttle = join(dir, 'last-stamp.json');
       const env = {
@@ -284,7 +277,7 @@ export function registerStampUpdateCases() {
       const dir = isolatedDir();
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
-      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const hintHome = isolatedDir();
       const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
       const sessionId = 'recovery-update-session';
@@ -309,7 +302,7 @@ export function registerStampUpdateCases() {
       const dir = isolatedDir();
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
-      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const hintHome = isolatedDir();
       const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
       const sessionId = 'update-reclaim-toctou';
@@ -345,7 +338,7 @@ export function registerStampUpdateCases() {
       const dir = isolatedDir();
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
-      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const hintHome = isolatedDir();
       const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
       const sessionId = 'update-three-party';
@@ -392,7 +385,7 @@ export function registerStampUpdateCases() {
       const dir = isolatedDir();
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
-      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const hintHome = isolatedDir();
       const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
       const sessionId = 'update-abandoned-fence';
@@ -418,7 +411,7 @@ export function registerStampUpdateCases() {
       const dir = isolatedDir();
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
-      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const hintHome = isolatedDir();
       const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
       const sessionId = 'update-unexpected-fence';
@@ -448,7 +441,7 @@ export function registerStampUpdateCases() {
       const dir = isolatedDir();
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
-      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const hintHome = isolatedDir();
       const markerDir = updateMarkerDir(hintHome);
       const sessionId = 'update-release-toctou';
       const hash = createHash('sha256').update(`string:${sessionId}`, 'utf8').digest('hex');
@@ -482,7 +475,7 @@ export function registerStampUpdateCases() {
       const dir = isolatedDir();
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
-      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const hintHome = isolatedDir();
       const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
       const sessionId = 'update-marker-toctou';
@@ -517,7 +510,7 @@ export function registerStampUpdateCases() {
       const dir = isolatedDir();
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
-      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const hintHome = isolatedDir();
       const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
       // Explicit, strictly-decreasing mtimes (not wall-clock write order) --
@@ -551,7 +544,7 @@ export function registerStampUpdateCases() {
       const dir = isolatedDir();
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
-      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const hintHome = isolatedDir();
       const markerDir = updateMarkerDir(hintHome);
       mkdirSync(markerDir, { recursive: true });
       // Explicit, strictly-decreasing mtimes -- see the identical comment
@@ -588,7 +581,7 @@ export function registerStampUpdateCases() {
         const dir = isolatedDir();
         const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
         const updateCache = freshUpdateCache(dir, '99.0.0');
-        const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+        const hintHome = isolatedDir();
         const markerDir = updateMarkerDir(hintHome);
         mkdirSync(markerDir, { recursive: true });
         for (let i = 0; i < 64; i += 1) {
@@ -645,7 +638,7 @@ export function registerStampUpdateCases() {
       const dir = isolatedDir();
       const tp = writeTranscript(dir, 'claude-opus-4-7', 1000);
       const updateCache = freshUpdateCache(dir, '99.0.0');
-      const hintHome = mkdtempSync(join(tmpdir(), 'cah-stamp-hinthome-'));
+      const hintHome = isolatedDir();
       const root = join(hintHome, '.claude', 'cah-bin', 'cache');
       mkdirSync(root, { recursive: true });
       for (let i = 0; i < 500; i += 1) writeFileSync(join(root, `unrelated-${i}`), 'foreign');

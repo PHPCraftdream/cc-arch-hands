@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_CLI_TIMEOUT_MS } from '../test-support/process-batches.js';
+import { AllCodexAgents } from '../lib/manifest.js';
 import {
   OPENCODE_AGENT_TAGS_BEGIN, OPENCODE_AGENT_TAGS_END,
 } from '../lib/opencode-instructions.js';
@@ -39,7 +40,7 @@ describe('OpenCode instructions', () => {
     const root = join(home, '.config', 'opencode');
     mkdirSync(root, { recursive: true });
     const path = join(root, 'AGENTS.md');
-    const original = Buffer.from('# My rules\r\nНе удаляй мои правила.\r\n');
+    const original = Buffer.from('# My rules\r\nKeep my rules: naïve café ✓.\r\n');
     writeFileSync(path, original);
     ok(home, 'install', '--opencode-agents');
     const installed = readFileSync(path);
@@ -110,7 +111,7 @@ describe('OpenCode instructions', () => {
     assert.equal(readFileSync(join(project, 'AGENTS.md'), 'utf8').includes(OPENCODE_AGENT_TAGS_BEGIN), true);
     const parsed = ok(home, 'list', '--json', '--opencode', '--local', '--cwd', project)
       .stdout.trim().split('\n').filter(Boolean).map(JSON.parse);
-    assert.equal(parsed.filter((r) => r.kind === 'opencode-agent' && r.state === 'mine').length, 46);
+    assert.equal(parsed.filter((r) => r.kind === 'opencode-agent' && r.state === 'mine').length, AllCodexAgents.length);
     // strict-local inspection resolves only .opencode — never Claude dirs
     const doctor = call(home, 'doctor', '--opencode', '--local', '--cwd', project);
     assert.equal(doctor.status, 1, 'commands/skills missing in an agents-only install');

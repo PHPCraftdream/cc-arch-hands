@@ -275,11 +275,13 @@ describe('truthful deterministic quarantine reporting', { concurrency: false }, 
 });
 
 describe('shared leaf publication', { concurrency: false }, () => {
-  for (const [kind, install, leaf] of [
+  const LEAF_KINDS = [
     ['commands', (scope) => writeModelCommands(null, scope), ['.claude', 'commands', 'fl.md']],
     ['agents', (scope) => writeModelAgents(null, scope), ['.claude', 'agents', 'fl.md']],
     ['codex', (scope) => writeCodexAgents(null, scope), ['.codex', 'agents', 'ls.toml']],
-  ]) {
+  ];
+
+  for (const [kind, install, leaf] of LEAF_KINDS) {
     it(`${kind} refuses a foreign successor and preserves its mode`, async () => {
       const dir = tmpDir();
       const scope = new Scope({ cwd: dir });
@@ -297,11 +299,7 @@ describe('shared leaf publication', { concurrency: false }, () => {
     });
   }
 
-  for (const [kind, install, leaf] of [
-    ['commands', (scope) => writeModelCommands(null, scope), ['.claude', 'commands', 'fl.md']],
-    ['agents', (scope) => writeModelAgents(null, scope), ['.claude', 'agents', 'fl.md']],
-    ['codex', (scope) => writeCodexAgents(null, scope), ['.codex', 'agents', 'ls.toml']],
-  ]) {
+  for (const [kind, install, leaf] of LEAF_KINDS) {
     it(`${kind} rejects an in-place same-size edit with restored mtime and mode`, async () => {
       const dir = tmpDir();
       const scope = new Scope({ cwd: dir });

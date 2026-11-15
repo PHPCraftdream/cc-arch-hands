@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { run, resolveScope, parseOnly, resolveDeps, classifyPath } from '../lib/cli.js';
 import { BinFiles, binLifecycleLockPath } from '../lib/binstall.js';
 import { LEASE_MAX_MS } from '../lib/lease-lock.js';
-import { AllCodexAgents } from '../lib/manifest.js';
+import { AllCodexAgents, AllModelCommands } from '../lib/manifest.js';
 import { SentinelBin, SentinelCodexAgent, SetForModelCommand } from '../lib/sentinel.js';
 
 beforeEach((t) => {
@@ -672,7 +672,7 @@ describe('run install/uninstall --codex-agents', () => {
     try {
       withHome(home, () => {
         assert.equal(run(['install', '--only', 'commands']), 0);
-        assert.ok(!existsSync(join(home, '.codex', 'agents', 'h55.toml')));
+        assert.ok(!existsSync(join(home, '.codex')), 'nothing of Codex is written');
         // codex-agents is an opt-in selector — valid via --only but excluded from
         // the default (empty --only) install set.
         assert.deepEqual(parseOnly('codex-agents'), { classes: ['codex-agents'], skills: [] });
@@ -842,7 +842,7 @@ describe('run install/uninstall --commands', () => {
         const out = captureStdout(() => run(['list', '--json']));
         const rows = out.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
         const commandRows = rows.filter((r) => r.kind === 'command');
-        assert.equal(commandRows.length, 67);
+        assert.equal(commandRows.length, AllModelCommands.length);
         assert.ok(commandRows.every((r) => r.state === 'mine'));
 
         assert.equal(run(['uninstall', '--commands']), 0);
@@ -949,7 +949,7 @@ describe('run install/uninstall --only <skill-name>', () => {
 });
 
 // ---------------------------------------------------------------------------
-// doctor exit codes (review H3) + reinstall --templates (review H4/M8)
+// doctor exit codes + reinstall --templates
 // ---------------------------------------------------------------------------
 
 describe('doctor exit codes', () => {
@@ -984,7 +984,7 @@ describe('doctor exit codes', () => {
 });
 
 describe('reinstall --templates', () => {
-  it('does not abort in the uninstall phase (review H4/M8)', () => {
+  it('does not abort in the uninstall phase', () => {
     const templates = fileURLToPath(new URL('../templates', import.meta.url));
     const dir = mkdtempSync(join(tmpdir(), 'cah-rein-tpl-'));
     try {

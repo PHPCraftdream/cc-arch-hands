@@ -1,5 +1,4 @@
 import { afterEach } from 'node:test';
-import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, readdirSync, existsSync, mkdirSync, unlinkSync, rmdirSync, rmSync } from 'node:fs';
 import { join, dirname, basename } from 'node:path';
@@ -155,14 +154,7 @@ export function updateMarkerDir(home) {
   return join(home, '.claude', 'cah-bin', 'cache', 'update-markers');
 }
 
-export async function waitForPath(path, timeoutMs = DEFAULT_CHILD_DEADLINE_MS) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (existsSync(path)) return;
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
-  assert.fail(`timed out waiting for ${path}`);
-}
+export { waitForPath } from './process-batches.js';
 
 export function sessionHash(sessionId) {
   const identity = typeof sessionId === 'string' ? `string:${sessionId}` : 'missing:';

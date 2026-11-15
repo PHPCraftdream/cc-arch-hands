@@ -411,7 +411,7 @@ describe('cli-run MCP server', () => {
     const list = await mcp.request('tools/list', {});
     assert.deepEqual(list.result.tools.map((tool) => tool.name), ['run', 'status', 'logs']);
     assert.deepEqual(list.result.tools.map((tool) => tool.title),
-      ['Запустить задачу', 'Статус задачи', 'Логи задачи']);
+      ['Run a task', 'Task status', 'Task logs']);
     assert.deepEqual(list.result.tools[0].inputSchema.required, ['taskName', 'jobs']);
     const unknownTool = await mcp.request('tools/call', { name: 'nope', arguments: {} });
     assert.equal(unknownTool.error.code, -32602);

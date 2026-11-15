@@ -10,7 +10,9 @@ Install (or remove, or inspect) three Claude Code settings entries:
 1. A **`statusLine`** entry at the bottom of the terminal showing the active
    model, context-window usage, and (for Pro/Max subscribers) the **5-hour**
    and **weekly** quota use with reset times:
-   `<model> · X% (Nk/Mk) · 5h N% (→HH:MM) · wk N% (→wd HH:MM)`. The 5h/wk
+   `<model> [effort] · X% (Nk/Mk) · 5h N% →1h 23m · wk N% →sat 27.06 16:19`
+   (weekday names in English; `CAH_LOCALE=<BCP 47 tag>` in the environment
+   Claude Code runs in switches the language). The 5h/wk
    parts only appear after the first API response of the session, and are
    omitted entirely on accounts where Claude Code does not deliver
    `rate_limits` in the statusLine envelope. If `five_hour` is briefly absent

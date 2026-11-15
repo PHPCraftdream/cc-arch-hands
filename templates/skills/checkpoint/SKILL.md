@@ -30,7 +30,7 @@ Names are slugs (lowercase, hyphens, no spaces); `/resume pre-refactor` finds it
    - **Repo state** — as described above: the main folder first, then every linked worktree and what is done there.
 3. **Write** the file:
 
-   ```markdown
+   ````markdown
    # Checkpoint — <YYYY-MM-DD HH:MM> [<label>]
 
    ## Session summary
@@ -63,7 +63,7 @@ Names are slugs (lowercase, hyphens, no spaces); `/resume pre-refactor` finds it
    ```
    ### worktrees
    - <path> [<branch>] — <what is done there>; <status: clean / N changed>; last <sha subject>  (this session)
-   ```
+   ````
 
 4. **Report** one line with the absolute path. Do not add the file to git.
 

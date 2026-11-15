@@ -33,7 +33,7 @@ function ok(home, ...args) {
   return result;
 }
 
-// Materialize a COMPLETE fixture tree: the nine opencode-skills plus every
+// Materialize a COMPLETE fixture tree: the opencode-skills plus every
 // dependency tree the opencode-commands class needs (command templates and
 // runtime leaves), since resolveDeps auto-adds opencode-commands.
 function fixtureTemplates(home, transform = null) {
@@ -68,7 +68,7 @@ function fixtureTemplates(home, transform = null) {
 }
 
 describe('OpenCode skill installer', () => {
-  it('installs all nine skills with name+description frontmatter', (t) => {
+  it('installs every skill with name+description frontmatter', (t) => {
     const home = sandbox(t);
     ok(home, 'install', '--opencode-skills');
     const root = join(home, '.config', 'opencode', 'skills');

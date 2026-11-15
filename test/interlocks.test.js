@@ -31,19 +31,16 @@ function rendezvousFires(phase, callArgs) {
 
 describe('interlock argument parser', () => {
   it('keeps the first alias of every no-stage call shape reachable', () => {
-    // (phase, ...aliases) shape — one representative per production file:
+    // (phase, ...aliases) shapes, one representative each:
     const cases = [
-      // lib/fs-atomic.js:110
       ['write-after-transaction-temp-create', ['write-after-temp-create', 'write-after-transaction-temp-create']],
-      // lib/fs-atomic.js:144
       ['write-post-rename', ['write-after-rename', 'write-post-rename']],
-      // lib/fs-atomic-publication.js:813
       ['write-after-final-operation', ['write-after-final-rename', 'write-after-final-operation']],
-      // lib/probe.js:400 (middle alias)
+      // the middle alias
       ['enable-after-backup-check', ['enable-post-backup-check', 'enable-after-backup-check', 'post-backup-check']],
-      // lib/probe.js:403 (middle alias)
+      // the middle alias
       ['enable-before-settings-rename', ['enable-pre-settings-rename', 'enable-before-settings-rename', 'pre-settings-rename']],
-      // lib/binstall/runtime.js:245 (alias + numeric tail)
+      // alias + numeric tail
       ['lib/lease-lock.js', ['binstall-before-source-capture', 'lib/lease-lock.js', 0]],
       // single-argument shape is unaffected
       ['prune-before-remove', ['prune-before-remove']],
@@ -76,5 +73,4 @@ describe('interlock argument parser', () => {
     assert.equal(threw, null);
     assert.equal(fired, false, "a declared stage must be consumed as the stage, not leak into candidates");
   });
-
 });
