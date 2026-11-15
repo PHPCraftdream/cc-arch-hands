@@ -18,8 +18,8 @@ of each answer), the mod:
 2. holds every prompt that would wake the session: messages you type, finished
    background tasks, scheduled and `/loop` ticks, hook wake-ups, peer and
    channel messages. Each one is dropped and recorded with its time, origin and
-   full text, and a prompt that was already queued and starts a turn is stopped
-   and recorded too;
+   full text, and a prompt that was already queued and starts a turn is
+   recorded too and its tool calls are refused, so that turn ends at once;
 3. runs `/checkpoint watch-<date>-<time>`;
 4. compacts the session;
 5. writes the held events into the checkpoint as `## Held events`, and, for

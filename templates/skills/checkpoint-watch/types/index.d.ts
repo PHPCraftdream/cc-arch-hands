@@ -14,8 +14,8 @@ export type CheckpointCycle = {
   trigger: 'threshold' | 'idle' | 'manual';
   phase: 'stopping' | 'queued' | 'checkpointing' | 'compacting' | 'resuming';
   held: HeldEvent[];
-  /** The module instance that runs the cycle: a reload takes it over, the older instance stands down. */
-  owner: string;
+  /** The context size when its compaction began: a reload tells from it whether the compaction happened. */
+  tokens: number | null;
   /** When it was last written (ms): a cycle older than the cycle limit is forgotten. */
   savedAt: number;
 };

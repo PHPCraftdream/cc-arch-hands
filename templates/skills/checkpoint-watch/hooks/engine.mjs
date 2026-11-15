@@ -35,6 +35,8 @@ const MODE_TTL_MS = 30_000;
 // A plain literal: the validator reads $.state references from the source.
 const CYCLE_STATE = { plugin: 'cah-checkpoint-watch', key: 'cycle' };
 const PHASES = Object.freeze(['stopping', 'queued', 'checkpointing', 'compacting', 'resuming']);
+// A context below this share of its size at the start of the compaction means it happened.
+const COMPACTED_RATIO = 0.6;
 const ACTIVITY_STATE = { plugin: 'cah-checkpoint-watch', key: 'activity' };
 export const HOLD_REASON = 'checkpoint-watch: this message arrived while a checkpoint is being saved; it is '
   + 'recorded and comes back after the compaction. Do not act on it now: reply with one short line and end the turn.';
@@ -214,9 +216,6 @@ export function createWatchState({ threshold = THRESHOLD, limitMs = CYCLE_LIMIT_
     undelivered: [],
     // The watch mode as last read ({ mode, at }).
     modeCache: null,
-    // This module instance; a reload makes a new one.
-    id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
-    persisting: null,
   };
 }
 
@@ -224,33 +223,18 @@ function newCycle(fields) {
   return { held: [], ownTurn: null, waitTurn: null, denies: 0, stray: new Set(), file: null, ...fields };
 }
 
-// The cycle as $.state keeps it: JSON only, no timers. `owner` is the module
-// instance that runs it, `savedAt` when it last wrote.
-function snapshot(c, w) {
+// The cycle as $.state keeps it: JSON only, no timers. `savedAt` is when it was
+// written, `tokens` the context size when its compaction began (a reload tells
+// from it whether that compaction already happened).
+function snapshot(c) {
   return {
     name: c.name, mode: c.mode, trigger: c.trigger, phase: c.phase, held: c.held,
-    owner: w.id, savedAt: Date.now(),
+    tokens: c.tokens ?? null, savedAt: Date.now(),
   };
 }
 
-// Writes the current cycle (or null) into $.state, unless another instance of
-// the module (a reload's) owns what is stored. Writes run one after another and
-// each saves the cycle as it stands when it runs, so their order does not matter.
 function persist(w, $) {
-  const job = async () => {
-    const saved = await savedCycle($);
-    if (saved?.owner && saved.owner !== w.id) return;
-    await $.state.set(CYCLE_STATE, w.cycle ? snapshot(w.cycle, w) : null);
-  };
-  w.persisting = (w.persisting ?? Promise.resolve()).then(job).catch(() => {});
-}
-
-// An older instance still running a step of a cycle a reload took over must stop.
-async function superseded(w, $, c) {
-  const saved = await savedCycle($);
-  if (!saved || saved.name !== c.name || !saved.owner || saved.owner === w.id) return false;
-  if (w.cycle === c) { w.cycle = null; c.timer?.cancel?.(); }
-  return true;
+  try { $.state.set(CYCLE_STATE, w.cycle ? snapshot(w.cycle) : null).catch(() => {}); } catch { /* no state on this host */ }
 }
 
 // The running main turn and when the last one ended: without them a reload
@@ -288,21 +272,40 @@ export async function restoreCycle(w, $) {
   const c = newCycle({
     name: saved.name, mode: saved.mode, trigger: saved.trigger ?? 'threshold', phase: saved.phase,
     held: Array.isArray(saved.held) ? saved.held : [],
+    tokens: Number.isFinite(saved.tokens) ? saved.tokens : null,
   });
   w.cycle = c;
   armLimit(w, $, c);
-  // Take the cycle over: an older instance's pending steps see another owner and stop.
-  await $.state.set(CYCLE_STATE, snapshot(c, w)).catch(() => {});
   say($, `reloaded during checkpoint ${c.name} (${c.phase}); picking it up`);
-  if (c.phase === 'queued') later(w, $, 0, c, () => slash($, 'checkpoint', c.name));
-  else if (c.phase === 'compacting') later(w, $, 0, c, () => compact(w, $, c, 1));
-  else if (c.phase === 'resuming') {
+  // The host does not run the older instance's pending waits: a step it had queued is ours to redo,
+  // unless the world shows it already happened.
+  if (c.phase === 'queued' || c.phase === 'compacting' || c.phase === 'resuming') {
     c.file = await findCheckpoint($, c.name);
     if (w.cycle !== c) return;
-    if (!c.file) { fail(w, $, `the checkpoint ${c.name}.md was not written`, c); return; }
-    later(w, $, 0, c, () => slash($, 'resume', c.name));
+    if (!c.file) {
+      // /checkpoint may not have run yet (queued): ask again; any other phase cannot go on without it.
+      if (c.phase === 'queued') later(w, $, 0, c, () => slash($, 'checkpoint', c.name));
+      else fail(w, $, `the checkpoint ${c.name}.md was not written`, c);
+      persist(w, $);
+      return;
+    }
+    if (c.phase === 'queued') c.phase = 'compacting';
+    if (c.phase === 'compacting' && await compactionDone(w, $, c)) c.phase = 'resuming';
+    if (w.cycle !== c) return;
+    if (c.phase === 'compacting') later(w, $, 0, c, () => compact(w, $, c, 1));
+    else later(w, $, 0, c, () => slash($, 'resume', c.name));
   }
   // 'stopping' and 'checkpointing' wait for the turn that is running; its id is unknown now.
+  persist(w, $);
+}
+
+// A compaction that began before a reload has happened if the context is now well below its size then.
+async function compactionDone(w, $, c) {
+  if (!Number.isFinite(c.tokens)) return false;
+  try {
+    const tokens = (await $.session.usage()).context?.tokens;
+    return typeof tokens === 'number' && tokens < c.tokens * COMPACTED_RATIO;
+  } catch { return false; }
 }
 
 function armLimit(w, $, c) {
@@ -352,9 +355,7 @@ function say($, text) {
 function later(w, $, ms, c, fn) {
   $.clock.after(ms, () => {
     if (w.cycle !== c) return;
-    Promise.resolve()
-      .then(async () => { if (!(await superseded(w, $, c))) await fn(); })
-      .catch((error) => fail(w, $, describe(error), c));
+    Promise.resolve().then(fn).catch((error) => fail(w, $, describe(error), c));
   });
 }
 
@@ -502,6 +503,10 @@ async function compact(w, $, c, attempt) {
     c.file = await findCheckpoint($, c.name);
     if (w.cycle !== c) return;
     if (!c.file) { fail(w, $, `the checkpoint ${c.name}.md was not written`, c); return; }
+    // The size before the compaction: a reload uses it to tell whether the compaction happened.
+    try { c.tokens = (await $.session.usage()).context?.tokens ?? null; } catch { c.tokens = null; }
+    if (w.cycle !== c) return;
+    persist(w, $);
   }
   let result;
   try {

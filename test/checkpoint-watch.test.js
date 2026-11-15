@@ -743,45 +743,58 @@ describe('checkpoint-watch engine: a cycle that stops', () => {
     }
   });
 
-  it('a reload resumes each phase: queued runs /checkpoint again, checkpointing waits, compacting compacts', async () => {
-    const run = async (phase) => {
-      const h = harness();
-      const name = await startCycle(h);
-      h.files[`/repo/docs/checkpoints/${name}.md`] = '# Checkpoint\n';
-      h.state.set('cah-checkpoint-watch/cycle', { ...h.state.get('cah-checkpoint-watch/cycle'), phase });
-      const reloaded = harness();
-      reloaded.state = h.state;
-      Object.assign(reloaded.files, h.files);
-      await reloaded.emit('session.start', {});
-      await reloaded.flush(0);
-      return { name, reloaded };
-    };
-    const queued = await run('queued');
-    assert.deepEqual(queued.reloaded.calls.command, [{ command: 'checkpoint', args: queued.name }]);
-    const waiting = await run('checkpointing');
-    assert.deepEqual(waiting.reloaded.calls.command, []);
-    assert.equal(waiting.reloaded.w.cycle.phase, 'checkpointing');
-    const compacting = await run('compacting');
-    assert.equal(compacting.reloaded.calls.compact.length, 1);
-    assert.deepEqual(compacting.reloaded.calls.command.at(-1), { command: 'resume', args: compacting.name });
+  // A reload in `phase` with the checkpoint file written or not, the saved context size, and the one now.
+  async function reloadIn(phase, { file = true, saved = null, now = 300_000 } = {}) {
+    const h = harness();
+    const name = await startCycle(h);
+    if (file) h.files[`/repo/docs/checkpoints/${name}.md`] = '# Checkpoint\n';
+    h.state.set('cah-checkpoint-watch/cycle', { ...h.state.get('cah-checkpoint-watch/cycle'), phase, tokens: saved });
+    const reloaded = harness();
+    reloaded.state = h.state;
+    reloaded.tokens = now;
+    Object.assign(reloaded.files, h.files);
+    await reloaded.emit('session.start', {});
+    await reloaded.flush(0);
+    return { name, reloaded };
+  }
+
+  it('a reload before /checkpoint ran asks for it again; once the file exists it goes on to compact', async () => {
+    const without = await reloadIn('queued', { file: false });
+    assert.deepEqual(without.reloaded.calls.command, [{ command: 'checkpoint', args: without.name }]);
+    assert.equal(without.reloaded.w.cycle.phase, 'queued');
+    const written = await reloadIn('queued');
+    assert.deepEqual(written.reloaded.calls.command.map((c) => c.command), ['resume'], 'no second /checkpoint');
+    assert.equal(written.reloaded.calls.compact.length, 1, 'it compacts instead');
   });
 
-  it('a step the older instance still had pending does not run once a reload took the cycle over', async () => {
-    // The older instance is about to compact (its step is a pending timer) when the reload happens.
-    const older = harness();
-    const name2 = await startCycle(older);
-    await older.emit('turn.start', { turnId: 'T3', text: `/checkpoint ${name2}` });
-    older.files[`/repo/docs/checkpoints/${name2}.md`] = '# Checkpoint\n';
-    await older.emit('turn.complete', { turnId: 'T3', reason: 'answer' });
-    const reloaded = harness();
-    reloaded.state = older.state;
-    Object.assign(reloaded.files, older.files);
-    await reloaded.emit('session.start', {});
-    await older.flush(500);
-    assert.equal(older.calls.compact.length, 0, 'the older instance stood down');
-    assert.equal(older.w.cycle, null);
-    await reloaded.flush(0);
-    assert.equal(reloaded.calls.compact.length, 1, 'the new instance compacts once');
+  it('a reload while the checkpoint turn runs waits for it', async () => {
+    const { reloaded } = await reloadIn('checkpointing');
+    assert.deepEqual(reloaded.calls.command, []);
+    assert.equal(reloaded.w.cycle.phase, 'checkpointing');
+  });
+
+  it('a reload in the compaction compacts only when the context shows it has not happened', async () => {
+    const pending = await reloadIn('compacting', { saved: 900_000, now: 880_000 });
+    assert.equal(pending.reloaded.calls.compact.length, 1, 'the context is still full: compact');
+    const done = await reloadIn('compacting', { saved: 900_000, now: 40_000 });
+    assert.equal(done.reloaded.calls.compact.length, 0, 'the context shrank: it already happened');
+    assert.deepEqual(done.reloaded.calls.command.at(-1), { command: 'resume', args: done.name });
+    const unknown = await reloadIn('compacting', { saved: null, now: 40_000 });
+    assert.equal(unknown.reloaded.calls.compact.length, 1, 'without a saved size it compacts');
+  });
+
+  it('a reload with the checkpoint file gone fails a cycle that needs it', async () => {
+    const { reloaded } = await reloadIn('resuming', { file: false });
+    assert.equal(reloaded.w.cycle, null);
+    assert.ok(reloaded.calls.log.some((line) => line.includes('was not written')));
+  });
+
+  it('the size before the compaction is saved when it starts', async () => {
+    const h = harness({ mode: 'checkpoint' });
+    h.tokens = 777_000;
+    const name = await startCycle(h);
+    await runCheckpointTurn(h, name);
+    assert.equal(h.state.get('cah-checkpoint-watch/cycle').tokens, 777_000);
   });
 
   it('works on a host without $.state', async () => {
