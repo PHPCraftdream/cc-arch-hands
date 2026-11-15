@@ -16,7 +16,7 @@ npx cc-arch-hands install        # that's it — installs commands, agents & ski
 
 Three kinds of Claude Code artifacts under `~/.claude/` (commands, agents,
 skills), all generated from a single model registry so they stay in
-lockstep — plus the four companion runtime bins that skills use as hooks,
+lockstep — plus the six companion runtime bins that skills use as hooks,
 statusLine commands, or diagnostics, copied into `~/.claude/cah-bin/` at
 install time.
 
@@ -48,7 +48,8 @@ Claude Code through other providers (Codex, z.ai, …) and as separate Claude Co
   the one shared `~/.claude/cah-bin/`, which profiles call by absolute path, and `settings.json` (the `/clock`
   statusLine and hooks) still reaches a profile through ccgp's copy at its next start; `/rewake` (`cah rewake on`) writes its hooks into
   every profile's `settings.json` at once. Project-local installs
-  (`--local`, `--cwd`) do not touch ccgp profiles.
+  (`--local`, `--cwd`) do not touch ccgp profiles. A global `cah doctor` checks every profile too. A
+  `CLAUDE_CONFIG_DIR` under your home dir that is neither `~/.claude` nor a ccgp profile is covered the same way.
 - **The context gauge follows ccgp's model mapping.** In a ccgp session the statusLine and chat stamps show the
   backend model an alias is routed to (see *Optional ccgp model labels* below), and the gauge uses the per-profile
   context window ccgp passes as `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (e.g. `90.13% (831k/922k)`).
@@ -545,7 +546,7 @@ Reusable capability packs Claude Code loads on demand. Each is invoked as
 | `/ccheckpoint-watch` | Same cycle, plus a local commit of each checkpoint file (only that file; never a push). |
 | `/checkpoint-idle` | Turns on the same cycle for silence: after N minutes (default 30; 5–50) with no turn and 200k+ tokens of context the checkpoint-watch mod runs `/checkpoint`, compacts and runs `/resume`. This project by default, `--global` for every project (and every ccgp profile), `--off`, `--status`. See [below](#checkpoint-compact-and-resume-after-silence-checkpoint-idle). |
 | `/ccheckpoint-idle` | Same, plus a local commit of each checkpoint file (only that file; never a push). |
-| `/nobg` | Forbids detached shell jobs: a `PreToolUse` hook on Bash denies a command with a bare `&`, `nohup`, `setsid`, `disown`, `coproc` or `screen -d`, also inside `$(…)`, `bash -c '…'` and `eval`, and tells the agent to use `run_in_background: true`. Global by default (plus every ccgp profile); `--here` for one project, `--off` to remove, `--status` to inspect. See [below](#no-detached-shell-jobs-nobg). |
+| `/nobg` | Forbids detached shell jobs: a `PreToolUse` hook on Bash denies a command with a bare `&`, `nohup`, `setsid`, `disown`, `coproc`, `screen -dm`, Windows `start` or `Start-Process`, also inside `$(…)`, `bash -c '…'`, `eval` and a heredoc fed to a shell, and tells the agent to use `run_in_background: true`. Global by default (plus every ccgp profile); `--here` for one project, `--off` to remove, `--status` to inspect. See [below](#no-detached-shell-jobs-nobg). |
 | `/rewake` | Wakes a session whose turn an API error cut off (`Connection lost mid-response`, overloaded, server errors) and asks Claude to continue: waits 60 s, then up to 900 s, at most 6 tries. Global by default (plus every ccgp profile); `--here` for one project, `--off` to remove, `--status` to inspect. See [below](#wake-after-a-dropped-connection-rewake). |
 
 **Workspace HUD**
@@ -629,7 +630,8 @@ Claude Code hooks cannot start a compaction; a Claude Code mod (a plugin hooks
 module) can. The `checkpoint-watch` skill folder ships one
 (`.claude-plugin/plugin.json` + `hooks/`), which Claude Code 2.1.287 or later
 loads from `~/.claude/skills/checkpoint-watch/` as `cah-checkpoint-watch@skills-dir`
-in every terminal session. It acts only in a project that turned it on:
+in every terminal session (the session's `$.state`, which carries a cycle across a
+reload of the mod, was checked on 2.1.322; a host without it still runs the cycle). It acts only in a project that turned it on:
 `/checkpoint-watch` (or `cah checkpoint-watch on --cwd <project>`) writes
 `{ "cahCheckpointWatch": { "mode": "checkpoint" } }` into that project's
 `.claude/settings.local.json` (personal, not committed), `/ccheckpoint-watch`
@@ -639,11 +641,15 @@ and is never global.
 Once the main loop's context reaches 90% (checked after each of its tool calls
 and at the end of each answer) the mod:
 
-1. stops the running turn;
+1. stops the running turn: it refuses the agent's further tool calls and asks it
+   to end the turn with a one-line status, and runs step 3 once the turn ends
+   (it aborts the turn only if the agent keeps calling tools: after a mod's
+   abort Claude Code refuses the mod's next command until someone types);
 2. holds every prompt that would wake the session — messages you type, finished
    background tasks, scheduled and `/loop` ticks, hook wake-ups, peer and
    channel messages: each is dropped and recorded with its time, origin and full
-   text; a prompt already queued that starts a turn is stopped and recorded too;
+   text; a prompt already queued that starts a turn is recorded too, and its
+   tool calls are refused so it ends at once;
 3. runs `/checkpoint watch-<date>-<time>`;
 4. compacts the session (`$.session.compact`; where the host refuses it, the
    `/compact` command);
@@ -672,7 +678,13 @@ the `checkpoint-watch` skill; a failed run does not hold back the 90% cycle.
 A cycle that fails (no checkpoint written, the checkpoint turn interrupted, the
 compaction skipped, 20 minutes without a result) or is cancelled with
 `/checkpoint-watch-cancel` ends the hold and sends what it held back as one
-prompt; the next cycle waits until the context is below 90% again.
+prompt. After a failure the mod tries again at the next check 60 s later (three
+failures in a row at most); after a cancel, or the third failure, the next cycle
+waits until the context is below 90% again. A command Claude Code refuses (after
+an Esc, say) is sent as a prompt instead; when that is refused too, your next
+message lifts the wait, and held events that could not be delivered go with it.
+The cycle in flight is kept in the session's `$.state`, so a reload of the mod
+(`/reload-plugins`, a reinstall) picks it up where it was.
 `cah checkpoint-watch on|off` also removes the Stop hint hook that earlier
 releases wrote into the project's `.claude/settings.json`.
 
@@ -722,13 +734,17 @@ Claude Code has no setting against it (`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` on
 `cah-nobg` bin and denies the call, telling the agent to run the command in the foreground or use the Bash tool's
 `run_in_background: true`. It catches, with one quote-aware scan and no shell grammar:
 
-- a bare `&` (`a &`, `a & b`, `( a; b ) &`, `a &> log &`);
-- `nohup`, `setsid`, `disown`, `coproc`, `daemonize`, `systemd-run`, `screen -d…` and `tmux … -d` in command
-  position, also behind `sudo`, `env`, `time`, `timeout 5`, `VAR=x`, `if`/`do`/`{`;
-- the same inside `$(…)`, backticks, double-quoted substitutions, `bash -c '…'`, `sh -c "…"` and `eval …`.
+- a bare `&` (`a &`, `a & b`, `( a; b ) &`, `a &> log &`) unless a later `wait` of the same (sub)shell reaps it;
+  a `wait` in a comment, in quotes or after the subshell ended does not count;
+- `nohup`, `setsid`, `disown`, `coproc`, `daemonize`, `systemd-run`, `at`, `batch`, Windows `start`, `screen -dm`
+  and `tmux new … -d` in command position, also quoted, as `name.exe`, and behind `sudo -u user`, `env -u VAR`,
+  `timeout -s SIG 5`, `nice -n 5`, `command`, `xargs -n 1`, `VAR=x`, `if`/`do`/`{`;
+- `cmd /c start …` and PowerShell `Start-Process`/`Start-Job` without `-Wait`;
+- the same inside `$(…)`, backticks, double-quoted substitutions, `bash -c '…'`, `sh -c "…"`, `env -S '…'`,
+  `eval …` and a heredoc fed to a shell (`bash <<EOF`).
 
-Left alone: `&&`, `||`, `|&`, `&>`, `2>&1`, an `&` in single quotes, a comment, a heredoc body, `$(( ))`, and a
-command that reaps its jobs with a `wait` after the last `&`. Anything the bin cannot read allows the call.
+Left alone: `&&`, `||`, `|&`, `&>`, `2>&1`, `;&` in `case`, an `&` in quotes, a comment, a plain heredoc body,
+`$(( ))`, `(( ))`, `tmux attach -d`, `screen -dr`. Anything the bin cannot read allows the call.
 
 Global by default (`~/.claude/settings.json` plus every ccgp profile); `--local`/`--cwd` (`/nobg --here`) target one
 project. Only the sentinel-tagged hook (`cah-hook:v1`, `cah-name: nobg`) is added or removed, under the shared
@@ -922,9 +938,9 @@ npx cc-arch-hands uninstall --opencode                        # remove all OpenC
 npx cc-arch-hands list --json --opencode                      # only OpenCode kinds (agents, rule, commands, skills, runtime)
 npx cc-arch-hands doctor --opencode                           # health gate over OpenCode artifacts only
 
-npx cc-arch-hands list                             # tabular: NAME | KIND | STATE
+npx cc-arch-hands list                             # tabular: NAME | KIND | STATE (mine, legacy, foreign, missing, incomplete)
 npx cc-arch-hands list --json                      # NDJSON for scripting
-npx cc-arch-hands doctor                           # condensed health verdict
+npx cc-arch-hands doctor                           # condensed health verdict (incomplete counts as missing)
 npx cc-arch-hands version                          # version + counts
 npx cc-arch-hands models --json                    # manifest as one JSON line: Claude and Codex aliases, context windows, Codex efforts
 
