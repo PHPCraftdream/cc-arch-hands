@@ -1,6 +1,6 @@
 ---
 name: clock
-description: "Install a Claude Code statusLine that shows model + context-window usage AND, for Pro/Max subscribers, the 5-hour and weekly quota use with reset times (`<model> · X% (Nk/Mk) · 5h N% (→HH:MM) · wk N% (→wd HH:MM)`). Also installs a chat-stamp hook (`cah-stamp`) on BOTH Stop AND PostToolUse, so an `HH:MM · model · X% · 5h N% · wk N%` audit line appears after every tool call — not only at end of turn. The statusLine refreshes every 60 seconds (`refreshInterval: 60`) AND on every turn boundary; the 60s default sits well above Windows Node cold-start (1–3s), so the bar stays live without races. Default global (~/.claude/settings.json); pass `--here` for project-local."
+description: "Install a Claude Code statusLine with model, context-window usage and, for Pro/Max, 5-hour and weekly quota use with reset times, plus a chat-stamp hook (`cah-stamp`, Stop and PostToolUse) that prints an `HH:MM · model · X% · 5h N% · wk N%` audit line after every tool call. Refreshes every 60 s and on each turn. Default global; `--here` for this project, `--off` to remove, `--status` to inspect."
 ---
 
 # clock
@@ -26,11 +26,23 @@ Install (or remove, or inspect) three Claude Code settings entries:
    the chat audit-trail Stop/PostToolUse hook (`cah-stamp`) carries the
    timestamp instead.
 
-   Для нулевого streaming-placeholder сохраняется последнее положительное измерение той же модели из стандартного transcript, без служебных подписей; compaction boundary не пересекается. При `current_usage: null` или отсутствии подходящего измерения блок контекста временно не показывается, без ложного `0%`; название модели и доступные квоты остаются.
+   For a zero streaming placeholder the last positive measurement of the same
+   model from the standard transcript is kept, without extra labels; it never
+   crosses a compaction boundary. With `current_usage: null` or no suitable
+   measurement the context block is hidden for the moment, never shown as a
+   false `0%`; the model name and any quota stay.
 
-   Окно контекста для панели и chat-stamp — `min(окно Claude Code, CLAUDE_CODE_AUTO_COMPACT_WINDOW)`, если переменная содержит целое число от 100000 до 1000000. Без валидной переменной штатное окно не меняется. Например, при переменной `922000` показывается `922k`, не `1M`. Это не точный порог compaction: резерв ответа и настройки могут вызвать сжатие раньше. Аналогичный лимит применяется к checkpoint hint.
+   The context window for the bar and the chat stamp is
+   `min(Claude Code's window, CLAUDE_CODE_AUTO_COMPACT_WINDOW)` when that
+   variable holds an integer from 100000 to 1000000; without a valid variable
+   the window is unchanged. With `922000` the bar shows `922k`, not `1M`. It is
+   not the exact compaction threshold: the reply reserve and settings may
+   compact earlier. The same limit applies to the checkpoint hint.
 
-   Источник показателей — стандартные данные Claude Code: statusLine envelope и transcript. Панель не обращается к proxy и не требует специальных переменных или endpoints. Если `rate_limits` отсутствует (например, при custom gateway), квоты не показываются: их нельзя вычислить из context usage.
+   The figures come from Claude Code's own data, the statusLine envelope and
+   the transcript. The bar never asks a proxy and needs no special variables or
+   endpoints. When `rate_limits` is absent (a custom gateway, say), quotas are
+   not shown: they cannot be derived from context usage.
 
 2. A **chat-stamp hook** (`cah-stamp`) installed on **BOTH** `Stop` AND
    `PostToolUse`. It emits an `HH:MM · model · X% · 5h N% · wk N%` line as a
@@ -54,7 +66,7 @@ Install (or remove, or inspect) three Claude Code settings entries:
 ```
 /clock              # install both pieces in ~/.claude/settings.json (global, recommended)
 /clock --here       # install both pieces in <cwd>/.claude/settings.json (project-local)
-/clock --off        # remove both from the chosen scope
+/clock --off        # remove both from whichever scope has them (global and local are both checked)
 /clock --status     # report which scope has each piece installed
 ```
 
@@ -125,13 +137,13 @@ tell the user to run `cah install` first, then continue.
 }
 ```
 
-`refreshInterval` задаётся в **секундах**, значение по умолчанию — `60`.
-Это поддерживает обновления в простое без частых запусков Node на Windows.
-Для совместимости `CAH_STATUSLINE_REFRESH_MS=<n>` по-прежнему принимает
-миллисекунды: если строка состоит только из цифр и задаёт положительное
-безопасное целое число, записать `Math.max(5, Math.ceil(n / 1000))` секунд.
-Иначе использовать `60`. Не записывать миллисекунды непосредственно в
-`refreshInterval` и не выбирать интервал меньше 5 секунд.
+`refreshInterval` is in **seconds**, default `60`, which keeps the bar live in
+idle stretches without starting Node often on Windows. For compatibility
+`CAH_STATUSLINE_REFRESH_MS=<n>` still takes milliseconds: when the string is
+only digits and a positive safe integer, write
+`Math.max(5, Math.ceil(n / 1000))` seconds; otherwise use `60`. Never write
+milliseconds into `refreshInterval` directly and never pick less than 5
+seconds.
 
 **Stop hook entry** (ownership sentinel: `cah-sentinel: "cah-hook:v1"`, `cah-name: "clock"`),
 appended to `hooks.Stop` as a new matcher object:
@@ -177,9 +189,9 @@ through long turns instead of jumping in one step. The matcher `""` means "all t
 3. Read and `JSON.parse` the file. If the file exists but is **invalid JSON**:
    report the problem and STOP. Never overwrite a file you could not parse.
 4. **statusLine check**: Inspect `data.statusLine`. Resolve the desired
-   `refreshInterval` в секундах: читать `process.env.CAH_STATUSLINE_REFRESH_MS`
-   по правилам выше, переводить валидные миллисекунды через
-   `Math.max(5, Math.ceil(n / 1000))`; иначе использовать `60`.
+   `refreshInterval` in seconds: read `process.env.CAH_STATUSLINE_REFRESH_MS`
+   by the rules above, converting valid milliseconds with
+   `Math.max(5, Math.ceil(n / 1000))`; otherwise use `60`.
    - If it exists AND has `cah-sentinel === "cah-status:v1"` AND
      `cah-name === "clock"`:
      - Compare current `command` and `refreshInterval` against the freshly
@@ -208,7 +220,7 @@ through long turns instead of jumping in one step. The matcher `""` means "all t
        fields, and report "chat-stamp.<event>: migrated".
    - If not found → append a new matcher entry to `hooks[event]` (create
      `hooks` and `hooks[event]` as arrays if they don't exist yet). IMPORTANT:
-     if other entries already exist there (e.g. from `/checkpoint-watch` in
+     if other entries already exist there (e.g. from `/rewake` in
      `hooks.Stop`), append ours — never replace.
 6. Save atomically with the safe write protocol from the "Atomic write only"
    rule below (settings lock held for the whole cycle, fresh unique temp file,
@@ -272,10 +284,10 @@ Never write in this mode.
   `cah-name === "clock"` belongs to the user or another tool — ask before
   replacing.
 - **Never touch hook entries WITHOUT our sentinel.** Other hooks in
-  `hooks.Stop` (e.g. from `/checkpoint-watch`) or in `hooks.PostToolUse`
+  `hooks.Stop` (e.g. from `/rewake`) or in `hooks.PostToolUse`
   (any third-party tool) must be preserved exactly.
 - **Lock `settings.json` for the whole read-modify-write cycle.** Cooperating
-  cah skills (`/clock` and `/checkpoint-watch`) — and
+  cah settings writers (`/clock`, `/rewake`, `/nobg`, `/checkpoint-watch`) — and
   `cah probe statusline start` / `cah probe statusline stop`, which take the same lock — can run at
   the same time, and verification alone cannot stop two in-flight writers from
   passing the same check just before both rename — the second rename would

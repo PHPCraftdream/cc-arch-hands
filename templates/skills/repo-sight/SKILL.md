@@ -84,14 +84,17 @@ package/app at a time.
 ## §3 — The five history probes (Piechowski, verbatim + safety nets)
 
 Run from `src/` or `app/`, **not** the repo root (lockfiles, changelogs and
-generated code will dominate the lists otherwise). All five probes together
-take about two minutes.
+generated code will dominate the lists otherwise), and end each `git log`
+with `-- .`: without a pathspec git lists the whole repository whatever the
+current directory. `grep .` drops the blank line git prints between commits,
+which would otherwise top every list. All five probes together take about
+two minutes.
 
 ### 3.1 What changes the most — churn
 
 ```bash
-git log --format=format: --name-only --since="1 year ago" \
-  | sort | uniq -c | sort -nr | head -20
+git log --format=format: --name-only --since="1 year ago" -- . \
+  | grep . | sort | uniq -c | sort -nr | head -20
 ```
 
 The top of this list is almost always the file people warn newcomers about.
@@ -117,8 +120,8 @@ same story at scale.
 ### 3.3 Where bugs cluster
 
 ```bash
-git log -i -E --grep="fix|bug|broken" --name-only --format='' \
-  | sort | uniq -c | sort -nr | head -20
+git log -i -E --grep="fix|bug|broken" --name-only --format='' -- . \
+  | grep . | sort | uniq -c | sort -nr | head -20
 ```
 
 Same shape as 3.1, filtered to commits whose message names a bug.
@@ -190,13 +193,17 @@ Pick one realistic user-facing flow. Run it. Watch what executes. This is
 the **tracer bullet** — it converts the map into lived understanding faster
 than reading ever will.
 
+This step runs code and edits files, so do it only where the user allows
+running tests and changing the working tree; otherwise say so in the
+caveats and read the CI definition instead.
+
 - Find the canonical command from CI (not the README — the README lies, CI
   doesn't).
 - Run the test suite once. Note which tests touch the suspect files from
   §3. **Zero coverage on a hot file is your biggest finding.**
 - If feasible, add a single `print` / log line in a suspect file and re-run
   the test that should touch it. If the print never fires, the file is not
-  on the path you think it is.
+  on the path you think it is. Remove the line again before you finish.
 
 ### Co-change coupling (history with surgical precision)
 
@@ -204,10 +211,13 @@ For a single suspect file, which other files change *with* it? This finds
 hidden modules and unspoken dependencies the import graph cannot:
 
 ```bash
-git log --pretty=format:%H --name-only -- path/to/SUSPECT \
-  | grep -vE '^[0-9a-f]{40}$' | grep -v '^$' \
-  | sort | uniq -c | sort -nr | head
+git log --format=%H -- path/to/SUSPECT \
+  | xargs -I{} git show --name-only --format= {} \
+  | grep . | sort | uniq -c | sort -nr | head
 ```
+
+(`git log --name-only -- path` lists only that path, so the commits are
+taken first and each one is shown whole. The suspect file tops the list.)
 
 ---
 

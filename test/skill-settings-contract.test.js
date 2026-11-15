@@ -408,7 +408,7 @@ describe('published clock/checkpoint-watch settings instructions', () => {
     }
   });
 
-  it('the published read-modify-write keeps checkpoint-watch and clock hooks coexisting', () => {
+  it('the published read-modify-write keeps rewake and clock hooks coexisting', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cah-skill-contract-hooks-'));
     try {
       const settingsPath = join(dir, 'settings.json');
@@ -418,7 +418,7 @@ describe('published clock/checkpoint-watch settings instructions', () => {
           type: 'command',
           command: 'node "C:/Users/Alice/.claude/cah-bin/bin/cah-checkpoint-hint.js"',
           'cah-sentinel': 'cah-hook:v1',
-          'cah-name': 'checkpoint-watch',
+          'cah-name': 'rewake',
         }],
       };
       writeFileSync(settingsPath, JSON.stringify({ hooks: { Stop: [checkpointHook] } }, null, 2) + '\n');
@@ -450,7 +450,7 @@ describe('published clock/checkpoint-watch settings instructions', () => {
       assert.deepEqual(result, { published: true, conflict: false });
       const saved = JSON.parse(readFileSync(settingsPath, 'utf8'));
       assert.equal(saved.hooks.Stop.length, 2, 'both skills hook entries must remain');
-      assert.equal(saved.hooks.Stop[0].hooks[0]['cah-name'], 'checkpoint-watch');
+      assert.equal(saved.hooks.Stop[0].hooks[0]['cah-name'], 'rewake');
       assert.equal(saved.hooks.Stop[1].hooks[0]['cah-name'], 'clock');
       assert.equal(saved.statusLine['cah-name'], 'clock');
     } finally {
@@ -556,7 +556,7 @@ process.disconnect();
 `;
 }
 
-// Spawns two real child writers (clock first, checkpoint-watch second) and
+// Spawns two real child writers (clock first, rewake second) and
 // forces the review's interleave via IPC phase gates: both read before either
 // rechecks, both recheck before either renames, and the rename order is
 // clock-then-watch. `withLock` switches the documented lock step in the child
@@ -584,7 +584,7 @@ async function runTwoWriterRace(withLock) {
     const childPath = join(dir, 'settings-writer-child.mjs');
     writeFileSync(childPath, childWriterSource(withLock));
 
-    const names = ['clock', 'checkpoint-watch'];
+    const names = ['clock', 'rewake'];
     for (const name of names) {
       state[name] = {
         phase: 'start', lockBlocked: false, result: undefined,
@@ -597,7 +597,7 @@ async function runTwoWriterRace(withLock) {
     function maybeGrant() {
       for (const name of names) {
         const self = state[name];
-        const other = state[name === 'clock' ? 'checkpoint-watch' : 'clock'];
+        const other = state[name === 'clock' ? 'rewake' : 'clock'];
         const gate = self.pendingGate;
         if (gate === undefined || self.granted) continue;
         const otherBeyond = PHASE_RANK[other.phase] >= PHASE_RANK[gate];
@@ -688,8 +688,8 @@ describe('two real cooperating writer processes at the commit boundary', () => {
             `${name} reported published=true but its hook is gone from the final file`);
         }
       }
-      if (state.clock.result.published && state['checkpoint-watch'].result.published) {
-        for (const expected of ['clock', 'checkpoint-watch']) {
+      if (state.clock.result.published && state['rewake'].result.published) {
+        for (const expected of ['clock', 'rewake']) {
           assert.ok(names.includes(expected),
             `both writers reported published=true: the ${expected} hook must survive; got ${JSON.stringify(names)}`);
         }
@@ -709,14 +709,14 @@ describe('two real cooperating writer processes at the commit boundary', () => {
     try {
       assert.deepEqual(state.clock.result, { published: true, conflict: false },
         'the known-bad run must have both writers report success');
-      assert.deepEqual(state['checkpoint-watch'].result, { published: true, conflict: false },
+      assert.deepEqual(state['rewake'].result, { published: true, conflict: false },
         'the known-bad run must have both writers report success');
       const saved = JSON.parse(readFileSync(settingsPath, 'utf8'));
       const names = saved.hooks.Stop.flatMap((entry) =>
         entry.hooks.map((hook) => hook['cah-name']));
       assert.ok(!names.includes('clock'),
         'the silent loss must reproduce: both published=true yet the clock hook is gone');
-      assert.ok(names.includes('checkpoint-watch'),
+      assert.ok(names.includes('rewake'),
         'the second rename wins and carries its own hook');
       assert.ok(names.includes('foreign-existing'),
         'the pre-existing foreign hook survives');
@@ -1242,7 +1242,7 @@ process.disconnect();
       const childPath = join(dir, 'settings-writer-child.mjs');
       writeFileSync(childPath, childWriterSource(true));
       let stderr = '';
-      child = spawn(process.execPath, [childPath, settingsPath, 'checkpoint-watch'],
+      child = spawn(process.execPath, [childPath, settingsPath, 'rewake'],
         { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
       child.stderr.on('data', (chunk) => { stderr += chunk; });
       child.once('exit', () => { childGone = true; });
@@ -1285,8 +1285,8 @@ process.disconnect();
         'the skill\'s statusLine must survive the probe interleave');
       const hookNames = (afterSkill.hooks.Stop || []).flatMap((entry) =>
         entry.hooks.map((hook) => hook['cah-name']));
-      assert.ok(hookNames.includes('checkpoint-watch'),
-        `the checkpoint-watch hook must be present; got ${JSON.stringify(hookNames)}`);
+      assert.ok(hookNames.includes('rewake'),
+        `the rewake hook must be present; got ${JSON.stringify(hookNames)}`);
       assert.equal(existsSync(join(dir, 'cache', 'probe-backup.json')), false,
         'the refused probe must not have published a backup');
 
@@ -1303,7 +1303,7 @@ process.disconnect();
         'the free-lock probe enable must arm the probe statusLine');
       const afterNames = (afterProbe.hooks.Stop || []).flatMap((entry) =>
         entry.hooks.map((hook) => hook['cah-name']));
-      assert.ok(afterNames.includes('checkpoint-watch'),
+      assert.ok(afterNames.includes('rewake'),
         `both first-party changes must coexist; got ${JSON.stringify(afterNames)}`);
       assert.equal(existsSync(join(dir, 'cache', 'probe-backup.json')), true,
         'the successful probe enable must publish its backup');

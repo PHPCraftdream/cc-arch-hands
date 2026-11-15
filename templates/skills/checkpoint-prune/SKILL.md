@@ -20,12 +20,12 @@ Companion to `/checkpoint`. Removes checkpoint files from the same directory `/c
 
 ## Behavior
 
-1. **Locate the directory.** From the caller's original working directory, run `git rev-parse --show-toplevel`. If it succeeds with a non-empty path, use that path as `<repo-root>` and target `<repo-root>/docs/checkpoints/`. **If the command fails or returns an empty path (caller is outside any Git repository), refuse and stop** — checkpoints are project-scoped; never target `~/.claude/checkpoints/` or any other path shared across projects/agents. If the resolved directory doesn't exist, say so and stop.
+1. **Locate the directory.** From the caller's working directory run `git rev-parse --path-format=absolute --show-toplevel --git-dir --git-common-dir`. **If it fails or prints nothing (outside any Git repository), refuse and stop** — checkpoints are project-scoped; never target `~/.claude/checkpoints/` or any other path shared across projects/agents. If line 2 equals line 3 the caller is in the main folder and `<repo-root>` is line 1; otherwise it is in a linked worktree and `<repo-root>` is the parent directory of line 3 (the main folder, where `/checkpoint` keeps checkpoints). Target `<repo-root>/docs/checkpoints/`; a checkpoint a confined session left in a linked worktree is not touched. If the directory doesn't exist, say so and stop.
 2. **Resolve the selection** by parsing the argument in this order — the **first rule that matches wins**:
    - **no argument** → target every checkpoint (mode: `all`).
    - **digits followed by `d` or `h`** (e.g. `14d`, `48h`) → target every file whose mtime is older than `now - N` (mode: `older-than`).
    - **digits only** (e.g. `10`) → sort by mtime descending, keep the first N, target the rest (mode: `keep-last`).
-   - **anything else** → treat as a filename (with or without `.md`). Exact match only — if the file is not found, report and stop, never silently widen (mode: `name`).
+   - **anything else** → treat as a filename (with or without `.md`); it must be a plain slug (lowercase letters, digits, single hyphens), never a path. Exact match only — if the file is not found, report and stop, never silently widen (mode: `name`).
 3. **Print the target list.** One line per file: name, mtime, size. End with the total count and the parsed mode (e.g. `mode: older-than 14d → 6 files`). If the list is empty, say "nothing to prune" and stop.
 4. **Confirm.** Before any deletion, ask the user to confirm — except in these cases:
    - `--dry` is set (no deletion happens regardless);
@@ -34,7 +34,7 @@ Companion to `/checkpoint`. Removes checkpoint files from the same directory `/c
 
 ## Important
 
-- This skill only touches files inside the resolved checkpoints directory. It never recurses outside, and never deletes the directory itself.
+- This skill only touches files inside the resolved checkpoints directory. It never recurses outside, never follows or deletes symlinks, only deletes regular `.md` files directly inside it, and never deletes the directory itself.
 - It does NOT inspect file contents — selection is by name and mtime only.
-- For one-off deletion, plain `rm docs/checkpoints/<name>.md` is fine and faster. This skill exists for the batch cases (`--older-than`, `--keep-last`) and for the comfort of a confirmation prompt.
+- For one-off deletion, plain `rm docs/checkpoints/<name>.md` is fine and faster. This skill exists for the batch cases (an age such as `14d`, or keeping the last N) and for the comfort of a confirmation prompt.
 - Pairs with `/resume --list` for read-only browsing. Together they cover the full lifecycle: write (`/checkpoint`), read (`/resume`), list (`/resume --list`), delete (`/checkpoint-prune`).

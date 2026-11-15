@@ -61,15 +61,13 @@ This contract exists because two failure modes are extremely common:
 
    Each agent call, each workflow phase, each loop iteration, each parallel batch element is its own `TaskList` item. The workflow script's internal `phase()` blocks and the batched arguments to `parallel()` are **NOT a substitute** — they are invisible to `/resume`, `/babysit` ticks, `/triage`, `/checkpoint`, and session restarts. Only the TaskList survives those events.
 
-   A single umbrella task ("run workflow X" hiding 5 phases inside, or "execute parallel batch" hiding 8 agents) is an **anti-pattern**: it satisfies the "≥1 task in_progress" check while hiding the real shape of the work. It looks compliant and it isn't.
-
-   If you find yourself thinking *"the workflow handles its own decomposition"* or *"the parallel batch is one logical unit"* — stop and create the sub-tasks anyway. The workflow / batch / loop drives *execution order and concurrency*; the TaskList tracks *what work exists*. Both are needed.
+   An umbrella task is the anti-pattern described in the contract above. If you catch yourself thinking *"the workflow handles its own decomposition"* or *"the parallel batch is one logical unit"*, create the sub-tasks anyway: the workflow / batch / loop drives *execution order and concurrency*, the TaskList tracks *what work exists*.
 
 5. **Invoke `/babysit` FIRST, then start work.**
 
    This step is one indivisible action, not two. Do **both** sub-steps before you call any *work* tool (Edit, Write, Bash, Agent, etc.).
 
-   - **5a. Invoke `Skill('babysit', '<interval>')`** with the value from step 1. The babysit skill's instructions tell you to call `CronCreate` with an off-minute cron expression and a `# babysit tick` prompt — **execute those instructions to completion**. The Skill-tool call alone returns text; it does not install a cron. You must perform the `CronCreate` and then `CronList` to confirm the job id before moving on. (The verifiable contract below will catch you if you skip this.)
+   - **5a. Invoke `Skill('babysit', '<interval>')`** with the value from step 1. The babysit skill's instructions tell you to call `CronCreate` with an off-minute cron expression and a `# babysit tick` prompt — **execute those instructions to completion**. The Skill-tool call alone returns text; it does not install a cron. You must perform the `CronCreate` and then `CronList` to confirm the job id before moving on. (The checks at the end will catch you if you skip this.)
    - **5b. `TaskUpdate` the right tasks to `in_progress` for your strategy**, then begin work.
      - **Single-context** → mark the lowest-id ready pending task `in_progress`, work it.
      - **Sequential sub-agents** → mark the first ready task `in_progress`, launch the first agent.
@@ -77,7 +75,7 @@ This contract exists because two failure modes are extremely common:
 
    The ordering protects the user: even if your work turn errors out, dies, or runs out of context mid-edit, `/babysit` is already running and the next tick will pick up where you left off. And every in-flight piece is visible in the TaskList so the tick can find it.
 
-6. **After each task completes, continue immediately — don't wait for a tick.** Mark the finished task `completed` via `TaskUpdate`, then pick the next ready task (lowest-id pending whose `blockedBy` is empty or resolved; for a parallel strategy, the next batch) and start it yourself, in this same session, without pausing. The babysit tick exists to recover work when THIS session stops responding on its own — an API error, a crash, a context blowout, a closed terminal — it is not the pacing mechanism for ordinary completed-task hand-offs. A live session that finishes a task and then sits idle waiting for the next cron fire has misread the contract: the tick's own job-picking (`/babysit`'s tick prompt, step 4) is a fallback for stalled/unattended work, not a gate on a session that is still there and working. Keep pulling ready tasks until the list is exhausted — only then does the tick's own self-delete (its step 2) actually fire.
+6. **After each task completes, continue immediately — don't wait for a tick.** Mark the finished task `completed` via `TaskUpdate`, then pick the next ready task (lowest-id pending whose `blockedBy` is empty or resolved; for a parallel strategy, the next batch) and start it yourself, in this same session, without pausing. The babysit tick exists to recover work when THIS session stops responding on its own — an API error, a crash, a context blowout, a closed terminal — it is not the pacing mechanism for ordinary completed-task hand-offs. A live session that finishes a task and then sits idle waiting for the next cron fire has misread the contract: the tick's own job-picking (`/babysit`'s tick prompt, step 3) is a fallback for stalled/unattended work, not a gate on a session that is still there and working. Keep pulling ready tasks until the list is exhausted — only then does the tick's own self-delete (its step 1) actually fire.
 
 ## Important
 

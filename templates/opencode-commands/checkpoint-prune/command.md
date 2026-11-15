@@ -5,7 +5,7 @@ description: Preview and remove selected project checkpoint files, with confirma
 
 Arguments: $ARGUMENTS
 
-Resolve the caller Git repository with git rev-parse --show-toplevel. Refuse outside Git. Operate only on regular .md files in that repository's docs/checkpoints/, never on redirected directories, symlinks, other projects or subdirectories. Missing directory means nothing to prune.
+Resolve the repository's main folder: run git rev-parse --path-format=absolute --show-toplevel --git-dir --git-common-dir from the caller's directory. Refuse outside Git. When line 2 equals line 3 the repository root is line 1; otherwise the caller is in a linked worktree and the root is the parent directory of line 3 (checkpoints are kept in the main folder). Operate only on regular .md files in <root>/docs/checkpoints/ (a checkpoint a confined session left in a linked worktree is not touched), never on redirected directories, symlinks, other projects or subdirectories. Missing directory means nothing to prune.
 
 Parse optional --dry first; it never deletes. Select by these rules: no argument = all checkpoints; digits followed by d or h = mtime older than that age; digits alone = keep the N most recently modified files; otherwise = exact safe filename, with optional .md, never a prefix or path. Reject invalid arguments rather than broadening the selection.
 
