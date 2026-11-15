@@ -1,5 +1,6 @@
 {
   "name": "cah-checkpoint-watch",
   "version": "0.1.0",
-  "description": "cah checkpoint-watch: at 90% context, stop the agent, write a checkpoint (and commit it), compact, then /resume it; prompts that arrive meanwhile are held and written into the checkpoint."
+  "description": "cah checkpoint-watch: at 90% context, stop the agent, write a checkpoint (and commit it), compact, then /resume it; prompts that arrive meanwhile are held and written into the checkpoint.",
+  "types": "./types/index.d.ts"
 }

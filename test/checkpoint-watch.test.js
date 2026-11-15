@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import {
   registerCheckpointWatch, checkpointName, renderEvents, heldSection, findCheckpoint, ownTurn,
   COMPACT_INSTRUCTIONS, COMPACT_TRIES, COMPACT_RETRY_MS, DROP_REASON, HELD_TEXT_LIMIT,
-  IDLE_MIN_MS, IDLE_SKIP_REASON, IDLE_MIN_TOKENS, idleOf,
+  IDLE_MIN_MS, IDLE_SKIP_REASON, IDLE_MIN_TOKENS, idleOf, HOLD_REASON, MAX_DENIES, stopReason,
 } from '../templates/skills/checkpoint-watch/hooks/engine.mjs';
 import { readWatchState, updateWatch, WatchSettingsError } from '../lib/checkpoint-watch.js';
 
@@ -44,6 +44,12 @@ function harness({ mode = 'checkpoint', percent = 95, git = defaultGit } = {}) {
     bySource: null,
     settings: mode ? { cahCheckpointWatch: { mode } } : {},
     compact: async () => ({ messages: [], tokensBefore: 900_000, tokensAfter: 20_000 }),
+    // When set, $.command.run rejects with it.
+    commandError: null,
+    // When set, $.prompt.submit resolves to it.
+    submitResult: null,
+    // The session's $.state, by "plugin/key".
+    state: new Map(),
     files, calls, timers,
   };
   const $ = {
@@ -55,10 +61,18 @@ function harness({ mode = 'checkpoint', percent = 95, git = defaultGit } = {}) {
     settings: { read: async (args) => h.bySource?.[args?.source] ?? h.settings },
     turn: { abort: async ({ turnId }) => { calls.abort.push(turnId); } },
     command: {
-      run: async (args) => { calls.command.push(args); return { text: '' }; },
+      run: async (args) => {
+        calls.command.push(args);
+        if (h.commandError) throw h.commandError;
+        return { text: '' };
+      },
       register: async (spec) => ({ command: spec.name }),
     },
-    prompt: { submit: async ({ text }) => { calls.submit.push(text); return { text }; } },
+    prompt: { submit: async ({ text }) => { calls.submit.push(text); return h.submitResult ?? { text }; } },
+    state: {
+      get: async ({ plugin, key }) => ({ value: h.state.get(`${plugin}/${key}`), version: 0 }),
+      set: async ({ plugin, key }, value) => { h.state.set(`${plugin}/${key}`, structuredClone(value)); return { isSet: true, version: 1 }; },
+    },
     clock: {
       after: (ms, fn) => {
         const timer = { ms, fn, done: false, cancel() { this.done = true; } };
@@ -82,7 +96,7 @@ function harness({ mode = 'checkpoint', percent = 95, git = defaultGit } = {}) {
     const list = (hooks[event] ?? []).filter(({ matcher }) => !matcher
       || Object.entries(matcher).every(([key, value]) => e[key] === value));
     const next = async (x) => {
-      if (event === 'prompt.submit') return { text: x.text };
+      if (event === 'prompt.submit') return x.context ? { text: x.text, context: x.context } : { text: x.text };
       if (event === 'session.compact') { calls.engineCompact.push(x.trigger); return { messages: [] }; }
       return x;
     };
@@ -111,11 +125,13 @@ function harness({ mode = 'checkpoint', percent = 95, git = defaultGit } = {}) {
   return h;
 }
 
+// A main turn reaches the threshold in a tool call, then ends.
 async function startCycle(h) {
   await h.emit('turn.start', { turnId: 'T1', text: 'work' });
   await h.emit('tool.call', { tool: 'Bash' });
+  await h.emit('turn.complete', { turnId: 'T1', reason: 'answer' });
   await h.flush(0);
-  return h.w.cycle.name;
+  return h.w.cycle?.name;
 }
 
 async function runCheckpointTurn(h, name, { write = true } = {}) {
@@ -146,12 +162,46 @@ describe('checkpoint-watch engine: trigger', () => {
     assert.equal(h.w.cycle, null);
   });
 
-  it('at the threshold stops the running turn and runs /checkpoint with a fresh name', async () => {
+  it('at the threshold refuses the turn\'s further tool calls, then runs /checkpoint once it ends', async () => {
     const h = harness();
-    const name = await startCycle(h);
+    await h.emit('turn.start', { turnId: 'T1', text: 'work' });
+    await h.emit('tool.call', { tool: 'Bash' });
+    const name = h.w.cycle.name;
     assert.match(name, /^watch-\d{4}-\d{2}-\d{2}-\d{6}$/);
-    assert.deepEqual(h.calls.abort, ['T1']);
+    assert.equal(h.w.cycle.phase, 'stopping');
+    await h.flush(0);
+    assert.deepEqual(h.calls.command, [], 'nothing runs while the turn goes on');
+    const refused = await h.emit('tool.call', { tool: 'Bash' });
+    assert.equal(refused.deny, stopReason(90));
+    const sub = await h.emit('tool.call', { tool: 'Bash', agentId: 'sub-1' });
+    assert.equal(sub.deny, undefined, 'subagents are left alone');
+    await h.emit('turn.complete', { turnId: 'T1', reason: 'answer' });
+    await h.flush(0);
+    assert.deepEqual(h.calls.abort, []);
     assert.deepEqual(h.calls.command, [{ command: 'checkpoint', args: name }]);
+  });
+
+  it('aborts a turn that keeps calling tools only as a last resort', async () => {
+    const h = harness();
+    await h.emit('turn.start', { turnId: 'T1', text: 'work' });
+    await h.emit('tool.call', { tool: 'Bash' });
+    for (let i = 1; i < MAX_DENIES; i++) await h.emit('tool.call', { tool: 'Bash' });
+    assert.deepEqual(h.calls.abort, []);
+    await h.emit('tool.call', { tool: 'Bash' });
+    assert.deepEqual(h.calls.abort, ['T1']);
+    await h.emit('turn.complete', { turnId: 'T1', reason: 'aborted' });
+    await h.flush(0);
+    assert.equal(h.calls.command[0].command, 'checkpoint');
+  });
+
+  it('reads the watch setting at most every 30 s on tool calls', async () => {
+    const h = harness({ percent: 50 });
+    let reads = 0;
+    const read = h.settings;
+    h.bySource = { get local() { reads += 1; return read; } };
+    await h.emit('turn.start', { turnId: 'T1', text: 'work' });
+    for (let i = 0; i < 5; i++) await h.emit('tool.call', { tool: 'Bash' });
+    assert.equal(reads, 1);
   });
 
   it('an answer that ends at the threshold starts the cycle without an abort', async () => {
@@ -422,10 +472,14 @@ describe('checkpoint-watch engine: the full cycle', () => {
     });
     assert.equal(own.text, `/checkpoint ${name}`);
 
-    // The queued prompt starts a turn of its own: stopped and recorded.
+    await h.emit('turn.complete', { turnId: 'T1', reason: 'answer' });
+    await h.flush(0);
+    // The queued prompt starts a turn of its own: recorded, its tools refused, never aborted.
     await h.emit('turn.start', { turnId: 'T2', text: 'typed mid-turn' });
-    assert.deepEqual(h.calls.abort, ['T1', 'T2']);
-    await h.emit('turn.complete', { turnId: 'T2', reason: 'aborted' });
+    const refused = await h.emit('tool.call', { tool: 'Read' });
+    assert.equal(refused.deny, HOLD_REASON);
+    await h.emit('turn.complete', { turnId: 'T2', reason: 'answer' });
+    assert.deepEqual(h.calls.abort, []);
 
     await runCheckpointTurn(h, name);
     assert.deepEqual(h.calls.compact, [{ instructions: COMPACT_INSTRUCTIONS }]);
@@ -515,6 +569,263 @@ describe('checkpoint-watch engine: a cycle that stops', () => {
     h.percent = 95;
     await h.emit('tool.call', { tool: 'Bash' });
     assert.ok(h.w.cycle && h.w.cycle.name >= name);
+  });
+
+  it('a host that refuses $.command.run after a stop gets the same command as a prompt', async () => {
+    const h = harness();
+    h.commandError = new Error('cah-checkpoint-watch: $.command.run: the session was stopped and nobody has sent input since');
+    const name = await startCycle(h);
+    assert.deepEqual(h.calls.abort, []);
+    assert.deepEqual(h.calls.submit, [`/checkpoint ${name}`]);
+    assert.ok(h.w.cycle, 'the cycle goes on');
+    await runCheckpointTurn(h, name);
+    assert.deepEqual(h.calls.submit.at(-1), `/resume ${name}`);
+  });
+
+  it('any other command error stops the cycle', async () => {
+    const h = harness();
+    h.commandError = new Error('boom');
+    await startCycle(h);
+    assert.equal(h.w.cycle, null);
+    assert.deepEqual(h.calls.submit, []);
+    assert.ok(h.calls.log.some((line) => line.includes('stopped: boom; trying again in 60 s')));
+  });
+
+  it('a prompt the host drops too stops the cycle at once', async () => {
+    const h = harness();
+    h.commandError = new Error('the session was stopped and nobody has sent input since');
+    h.submitResult = { drop: 'a Stop stands' };
+    await startCycle(h);
+    assert.equal(h.w.cycle, null);
+    assert.ok(h.calls.log.some((line) => line.includes('refused as a command and as a prompt: a Stop stands')));
+  });
+
+  it('a failed cycle is tried again after the cool-down; three failures in a row wait for a smaller context', async () => {
+    const h = harness();
+    h.commandError = new Error('boom');
+    let turn = 0;
+    // One finished answer at the same fill.
+    const attempt = async () => {
+      turn += 1;
+      await h.emit('turn.start', { turnId: `A${turn}`, text: 'work' });
+      await h.emit('turn.complete', { turnId: `A${turn}`, reason: 'answer' });
+      await h.flush(0);
+    };
+    await attempt();
+    assert.equal(h.w.failures, 1);
+    await attempt();
+    assert.equal(h.w.failures, 1, 'inside the cool-down: no new cycle');
+    h.w.retryAt = 0;
+    await attempt();
+    assert.equal(h.w.failures, 2);
+    h.w.retryAt = 0;
+    await attempt();
+    assert.equal(h.w.failures, 3);
+    assert.ok(h.calls.log.some((line) => line.endsWith('not trying again until the context drops below 90%')));
+    h.w.retryAt = 0;
+    const commands = h.calls.command.length;
+    await attempt();
+    assert.equal(h.calls.command.length, commands, 'no fourth try at the same fill');
+    await h.emit('prompt.submit', { text: 'hello', origin: { kind: 'composer' }, wait: false });
+    await attempt();
+    assert.equal(h.calls.command.length, commands, 'a message lifts only a refusal by the host');
+    h.percent = 40;
+    await attempt();
+    assert.equal(h.w.failures, 0);
+  });
+
+  it('a host that keeps refusing the command is asked again after the next message of the user', async () => {
+    const h = harness();
+    h.commandError = new Error('the session was stopped and nobody has sent input since');
+    h.submitResult = { drop: 'a Stop stands' };
+    let turn = 0;
+    const attempt = async () => {
+      turn += 1;
+      h.w.retryAt = 0;
+      await h.emit('turn.start', { turnId: `A${turn}`, text: 'work' });
+      await h.emit('turn.complete', { turnId: `A${turn}`, reason: 'answer' });
+      await h.flush(0);
+    };
+    await startCycle(h);
+    await attempt();
+    await attempt();
+    assert.equal(h.w.failures, 3);
+    assert.ok(h.calls.log.some((line) => line.endsWith('below 90% or you send a message')));
+    const commands = h.calls.command.length;
+    await attempt();
+    assert.equal(h.calls.command.length, commands, 'no fourth try');
+    await h.emit('prompt.submit', { text: 'background task done', origin: { kind: 'task-notification' }, wait: false });
+    assert.equal(h.w.failures, 3, 'only the user lifts it');
+    await h.emit('prompt.submit', { text: 'hello', origin: { kind: 'composer' }, wait: false });
+    assert.equal(h.w.failures, 0);
+    h.commandError = null;
+    h.submitResult = null;
+    await attempt();
+    assert.ok(h.w.cycle, 'the next turn end starts the cycle');
+    assert.deepEqual(h.calls.abort, [], 'and stops no turn');
+  });
+
+  it('a hot reload picks the cycle up where it was', async () => {
+    const h = harness({ mode: 'commit' });
+    const name = await startCycle(h);
+    await h.emit('prompt.submit', { text: 'are you there?', origin: { kind: 'composer' }, wait: false });
+    await runCheckpointTurn(h, name);
+    assert.equal(h.state.get('cah-checkpoint-watch/cycle').phase, 'resuming');
+
+    // The module starts over: new hooks, new engine state, the same session $.state.
+    const reloaded = harness({ mode: 'commit' });
+    reloaded.state = h.state;
+    reloaded.files[`/repo/docs/checkpoints/${name}.md`] = h.files[`/repo/docs/checkpoints/${name}.md`];
+    await reloaded.emit('session.start', {});
+    await reloaded.flush(0);
+    assert.equal(reloaded.w.cycle.name, name);
+    assert.deepEqual(reloaded.calls.command.at(-1), { command: 'resume', args: name });
+    await reloaded.emit('turn.start', { turnId: 'T4', text: `/resume ${name}` });
+    await reloaded.flush(0);
+    assert.equal(reloaded.w.cycle, null);
+    assert.equal(reloaded.state.get('cah-checkpoint-watch/cycle'), null);
+    assert.match(reloaded.files[`/repo/docs/checkpoints/${name}.md`], /## Held events[\s\S]*are you there\?/);
+    assert.ok(reloaded.calls.process.some((argv) => argv.includes('commit')));
+  });
+
+  it('a turn a queued prompt starts while /resume is pending is recorded and refused, and aborted only as a last resort', async () => {
+    const h = harness();
+    const name = await startCycle(h);
+    await runCheckpointTurn(h, name);
+    assert.equal(h.w.cycle.phase, 'resuming');
+    await h.emit('turn.start', { turnId: 'T9', text: 'typed earlier' });
+    assert.equal(h.w.cycle.held.length, 1);
+    for (let i = 0; i < MAX_DENIES - 1; i++) {
+      assert.equal((await h.emit('tool.call', { tool: 'Read' })).deny, HOLD_REASON);
+    }
+    assert.deepEqual(h.calls.abort, []);
+    await h.emit('tool.call', { tool: 'Read' });
+    assert.deepEqual(h.calls.abort, ['T9']);
+    await h.emit('turn.complete', { turnId: 'T9', reason: 'aborted' });
+    await h.emit('turn.start', { turnId: 'T4', text: `/resume ${name}` });
+    assert.equal(h.w.cycle, null, 'the cycle still finishes with /resume');
+  });
+
+  it('after a reload the idle compaction is still taken for the idle one, and the silence timer runs on', async () => {
+    const h = harness({ percent: 40 });
+    h.bySource = { local: { cahCheckpointWatch: { mode: 'checkpoint' }, cahCheckpointIdle: { mode: 'checkpoint', minutes: 30 } }, user: {} };
+    await h.emit('turn.start', { turnId: 'T1', text: 'explain' });
+    await h.emit('turn.complete', { turnId: 'T1', reason: 'answer' });
+    await h.flush(0);
+    const activity = h.state.get('cah-checkpoint-watch/activity');
+    assert.deepEqual(activity.mainTurn, null);
+    h.state.set('cah-checkpoint-watch/activity', { ...activity, lastTurnEnd: Date.now() - IDLE_MIN_MS });
+
+    const reloaded = harness({ percent: 40 });
+    reloaded.bySource = h.bySource;
+    reloaded.state = h.state;
+    await reloaded.emit('session.start', {});
+    assert.equal(reloaded.silenceTimers(30).length, 0, 'the timer is re-armed for the rest of the silence');
+    assert.ok(reloaded.timers.some((t) => t.ms === 0), 'which has already passed');
+    const out = await reloaded.emit('session.compact', { trigger: 'auto', messages: [] });
+    assert.deepEqual(out, { skip: IDLE_SKIP_REASON });
+    assert.equal(reloaded.w.cycle.trigger, 'idle');
+  });
+
+  it('a cycle the stored state keeps from long ago, or with an unknown phase, is forgotten', async () => {
+    for (const change of [{ savedAt: Date.now() - 2 * LIMIT_MS }, { phase: 'dancing' }, { mode: 'sometimes' }]) {
+      const h = harness();
+      await startCycle(h);
+      const saved = h.state.get('cah-checkpoint-watch/cycle');
+      h.state.set('cah-checkpoint-watch/cycle', { ...saved, ...change });
+      const reloaded = harness();
+      reloaded.state = h.state;
+      await reloaded.emit('session.start', {});
+      await reloaded.flush(0);
+      assert.equal(reloaded.w.cycle, null, JSON.stringify(change));
+      assert.equal(reloaded.state.get('cah-checkpoint-watch/cycle'), null);
+      assert.deepEqual(reloaded.calls.command, []);
+    }
+  });
+
+  it('a reload resumes each phase: queued runs /checkpoint again, checkpointing waits, compacting compacts', async () => {
+    const run = async (phase) => {
+      const h = harness();
+      const name = await startCycle(h);
+      h.files[`/repo/docs/checkpoints/${name}.md`] = '# Checkpoint\n';
+      h.state.set('cah-checkpoint-watch/cycle', { ...h.state.get('cah-checkpoint-watch/cycle'), phase });
+      const reloaded = harness();
+      reloaded.state = h.state;
+      Object.assign(reloaded.files, h.files);
+      await reloaded.emit('session.start', {});
+      await reloaded.flush(0);
+      return { name, reloaded };
+    };
+    const queued = await run('queued');
+    assert.deepEqual(queued.reloaded.calls.command, [{ command: 'checkpoint', args: queued.name }]);
+    const waiting = await run('checkpointing');
+    assert.deepEqual(waiting.reloaded.calls.command, []);
+    assert.equal(waiting.reloaded.w.cycle.phase, 'checkpointing');
+    const compacting = await run('compacting');
+    assert.equal(compacting.reloaded.calls.compact.length, 1);
+    assert.deepEqual(compacting.reloaded.calls.command.at(-1), { command: 'resume', args: compacting.name });
+  });
+
+  it('a step the older instance still had pending does not run once a reload took the cycle over', async () => {
+    // The older instance is about to compact (its step is a pending timer) when the reload happens.
+    const older = harness();
+    const name2 = await startCycle(older);
+    await older.emit('turn.start', { turnId: 'T3', text: `/checkpoint ${name2}` });
+    older.files[`/repo/docs/checkpoints/${name2}.md`] = '# Checkpoint\n';
+    await older.emit('turn.complete', { turnId: 'T3', reason: 'answer' });
+    const reloaded = harness();
+    reloaded.state = older.state;
+    Object.assign(reloaded.files, older.files);
+    await reloaded.emit('session.start', {});
+    await older.flush(500);
+    assert.equal(older.calls.compact.length, 0, 'the older instance stood down');
+    assert.equal(older.w.cycle, null);
+    await reloaded.flush(0);
+    assert.equal(reloaded.calls.compact.length, 1, 'the new instance compacts once');
+  });
+
+  it('works on a host without $.state', async () => {
+    const h = harness();
+    h.state = null;
+    const name = await startCycle(h);
+    assert.ok(name);
+    await runCheckpointTurn(h, name);
+    assert.deepEqual(h.calls.command.at(-1), { command: 'resume', args: name });
+    await h.emit('turn.start', { turnId: 'T4', text: `/resume ${name}` });
+    assert.equal(h.w.cycle, null);
+  });
+
+  it('a reload while the turn is being stopped keeps refusing its tool calls', async () => {
+    const h = harness();
+    await h.emit('turn.start', { turnId: 'T1', text: 'work' });
+    await h.emit('tool.call', { tool: 'Bash' });
+    const reloaded = harness();
+    reloaded.state = h.state;
+    await reloaded.emit('session.start', {});
+    const refused = await reloaded.emit('tool.call', { tool: 'Bash' });
+    assert.equal(refused.deny, stopReason(90));
+    await reloaded.emit('turn.complete', { turnId: 'T1', reason: 'answer' });
+    await reloaded.flush(0);
+    assert.deepEqual(reloaded.calls.command, [{ command: 'checkpoint', args: h.w.cycle.name }]);
+  });
+
+  it('held events whose prompt the host refuses go with the next prompt, as its context', async () => {
+    const h = harness();
+    await startCycle(h);
+    await h.emit('prompt.submit', { text: 'are you there?', origin: { kind: 'composer' }, wait: false });
+    h.submitResult = { drop: 'a Stop stands' };
+    await h.emit('command.run', { command: 'checkpoint-watch-cancel', args: '' });
+    await h.flush(0);
+    assert.equal(h.w.undelivered.length, 1);
+    assert.ok(h.calls.log.some((line) => line.includes('the held events were not delivered (a Stop stands)')));
+    h.submitResult = null;
+    const out = await h.emit('prompt.submit', { text: 'hello', origin: { kind: 'composer' }, wait: false });
+    assert.equal(out.text, 'hello');
+    assert.equal(out.context.length, 1);
+    assert.match(out.context[0], /user message\n\n```text\nare you there\?\n```/);
+    assert.deepEqual(h.w.undelivered, []);
+    const next = await h.emit('prompt.submit', { text: 'again', origin: { kind: 'composer' }, wait: false });
+    assert.deepEqual(next, { text: 'again' });
   });
 
   it('a checkpoint that was not written stops the cycle before any compaction', async () => {
@@ -636,6 +947,9 @@ describe('checkpoint-watch engine: helpers', () => {
     assert.equal(ownTurn(c, '/checkpoint watch-2026-11-11-090507', 'checkpoint'), true);
     assert.equal(ownTurn(c, '<command-name>/checkpoint</command-name>', 'checkpoint'), true);
     assert.equal(ownTurn(c, '<command-name>/checkpoint</command-name>', 'resume'), false);
+    assert.equal(ownTurn(c, '<command-name>/checkpoint</command-name>\n<command-args></command-args>', 'checkpoint'), true);
+    assert.equal(ownTurn(c, '<command-name>/checkpoint</command-name>\n<command-args>my-notes</command-args>', 'checkpoint'),
+      false, 'the user\'s own /checkpoint with another name');
     assert.equal(ownTurn(c, 'something else', 'resume'), false);
     assert.equal(ownTurn(c, undefined, 'resume'), false);
   });
@@ -663,6 +977,17 @@ describe('checkpoint-watch settings (lib/checkpoint-watch.js)', () => {
     };
   }
   const read = (path) => JSON.parse(readFileSync(path, 'utf8'));
+
+  it('keeps a CRLF settings file CRLF with its indent', () => {
+    const { paths } = project();
+    mkdirSync(dirname(paths.localPath), { recursive: true });
+    writeFileSync(paths.localPath, '{\r\n\t"env": { "A": "1" }\r\n}\r\n');
+    updateWatch(paths, 'enable', { mode: 'commit' });
+    const written = readFileSync(paths.localPath, 'utf8');
+    assert.equal(written.replace(/\r\n/g, '').includes('\n'), false, 'no bare LF');
+    assert.match(written, /^\{\r\n\t"env"/);
+    assert.deepEqual(read(paths.localPath), { env: { A: '1' }, cahCheckpointWatch: { mode: 'commit' } });
+  });
 
   it('enables, switches mode, and disables in settings.local.json only', () => {
     const { paths } = project();

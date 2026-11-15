@@ -12,7 +12,9 @@ in every session, but acts only in a project that turned it on. Once the main
 loop's context reaches 90% (checked after each of its tool calls and at the end
 of each answer), the mod:
 
-1. stops the running turn;
+1. stops the running turn: it refuses the agent's further tool calls and asks
+   it to end the turn with a one-line status (it aborts the turn only if the
+   agent keeps calling tools);
 2. holds every prompt that would wake the session: messages you type, finished
    background tasks, scheduled and `/loop` ticks, hook wake-ups, peer and
    channel messages. Each one is dropped and recorded with its time, origin and
@@ -42,8 +44,13 @@ install beyond this skill.
 A cycle that fails (no checkpoint written, the checkpoint turn interrupted, the
 compaction skipped, no result after 20 minutes) or is cancelled with
 `/checkpoint-watch-cancel` stops the hold and sends what it held back to the
-session as one prompt; the next cycle waits until the context is below 90%
-again.
+session as one prompt. After a failure the mod tries again 60 s later (three
+failures in a row at most); after a cancel, or the third failure, the next cycle
+waits until the context is below 90% again. When Claude Code refuses the mod's
+command (after you press Esc, for example), your next message lifts the wait.
+Held events that could not be delivered go with your next message. A cycle
+interrupted by a reload of the mod (`/reload-plugins`, a reinstall) is picked up
+where it was.
 
 ## Usage
 

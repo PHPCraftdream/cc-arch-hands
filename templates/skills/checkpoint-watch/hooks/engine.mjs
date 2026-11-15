@@ -2,6 +2,10 @@
 // in a project that enabled it, stop the agent, run /checkpoint, compact the
 // session, then /resume the checkpoint. Every prompt that would wake the
 // session meanwhile is held (dropped) and written into the checkpoint.
+// The agent is stopped by refusing its further tool calls until its turn ends,
+// not by $.turn.abort: after a plugin's abort Claude Code refuses the plugin's
+// next $.command.run until someone types. The cycle in flight is kept in
+// $.state, so a hot reload of the mod picks it up again.
 // The same cycle also starts after N minutes of silence (`cahCheckpointIdle`,
 // local file over user file) once the context holds at least 200k tokens.
 // Pure logic: all I/O goes through the `$` each hook receives. Claude Code's
@@ -18,6 +22,29 @@ export const CYCLE_LIMIT_MS = 20 * 60_000;
 export const COMPACT_TRIES = 10;
 export const COMPACT_RETRY_MS = 2000;
 export const HELD_TEXT_LIMIT = 50_000;
+// A failed cycle is tried again at the next check after RETRY_MS, up to MAX_FAILS
+// failures in a row; then it waits for the context to drop below the threshold.
+export const RETRY_MS = 60_000;
+export const MAX_FAILS = 3;
+// Claude Code refuses a plugin's $.command.run after a stop (the user's Esc, an abort).
+const NO_INPUT = /nobody has sent input|session was stopped/i;
+// Refused tool calls of a turn that should end; past this, the turn is aborted.
+export const MAX_DENIES = 8;
+// The watch mode is read at most this often on tool calls.
+const MODE_TTL_MS = 30_000;
+// A plain literal: the validator reads $.state references from the source.
+const CYCLE_STATE = { plugin: 'cah-checkpoint-watch', key: 'cycle' };
+const PHASES = Object.freeze(['stopping', 'queued', 'checkpointing', 'compacting', 'resuming']);
+const ACTIVITY_STATE = { plugin: 'cah-checkpoint-watch', key: 'activity' };
+export const HOLD_REASON = 'checkpoint-watch: this message arrived while a checkpoint is being saved; it is '
+  + 'recorded and comes back after the compaction. Do not act on it now: reply with one short line and end the turn.';
+export function stopReason(threshold) {
+  return `checkpoint-watch: the context reached ${threshold}%. Do not call more tools: end this turn now with `
+    + 'a one-line status of what you were doing. The session then saves a checkpoint, compacts and resumes from it.';
+}
+const REFUSED = 'was refused as a command and as a prompt';
+// The user's own prompt: it lifts the stop that made Claude Code refuse the mod's commands.
+const PERSON = Object.freeze(['composer', 'bridge']);
 // Claude Code's idle compaction fires ~54 min after the last turn (90% of the
 // 1 h cache TTL) and reaches mods as trigger `auto`, like the threshold one.
 export const IDLE_MIN_MS = 30 * 60_000;
@@ -176,9 +203,145 @@ export function createWatchState({ threshold = THRESHOLD, limitMs = CYCLE_LIMIT_
     cycle: null,
     // Prompts queued behind a running turn, by text: a held turn they start gets their origin.
     queued: new Map(),
-    // After a stopped cycle, wait for the context to drop below the threshold.
+    // After a cancelled cycle, wait for the context to drop below the threshold.
     suppressed: false,
+    // Failures in a row; MAX_FAILS of them wait for a smaller context too.
+    failures: 0,
+    retryAt: 0,
+    // The last failure was the host refusing to run the command: the user's next prompt lifts that.
+    refused: false,
+    // Held events whose prompt the host refused: they go with the next prompt, as its context.
+    undelivered: [],
+    // The watch mode as last read ({ mode, at }).
+    modeCache: null,
+    // This module instance; a reload makes a new one.
+    id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`,
+    persisting: null,
   };
+}
+
+function newCycle(fields) {
+  return { held: [], ownTurn: null, waitTurn: null, denies: 0, stray: new Set(), file: null, ...fields };
+}
+
+// The cycle as $.state keeps it: JSON only, no timers. `owner` is the module
+// instance that runs it, `savedAt` when it last wrote.
+function snapshot(c, w) {
+  return {
+    name: c.name, mode: c.mode, trigger: c.trigger, phase: c.phase, held: c.held,
+    owner: w.id, savedAt: Date.now(),
+  };
+}
+
+// Writes the current cycle (or null) into $.state, unless another instance of
+// the module (a reload's) owns what is stored. Writes run one after another and
+// each saves the cycle as it stands when it runs, so their order does not matter.
+function persist(w, $) {
+  const job = async () => {
+    const saved = await savedCycle($);
+    if (saved?.owner && saved.owner !== w.id) return;
+    await $.state.set(CYCLE_STATE, w.cycle ? snapshot(w.cycle, w) : null);
+  };
+  w.persisting = (w.persisting ?? Promise.resolve()).then(job).catch(() => {});
+}
+
+// An older instance still running a step of a cycle a reload took over must stop.
+async function superseded(w, $, c) {
+  const saved = await savedCycle($);
+  if (!saved || saved.name !== c.name || !saved.owner || saved.owner === w.id) return false;
+  if (w.cycle === c) { w.cycle = null; c.timer?.cancel?.(); }
+  return true;
+}
+
+// The running main turn and when the last one ended: without them a reload
+// would take Claude Code's idle compaction for a threshold one and let it pass.
+function persistActivity(w, $) {
+  try {
+    $.state.set(ACTIVITY_STATE, { mainTurn: w.mainTurn, lastTurnEnd: w.lastTurnEnd }).catch(() => {});
+  } catch { /* no state on this host */ }
+}
+
+export async function restoreActivity(w, $) {
+  let saved;
+  try { saved = (await $.state.get(ACTIVITY_STATE)).value; } catch { return; }
+  if (!saved || w.mainTurn !== null || w.lastTurnEnd !== null) return;
+  w.mainTurn = typeof saved.mainTurn === 'string' ? saved.mainTurn : null;
+  w.lastTurnEnd = Number.isFinite(saved.lastTurnEnd) ? saved.lastTurnEnd : null;
+  if (w.mainTurn === null && w.lastTurnEnd !== null) await armIdle(w, $, Date.now() - w.lastTurnEnd);
+}
+
+async function savedCycle($) {
+  try { return (await $.state.get(CYCLE_STATE)).value ?? null; } catch { return null; }
+}
+
+// After a hot reload the module starts over: take the cycle up where it was.
+export async function restoreCycle(w, $) {
+  const saved = await savedCycle($);
+  if (!saved || w.cycle) return;
+  const fresh = Number.isFinite(saved.savedAt) && Date.now() - saved.savedAt < w.limitMs;
+  const valid = typeof saved.name === 'string' && MODES.includes(saved.mode) && PHASES.includes(saved.phase);
+  if (!fresh || !valid) {
+    // Left over from a session that ended, or not ours: forget it.
+    await $.state.set(CYCLE_STATE, null).catch(() => {});
+    return;
+  }
+  const c = newCycle({
+    name: saved.name, mode: saved.mode, trigger: saved.trigger ?? 'threshold', phase: saved.phase,
+    held: Array.isArray(saved.held) ? saved.held : [],
+  });
+  w.cycle = c;
+  armLimit(w, $, c);
+  // Take the cycle over: an older instance's pending steps see another owner and stop.
+  await $.state.set(CYCLE_STATE, snapshot(c, w)).catch(() => {});
+  say($, `reloaded during checkpoint ${c.name} (${c.phase}); picking it up`);
+  if (c.phase === 'queued') later(w, $, 0, c, () => slash($, 'checkpoint', c.name));
+  else if (c.phase === 'compacting') later(w, $, 0, c, () => compact(w, $, c, 1));
+  else if (c.phase === 'resuming') {
+    c.file = await findCheckpoint($, c.name);
+    if (w.cycle !== c) return;
+    if (!c.file) { fail(w, $, `the checkpoint ${c.name}.md was not written`, c); return; }
+    later(w, $, 0, c, () => slash($, 'resume', c.name));
+  }
+  // 'stopping' and 'checkpointing' wait for the turn that is running; its id is unknown now.
+}
+
+function armLimit(w, $, c) {
+  const minutes = Math.round(w.limitMs / 60_000);
+  c.timer = $.clock.after(w.limitMs, () => fail(w, $, `no result after ${minutes} minutes`, c));
+}
+
+// The answer to a main-loop tool call while a cycle waits for a turn to end, or null.
+export function denyFor(w, $) {
+  const c = w.cycle;
+  if (!c) return null;
+  const turn = w.mainTurn;
+  let reason = null;
+  if (c.phase === 'stopping' && (c.waitTurn === null || turn === c.waitTurn)) reason = stopReason(w.threshold);
+  else if (turn !== null && c.stray.has(turn)) reason = HOLD_REASON;
+  if (!reason) return null;
+  c.denies += 1;
+  if (c.denies === MAX_DENIES && turn !== null) $.turn.abort({ turnId: turn }).catch(() => {});
+  return { deny: reason };
+}
+
+async function watchMode(w, $) {
+  const now = Date.now();
+  if (w.modeCache && now - w.modeCache.at < MODE_TTL_MS) return w.modeCache.mode;
+  const mode = modeOf(await $.settings.read({ source: 'local' }));
+  w.modeCache = { mode, at: now };
+  return mode;
+}
+
+// Runs a slash command; a host that refuses it after a stop (Esc, an abort) gets the same text as a prompt.
+async function slash($, command, args) {
+  try {
+    return await $.command.run({ command, args });
+  } catch (error) {
+    if (!NO_INPUT.test(String(error?.message ?? error))) throw error;
+    const sent = await $.prompt.submit({ text: `/${command} ${args}` });
+    if (sent?.drop) throw new Error(`/${command} ${REFUSED}: ${sent.drop}`);
+    return sent;
+  }
 }
 
 function say($, text) {
@@ -189,7 +352,9 @@ function say($, text) {
 function later(w, $, ms, c, fn) {
   $.clock.after(ms, () => {
     if (w.cycle !== c) return;
-    Promise.resolve().then(fn).catch((error) => fail(w, $, describe(error), c));
+    Promise.resolve()
+      .then(async () => { if (!(await superseded(w, $, c))) await fn(); })
+      .catch((error) => fail(w, $, describe(error), c));
   });
 }
 
@@ -198,49 +363,72 @@ function hold(c, kind, text, name) {
   c.held.push({ time: clock(Date.now()), label: originLabel(kind, name), text });
 }
 
-function fail(w, $, reason, c) {
+function fail(w, $, reason, c, cancelled = false) {
   if (!c || w.cycle !== c) return;
   w.cycle = null;
   c.timer?.cancel?.();
-  if (c.trigger !== 'manual') w.suppressed = true;
+  persist(w, $);
+  let after = '';
+  if (c.trigger !== 'manual') {
+    w.failures += 1;
+    w.refused = !cancelled && reason.includes(REFUSED);
+    if (cancelled) w.suppressed = true;
+    if (cancelled || w.failures >= MAX_FAILS) {
+      after = `; not trying again until the context drops below ${w.threshold}%`
+        + (w.refused ? ' or you send a message' : '');
+    } else {
+      w.retryAt = Date.now() + RETRY_MS;
+      after = `; trying again in ${Math.round(RETRY_MS / 1000)} s`;
+    }
+  }
   if (c.trigger === 'idle') w.idleBlocked = true;
-  say($, `stopped: ${reason}`);
+  say($, `stopped: ${reason}${after}`);
   if (c.held.length === 0) return;
   const text = `checkpoint-watch stopped (${reason}). These events arrived while it ran and `
     + `never reached you; act on them now:\n\n${renderEvents(c.held)}`;
-  $.prompt.submit({ text }).catch(() => {});
+  $.prompt.submit({ text }).then(
+    (sent) => { if (sent?.drop) keep(w, $, text, sent.drop); },
+    (error) => keep(w, $, text, describe(error)),
+  );
 }
 
-function start(w, $, mode, abortTurn, why = `context reached ${w.threshold}%`, trigger = 'threshold') {
+// The host refused the prompt that carries the held events: nothing sends them again but us.
+function keep(w, $, text, why) {
+  w.undelivered.push(text);
+  say($, `the held events were not delivered (${firstLine(why)}); they go with the next prompt`);
+}
+
+// `waitTurn`: the running main turn ends first (its tool calls are refused meanwhile).
+function start(w, $, mode, waitTurn, why = `context reached ${w.threshold}%`, trigger = 'threshold') {
   disarmIdle(w);
-  const c = {
-    phase: abortTurn ? 'stopping' : 'queued',
+  const waiting = waitTurn && w.mainTurn !== null;
+  const c = newCycle({
+    phase: waiting ? 'stopping' : 'queued',
     name: checkpointName(Date.now(), trigger === 'manual' ? 'now' : 'watch'),
     mode,
     trigger,
-    held: [],
-    ownTurn: null,
-    file: null,
-  };
+    waitTurn: waiting ? w.mainTurn : null,
+  });
   w.cycle = c;
-  const minutes = Math.round(w.limitMs / 60_000);
-  c.timer = $.clock.after(w.limitMs, () => fail(w, $, `no result after ${minutes} minutes`, c));
-  say($, `${why}: saving checkpoint ${c.name}, then compacting`);
-  if (abortTurn && w.mainTurn) $.turn.abort({ turnId: w.mainTurn }).catch(() => {});
-  later(w, $, 0, c, () => $.command.run({ command: 'checkpoint', args: c.name }));
+  armLimit(w, $, c);
+  say($, waiting ? `${why}: ending this turn, then saving checkpoint ${c.name} and compacting`
+    : `${why}: saving checkpoint ${c.name}, then compacting`);
+  if (!waiting) later(w, $, 0, c, () => slash($, 'checkpoint', c.name));
+  persist(w, $);
 }
 
-export async function check(w, $, abortTurn) {
+// `inTurn`: called from a tool call of a running main turn.
+export async function check(w, $, inTurn) {
   if (w.cycle) return;
+  let mode;
+  try { mode = await watchMode(w, $); } catch { return; }
+  if (!mode) return;
   let percent;
   try { percent = (await $.session.usage()).context?.percent; } catch { return; }
   if (typeof percent !== 'number') return;
-  if (percent < w.threshold) { w.suppressed = false; return; }
-  if (w.suppressed || w.cycle) return;
-  let mode;
-  try { mode = modeOf(await $.settings.read({ source: 'local' })); } catch { return; }
-  if (!mode || w.cycle) return;
-  start(w, $, mode, abortTurn);
+  if (percent < w.threshold) { w.suppressed = false; w.failures = 0; w.refused = false; return; }
+  if (w.suppressed || w.failures >= MAX_FAILS || w.cycle || Date.now() < w.retryAt) return;
+  start(w, $, mode, inTurn);
 }
 
 // The session sat idle with no turn running: an `auto` compaction now is
@@ -284,12 +472,13 @@ async function inGitRepo($) {
 }
 
 // Armed when a main-loop turn ends; the next turn or a cycle disarms it.
-export async function armIdle(w, $) {
+// `silentMs`: silence already passed (a reload re-arms it for the rest).
+export async function armIdle(w, $, silentMs = 0) {
   disarmIdle(w);
   const seq = w.idleSeq;
   const config = await idleConfig($);
   if (!config || seq !== w.idleSeq || w.cycle || w.mainTurn !== null) return;
-  const timer = $.clock.after(config.minutes * 60_000, () => {
+  const timer = $.clock.after(Math.max(0, config.minutes * 60_000 - silentMs), () => {
     Promise.resolve().then(() => idleFire(w, $, timer)).catch(() => {});
   });
   w.idleTimer = timer;
@@ -325,14 +514,16 @@ async function compact(w, $, c, attempt) {
     }
     // A host that refuses the call (desktop, SDK) still runs the command.
     c.phase = 'resuming';
-    later(w, $, 0, c, () => $.command.run({ command: 'compact', args: COMPACT_INSTRUCTIONS }));
-    later(w, $, 0, c, () => $.command.run({ command: 'resume', args: c.name }));
+    persist(w, $);
+    later(w, $, 0, c, () => slash($, 'compact', COMPACT_INSTRUCTIONS));
+    later(w, $, 0, c, () => slash($, 'resume', c.name));
     return;
   }
   if (w.cycle !== c) return;
   if (result?.skip) { fail(w, $, `compaction skipped: ${result.skip}`, c); return; }
   c.phase = 'resuming';
-  later(w, $, 0, c, () => $.command.run({ command: 'resume', args: c.name }));
+  persist(w, $);
+  later(w, $, 0, c, () => slash($, 'resume', c.name));
 }
 
 function commitLater($, c) {
@@ -347,7 +538,9 @@ function commitLater($, c) {
 async function finish(w, $, c) {
   w.cycle = null;
   w.idleBlocked = false;
+  w.failures = 0;
   c.timer?.cancel?.();
+  persist(w, $);
   const notes = [];
   if (c.held.length) {
     try {
@@ -363,10 +556,14 @@ async function finish(w, $, c) {
 }
 
 // The cycle's own /checkpoint or /resume turn: it names the checkpoint, or at
-// least the command, should the turn text leave the arguments out.
+// least the command with no other argument, should the turn text leave the
+// arguments out. `/checkpoint other-name` typed by the user is not ours.
 export function ownTurn(c, text, command) {
   if (typeof text !== 'string') return false;
-  return text.includes(c.name) || text.includes(`<command-name>/${command}</command-name>`);
+  if (text.includes(c.name)) return true;
+  if (!text.includes(`<command-name>/${command}</command-name>`)) return false;
+  const args = /<command-args>([\s\S]*?)<\/command-args>/.exec(text);
+  return !args || args[1].trim() === '';
 }
 
 function rememberQueued(w, e) {
@@ -394,6 +591,8 @@ export function registerCheckpointWatch(on, options = {}) {
           : 'checkpoint, compact and resume now (checkpoint-watch mod)',
       }).catch(() => {});
     }
+    await restoreActivity(w, $).catch(() => {});
+    await restoreCycle(w, $).catch(() => {});
     return next(e);
   });
 
@@ -402,44 +601,57 @@ export function registerCheckpointWatch(on, options = {}) {
 
   on('command.run', { command: 'checkpoint-watch-cancel' }, async ($) => {
     if (!w.cycle) return { text: 'checkpoint-watch: no cycle is running' };
-    fail(w, $, `cancelled by /${CANCEL_COMMAND}`, w.cycle);
+    fail(w, $, `cancelled by /${CANCEL_COMMAND}`, w.cycle, true);
     return { text: 'checkpoint-watch: cycle cancelled' };
   });
 
   on('prompt.submit', async ($, e, next) => {
     const c = w.cycle;
-    if (!c) rememberQueued(w, e);
-    if (!c || e.command?.name === CANCEL_COMMAND) return next(e);
+    if (!c) {
+      rememberQueued(w, e);
+      if (w.refused && PERSON.includes(e.origin?.kind)) { w.refused = false; w.failures = 0; w.retryAt = 0; }
+      if (w.undelivered.length === 0) return next(e);
+      const kept = w.undelivered.splice(0);
+      const result = await next({ ...e, context: [...(e.context ?? []), ...kept] });
+      if (result?.drop) w.undelivered.unshift(...kept);
+      return result;
+    }
+    if (e.command?.name === CANCEL_COMMAND) return next(e);
     if (e.origin?.kind === 'plugin' && e.origin.name === $.plugin.name) return next(e);
     hold(c, e.origin?.kind, e.text, e.origin?.name);
+    persist(w, $);
     return { drop: DROP_REASON };
   });
 
   on('turn.start', async ($, e, next) => {
     if (e.agentId !== undefined) return next(e);
     w.mainTurn = e.turnId;
+    persistActivity(w, $);
     disarmIdle(w);
     const c = w.cycle;
-    let stray = false;
     if (c) {
       if (ownTurn(c, e.text, 'checkpoint') && (c.phase === 'stopping' || c.phase === 'queued')) {
         c.phase = 'checkpointing';
         c.ownTurn = e.turnId;
       } else if (ownTurn(c, e.text, 'resume') && c.phase === 'resuming') {
         await finish(w, $, c);
-      } else if (c.phase !== 'checkpointing') {
-        // A prompt queued before the hold began starts its own turn.
+      } else if (c.phase !== 'checkpointing' && c.phase !== 'stopping') {
+        // A prompt queued before the hold began starts its own turn: recorded,
+        // and its tool calls are refused so it ends at once.
         const origin = w.queued.get(e.text);
         hold(c, origin?.kind ?? 'queued', e.text, origin?.name);
-        stray = true;
+        c.stray.add(e.turnId);
       }
+      persist(w, $);
     }
-    const result = await next(e);
-    if (stray) $.turn.abort({ turnId: e.turnId }).catch(() => {});
-    return result;
+    return next(e);
   });
 
   on('tool.call', async ($, e, next) => {
+    if (e.agentId === undefined) {
+      const refused = denyFor(w, $);
+      if (refused) return refused;
+    }
     const result = await next(e);
     if (e.agentId === undefined && !w.cycle) await check(w, $, true).catch(() => {});
     return result;
@@ -452,11 +664,21 @@ export function registerCheckpointWatch(on, options = {}) {
     if (e.agentId !== undefined) return result;
     if (e.turnId === w.mainTurn) w.mainTurn = null;
     w.lastTurnEnd = Date.now();
+    persistActivity(w, $);
     const c = w.cycle;
-    if (c && c.phase === 'checkpointing' && e.turnId === c.ownTurn) {
+    // After a reload the turn ids are unknown (null): the next main turn to end is the one.
+    const isTurn = (id) => id === null || e.turnId === id;
+    if (c) c.stray.delete(e.turnId);
+    if (c && c.phase === 'stopping' && isTurn(c.waitTurn)) {
+      // The turn that reached the threshold ended (an answer, the user's Esc, our fallback abort).
+      c.phase = 'queued';
+      persist(w, $);
+      later(w, $, 0, c, () => slash($, 'checkpoint', c.name));
+    } else if (c && c.phase === 'checkpointing' && isTurn(c.ownTurn)) {
       if (e.reason !== 'answer') fail(w, $, `the checkpoint turn ended: ${e.reason}`, c);
       else {
         c.phase = 'compacting';
+        persist(w, $);
         later(w, $, 500, c, () => compact(w, $, c, 1));
       }
     } else if (!c && e.reason === 'answer') {
