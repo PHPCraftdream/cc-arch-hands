@@ -9,7 +9,7 @@
 // (runtime, dev, optional, peer alike). The package has no dependencies today;
 // the gate exists so the first one is vetted the moment it is added.
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -131,7 +131,13 @@ export function runCheck(rootDir) {
   return { ...report, license: pkg.license };
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+// Node resolves the module URL through links and junctions, argv[1] stays as typed:
+// compare real paths, or a gate started through a link would pass by doing nothing.
+function invokedDirectly() {
+  try { return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url)); } catch { return false; }
+}
+
+if (process.argv[1] && invokedDirectly()) {
   const root = join(dirname(fileURLToPath(import.meta.url)), '..');
   const { checked, violations, license } = runCheck(root);
   if (violations.length > 0) {

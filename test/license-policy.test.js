@@ -1,5 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkLicenses, evaluateLicense, runCheck } from '../scripts/check-licenses.js';
@@ -79,5 +82,17 @@ describe('repository license gate', () => {
   it('has no license violations', () => {
     const { violations } = runCheck(ROOT);
     assert.deepEqual(violations, []);
+  });
+});
+
+describe('the gate started as a command', () => {
+  it('runs through a linked directory too instead of passing by doing nothing', (t) => {
+    const dir = mkdtempSync(join(tmpdir(), 'cah-license-link-'));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const link = join(dir, 'scripts-link');
+    symlinkSync(join(ROOT, 'scripts'), link, 'junction');
+    const out = spawnSync(process.execPath, [join(link, 'check-licenses.js')], { encoding: 'utf8', timeout: 60_000 });
+    assert.equal(out.status, 0, out.stderr);
+    assert.match(out.stdout, /^license check ok: \d+ dependencies/);
   });
 });
