@@ -127,7 +127,10 @@ async function callTool(name, args, meta) {
     let remaining = INLINE_OUTPUT_TOTAL_BYTES;
     const results = run.status.results.sort((a, b) => order.get(a.id) - order.get(b.id)).map((result) => {
       if (!showOutput) return result;
-      const { bytesRead, ...output } = readOutput(result.log, Math.min(remaining, INLINE_OUTPUT_PER_JOB_BYTES));
+      // A job that never started has no log file.
+      let read;
+      try { read = readOutput(result.log, Math.min(remaining, INLINE_OUTPUT_PER_JOB_BYTES)); } catch { return result; }
+      const { bytesRead, ...output } = read;
       remaining -= bytesRead;
       return { ...result, output };
     });

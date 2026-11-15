@@ -21,7 +21,7 @@ function displayCommand(command) {
     : `shell ${displayArgument(command.command)}`;
 }
 
-function execute(command, dir) {
+async function execute(command, dir) {
   const started = Date.now();
   const log = join(dir, `${command.id}.log`);
   const commandLine = command.command ?? JSON.stringify(command.argv);
@@ -82,7 +82,12 @@ export async function runWorker(dir) {
   async function pump() {
     while (cursor < commands.length) {
       const command = commands[cursor++];
-      const result = await execute(command, dir);
+      // A job that cannot even start (no log file) fails alone: the run still finishes and reports.
+      const result = await execute(command, dir).catch((error) => ({
+        id: command.id, exitCode: null, signal: null, seconds: 0, log: join(dir, `${command.id}.log`),
+        error: error.message, commandLine: command.command ?? JSON.stringify(command.argv),
+        commandDisplay: displayCommand(command),
+      }));
       const resultPath = join(dir, `${command.id}.result.json`);
       writeJson(resultPath, result);
       results.push(result);

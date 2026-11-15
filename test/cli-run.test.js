@@ -261,6 +261,27 @@ describe('cli-run worker', () => {
     await mcp.close();
   });
 
+  it('finishes a run whose job cannot create its log, reporting that job as failed', async (t) => {
+    const dir = sandbox(t, 'cah-cli-run-nolog-');
+    const runDir = join(dir, 'run');
+    mkdirSync(join(runDir, 'blocked.log'), { recursive: true });
+    writeFileSync(join(runDir, 'spec.json'), JSON.stringify({
+      taskName: 'nolog', thread: null, delivery: 'inline', maxParallel: 1,
+      commands: [
+        { id: 'blocked', argv: [process.execPath, '-e', '0'], cwd: dir },
+        { id: 'fine', argv: [process.execPath, '-e', '0'], cwd: dir },
+      ],
+    }));
+    const { runWorker } = await import('../templates/codex-skills/cli-run/scripts/runner.mjs');
+    await runWorker(runDir);
+    assert.ok(existsSync(join(runDir, 'finished.json')), 'the run finishes');
+    const blocked = JSON.parse(readFileSync(join(runDir, 'blocked.result.json'), 'utf8'));
+    assert.equal(blocked.exitCode, null);
+    assert.ok(blocked.error, 'with the reason the log could not be created');
+    const fine = JSON.parse(readFileSync(join(runDir, 'fine.result.json'), 'utf8'));
+    assert.equal(fine.exitCode, 0, 'the other job still runs');
+  });
+
   it('is not a user-facing launcher', () => {
     const result = spawnSync(process.execPath, [workerEntry, 'launch', '--spec', '-'], {
       input: '[]', encoding: 'utf8', timeout: 5000,

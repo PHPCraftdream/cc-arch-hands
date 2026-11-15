@@ -50,21 +50,15 @@ export function readStatus(query) {
   const dir = runDirectory(runId);
   const initial = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf8'));
   const results = readdirSync(dir).filter((name) => name.endsWith('.result.json'))
-    .map((name) => {
-      const result = JSON.parse(readFileSync(join(dir, name), 'utf8'));
-      const deliveryPath = join(dir, `${result.id}.delivery.json`);
-      if (existsSync(deliveryPath)) result.delivery = JSON.parse(readFileSync(deliveryPath, 'utf8'));
-      return result;
-    });
+    .map((name) => JSON.parse(readFileSync(join(dir, name), 'utf8')));
   const finishedPath = join(dir, 'finished.json');
   const fatalPath = join(dir, 'fatal.json');
   const finishedAt = existsSync(finishedPath)
     ? JSON.parse(readFileSync(finishedPath, 'utf8')).finishedAt : null;
-  const notifications = results.map((entry) => entry.delivery).filter(Boolean);
   const completionPath = join(dir, 'completion.delivery.json');
   const completionDelivery = existsSync(completionPath)
     ? JSON.parse(readFileSync(completionPath, 'utf8')) : null;
-  if (completionDelivery) notifications.push(completionDelivery);
+  const notifications = completionDelivery ? [completionDelivery] : [];
   return {
     uid: basename(dir), runId: basename(dir), taskName: initial.taskName ?? null,
     startedAt: initial.startedAt, finishedAt,
