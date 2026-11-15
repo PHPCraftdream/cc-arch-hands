@@ -16,6 +16,7 @@ import {
 } from '../lib/lease-lock.js';
 import { DEFAULT_CHILD_DEADLINE_MS } from '../test-support/process-batches.js';
 import { markerEnv } from '../test-support/marker-fixtures.js';
+import { markerChildConfig } from '../test-support/marker-child.js';
 
 const markerConfig = (markerDir) => ({
   markerDir, namespace: 'marker-tests', prefix: 'marker-', ttlMs: 86400000,
@@ -267,11 +268,7 @@ describe('marker capacity recovery', () => {
       const victim = join(markerDir, `marker-${sessionHash('retirements-victim')}`);
       writeFileSync(victim, 'victim\n');
       const markerUrl = new URL('../lib/marker-state.js', import.meta.url).href;
-      const cfg = `const cfg = { markerDir: process.env.CAH_TEST_MARKER_DIR,
-        namespace: 'marker-tests', prefix: 'marker-', ttlMs: 86400000, maxSessions: 1,
-        scanCap: 128, claimTtlMs: 100,
-        ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS',
-        markerNameRe: /^marker-[a-f0-9]{64}$/ };`;
+      const cfg = `const cfg = ${markerChildConfig({ claimTtlMs: 100 })};`;
       const crashScript = `
         import { abortMarkerTransaction, claimMarker } from ${JSON.stringify(markerUrl)};
         ${cfg}

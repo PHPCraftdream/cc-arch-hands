@@ -21,6 +21,7 @@ import {
   DEFAULT_CHILD_DEADLINE_MS, killChild, terminateChild, waitForPath,
 } from '../test-support/process-batches.js';
 import { markerEnv } from '../test-support/marker-fixtures.js';
+import { markerChildConfig } from '../test-support/marker-child.js';
 import {
   probeUntilRenameBlocked, renameBlockedWhileChildHoldsCwd, waitForPathSync,
 } from '../test-support/rename-block.js';
@@ -94,14 +95,7 @@ function runPausedReconciler(home, markerDir) {
   const script = `
     import { claimMarker, releaseMarkerClaim } from ${JSON.stringify(markerUrl)};
     import { makeInterlock } from ${JSON.stringify(interlocksUrl)};
-    const cfg = {
-      markerDir: process.env.CAH_TEST_MARKER_DIR,
-      namespace: 'marker-tests', prefix: 'marker-', ttlMs: 86400000,
-      maxSessions: 1, scanCap: 128, claimTtlMs: 30000,
-      ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS',
-      markerNameRe: /^marker-[a-f0-9]{64}$/,
-      testInterlock: makeInterlock(),
-    };
+    const cfg = ${markerChildConfig({ interlock: true })};
     const claim = claimMarker({ ...cfg, sessionId: 'paused-reconciler', nowMs: Date.now() });
     if (claim) releaseMarkerClaim(claim);
   `;
@@ -197,14 +191,7 @@ function runPausedFenceReconciler(home, markerDir) {
   const script = `
     import { pruneMarkers } from ${JSON.stringify(markerUrl)};
     import { makeInterlock } from ${JSON.stringify(interlocksUrl)};
-    const cfg = {
-      markerDir: process.env.CAH_TEST_MARKER_DIR,
-      namespace: 'marker-tests', prefix: 'marker-', ttlMs: 86400000,
-      maxSessions: 1, scanCap: 128, claimTtlMs: 30000,
-      ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS',
-      markerNameRe: /^marker-[a-f0-9]{64}$/,
-      testInterlock: makeInterlock(),
-    };
+    const cfg = ${markerChildConfig({ interlock: true })};
     pruneMarkers({ ...cfg, nowMs: Date.now() });
   `;
   return spawnMarker(process.execPath, ['--input-type=module', '-e', script], {
@@ -251,12 +238,7 @@ describe('marker capacity staging', () => {
     const script = `
       import { abortMarkerTransaction, claimMarker, publishMarker, releaseMarkerClaim } from ${JSON.stringify(markerUrl)};
       import { makeInterlock } from ${JSON.stringify(interlocksUrl)};
-      const cfg = {
-        markerDir: process.env.CAH_TEST_MARKER_DIR, namespace: 'marker-tests', prefix: 'marker-',
-        ttlMs: 86400000, maxSessions: 1, scanCap: 128, claimTtlMs: 30000,
-        ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS', markerNameRe: /^marker-[a-f0-9]{64}$/,
-        testInterlock: makeInterlock(),
-      };
+      const cfg = ${markerChildConfig({ interlock: true })};
       if (process.env.CAH_TEST_RECOVER === '1') {
         const claim = claimMarker({ ...cfg, sessionId: 'proof-recovery', nowMs: Date.now() });
         if (!claim || !abortMarkerTransaction(claim)) process.exit(3);
@@ -321,12 +303,7 @@ describe('marker capacity staging', () => {
     const script = `
       import { claimMarker } from ${JSON.stringify(markerUrl)};
       import { makeInterlock } from ${JSON.stringify(interlocksUrl)};
-      const cfg = {
-        markerDir: process.env.CAH_TEST_MARKER_DIR, namespace: 'marker-tests', prefix: 'marker-',
-        ttlMs: 86400000, maxSessions: 1, scanCap: 128, claimTtlMs: 30000,
-        ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS',
-        markerNameRe: /^marker-[a-f0-9]{64}$/, testInterlock: makeInterlock(),
-      };
+      const cfg = ${markerChildConfig({ interlock: true })};
       const maintenance = {};
       const claim = claimMarker({ ...cfg, sessionId: 'late-successor', nowMs: Date.now(), maintenance });
       if (claim) process.exit(3);
@@ -360,9 +337,7 @@ describe('marker capacity staging', () => {
     const markerUrl = new URL('../lib/marker-state.js', import.meta.url).href;
     const script = `
       import { abortMarkerTransaction, claimMarker, releaseMarkerClaim } from ${JSON.stringify(markerUrl)};
-      const cfg = { markerDir: process.env.CAH_TEST_MARKER_DIR, namespace: 'marker-tests',
-        prefix: 'marker-', ttlMs: 86400000, maxSessions: 1, scanCap: 128, claimTtlMs: 30000,
-        ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS', markerNameRe: /^marker-[a-f0-9]{64}$/ };
+      const cfg = ${markerChildConfig()};
       if (process.env.CAH_TEST_RECOVER === '1') {
         const claim = claimMarker({ ...cfg, sessionId: 'recover-quarantine', nowMs: Date.now() });
         if (!claim || !abortMarkerTransaction(claim)) process.exit(3);
@@ -389,9 +364,7 @@ describe('marker capacity staging', () => {
     const markerUrl = new URL('../lib/marker-state.js', import.meta.url).href;
     const script = `
       import { abortMarkerTransaction, claimMarker, releaseMarkerClaim } from ${JSON.stringify(markerUrl)};
-      const cfg = { markerDir: process.env.CAH_TEST_MARKER_DIR, namespace: 'marker-tests',
-        prefix: 'marker-', ttlMs: 86400000, maxSessions: 1, scanCap: 128, claimTtlMs: 30000,
-        ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS', markerNameRe: /^marker-[a-f0-9]{64}$/ };
+      const cfg = ${markerChildConfig()};
       const claim = claimMarker({ ...cfg, sessionId: process.env.CAH_TEST_RECOVER ? 'retire-recover' : 'retire-crash', nowMs: Date.now() });
       if (!claim || !abortMarkerTransaction(claim)) process.exit(3);
       releaseMarkerClaim(claim);
@@ -421,9 +394,7 @@ describe('marker capacity staging', () => {
     const interlocksUrl = new URL('../test-support/interlocks.js', import.meta.url).href;
     const crashScript = `
       import { abortMarkerTransaction, claimMarker, releaseMarkerClaim } from ${JSON.stringify(markerUrl)};
-      const cfg = { markerDir: process.env.CAH_TEST_MARKER_DIR, namespace: 'marker-tests',
-        prefix: 'marker-', ttlMs: 86400000, maxSessions: 1, scanCap: 128, claimTtlMs: 100,
-        ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS', markerNameRe: /^marker-[a-f0-9]{64}$/ };
+      const cfg = ${markerChildConfig({ claimTtlMs: 100 })};
       const claim = claimMarker({ ...cfg, sessionId: 'populated-retirement-crash', nowMs: Date.now() });
       if (!claim || abortMarkerTransaction(claim)) process.exit(3);
     `;
@@ -447,10 +418,7 @@ describe('marker capacity staging', () => {
     const recoveryScript = `
       import { abortMarkerTransaction, claimMarker, releaseMarkerClaim } from ${JSON.stringify(markerUrl)};
       import { makeInterlock } from ${JSON.stringify(interlocksUrl)};
-      const cfg = { markerDir: process.env.CAH_TEST_MARKER_DIR, namespace: 'marker-tests',
-        prefix: 'marker-', ttlMs: 86400000, maxSessions: 1, scanCap: 128, claimTtlMs: 100,
-        ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS', markerNameRe: /^marker-[a-f0-9]{64}$/,
-        testInterlock: makeInterlock() };
+      const cfg = ${markerChildConfig({ claimTtlMs: 100, interlock: true })};
       const claim = claimMarker({ ...cfg, sessionId: 'populated-retirement-recovery', nowMs: Date.now() });
       if (!claim) process.exit(2);
       if (!abortMarkerTransaction(claim)) process.exit(3);
@@ -485,9 +453,7 @@ describe('marker capacity staging', () => {
     const markerUrl = new URL('../lib/marker-state.js', import.meta.url).href;
     const script = `
       import { abortMarkerTransaction, claimMarker, releaseMarkerClaim } from ${JSON.stringify(markerUrl)};
-      const cfg = { markerDir: process.env.CAH_TEST_MARKER_DIR, namespace: 'marker-tests',
-        prefix: 'marker-', ttlMs: 86400000, maxSessions: 1, scanCap: 128, claimTtlMs: 100,
-        ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS', markerNameRe: /^marker-[a-f0-9]{64}$/ };
+      const cfg = ${markerChildConfig({ claimTtlMs: 100 })};
       const claim = claimMarker({ ...cfg, sessionId: 'empty-retirement-recovery', nowMs: Date.now() });
       if (!claim || !abortMarkerTransaction(claim)) process.exit(3);
       releaseMarkerClaim(claim);
@@ -496,9 +462,7 @@ describe('marker capacity staging', () => {
       CAH_TEST_ONLY_CAPACITY_CRASH: 'after-victim-rename' };
     const crashed = spawnMarkerSync(process.execPath, ['--input-type=module', '-e', `
       import { claimMarker } from ${JSON.stringify(markerUrl)};
-      const cfg = { markerDir: process.env.CAH_TEST_MARKER_DIR, namespace: 'marker-tests',
-        prefix: 'marker-', ttlMs: 86400000, maxSessions: 1, scanCap: 128, claimTtlMs: 30000,
-        ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS', markerNameRe: /^marker-[a-f0-9]{64}$/ };
+      const cfg = ${markerChildConfig()};
       claimMarker({ ...cfg, sessionId: 'empty-retirement-crash', nowMs: Date.now() });
     `], { env });
     assert.notEqual(crashed.status, 0, crashed.stderr);
@@ -528,10 +492,7 @@ describe('marker capacity staging', () => {
     const script = `
       import { abortMarkerTransaction, claimMarker, publishMarker, releaseMarkerClaim } from ${JSON.stringify(markerUrl)};
       import { makeInterlock } from ${JSON.stringify(interlocksUrl)};
-      const cfg = { markerDir: process.env.CAH_TEST_MARKER_DIR, namespace: 'marker-tests',
-        prefix: 'marker-', ttlMs: 86400000, maxSessions: 1, scanCap: 128, claimTtlMs: 100,
-        ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS', markerNameRe: /^marker-[a-f0-9]{64}$/,
-        testInterlock: makeInterlock() };
+      const cfg = ${markerChildConfig({ claimTtlMs: 100, interlock: true })};
       if (process.env.CAH_TEST_RECOVER === '1') {
         const claim = claimMarker({ ...cfg, sessionId: 'pre-proof-recovery', nowMs: Date.now() });
         if (!claim || !abortMarkerTransaction(claim)) process.exit(3);
@@ -573,10 +534,7 @@ describe('marker capacity staging', () => {
       const script = `
         import { abortMarkerTransaction, claimMarker, publishMarker, releaseMarkerClaim } from ${JSON.stringify(markerUrl)};
         import { makeInterlock } from ${JSON.stringify(interlocksUrl)};
-        const cfg = { markerDir: process.env.CAH_TEST_MARKER_DIR, namespace: 'marker-tests',
-          prefix: 'marker-', ttlMs: 86400000, maxSessions: 1, scanCap: 128, claimTtlMs: 100,
-          ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS', markerNameRe: /^marker-[a-f0-9]{64}$/,
-          testInterlock: makeInterlock() };
+        const cfg = ${markerChildConfig({ claimTtlMs: 100, interlock: true })};
         if (process.env.CAH_TEST_RECOVER === '1') {
           const claim = claimMarker({ ...cfg, sessionId: 'temp-recovery', nowMs: Date.now() });
           if (!claim || !abortMarkerTransaction(claim)) process.exit(3);
@@ -620,9 +578,7 @@ describe('marker capacity staging', () => {
     const script = `
       import { abortMarkerTransaction, claimMarker } from ${JSON.stringify(markerUrl)};
       import { makeInterlock } from ${JSON.stringify(interlocksUrl)};
-      const cfg = { markerDir: process.env.CAH_TEST_MARKER_DIR, namespace: 'marker-tests',
-        prefix: 'marker-', ttlMs: 86400000, maxSessions: 1, scanCap: 128, claimTtlMs: 100,
-        ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS', markerNameRe: /^marker-[a-f0-9]{64}$/ };
+      const cfg = ${markerChildConfig({ claimTtlMs: 100 })};
       const claim = claimMarker({ ...cfg, sessionId: 'retirement-pause', nowMs: Date.now(),
         testInterlock: makeInterlock() });
       if (!claim) process.exit(3);
@@ -663,9 +619,7 @@ describe('marker capacity staging', () => {
     const markerUrl = new URL('../lib/marker-state.js', import.meta.url).href;
     const script = `
       import { claimMarker, abortMarkerTransaction, releaseMarkerClaim } from ${JSON.stringify(markerUrl)};
-      const cfg = { markerDir: process.env.CAH_TEST_MARKER_DIR, namespace: 'marker-tests',
-        prefix: 'marker-', ttlMs: 86400000, maxSessions: 1, scanCap: 128, claimTtlMs: 30000,
-        ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS', markerNameRe: /^marker-[a-f0-9]{64}$/ };
+      const cfg = ${markerChildConfig()};
       const claim = claimMarker({ ...cfg, marker: process.env.CAH_TEST_VICTIM,
         sessionId: 'abort-successor-recovery', nowMs: Date.now() });
       if (process.env.CAH_TEST_RECOVER === '1') {
@@ -711,10 +665,7 @@ describe('marker capacity staging', () => {
       import { readFileSync } from 'node:fs';
       import { claimMarker } from ${JSON.stringify(markerUrl)};
       import { makeInterlock } from ${JSON.stringify(interlocksUrl)};
-      const cfg = { markerDir: process.env.CAH_TEST_MARKER_DIR, namespace: 'marker-tests',
-        prefix: 'marker-', ttlMs: 86400000, maxSessions: 1, scanCap: 128, claimTtlMs: 30000,
-        ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS', markerNameRe: /^marker-[a-f0-9]{64}$/,
-        testInterlock: makeInterlock() };
+      const cfg = ${markerChildConfig({ interlock: true })};
       const maintenance = {};
       const claim = claimMarker({ ...cfg, sessionId: 'lease-reuse-recovery', nowMs: Date.now(), maintenance });
       process.exit(claim ? 3 : maintenance.preserved?.length ? 0 : 4);
@@ -723,9 +674,7 @@ describe('marker capacity staging', () => {
       CAH_TEST_ONLY_CAPACITY_CRASH: 'after-victim-quarantine' };
     const crashed = spawnMarkerSync(process.execPath, ['--input-type=module', '-e', `
       import { claimMarker } from ${JSON.stringify(markerUrl)};
-      const cfg = { markerDir: process.env.CAH_TEST_MARKER_DIR, namespace: 'marker-tests',
-        prefix: 'marker-', ttlMs: 86400000, maxSessions: 1, scanCap: 128, claimTtlMs: 30000,
-        ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS', markerNameRe: /^marker-[a-f0-9]{64}$/ };
+      const cfg = ${markerChildConfig()};
       claimMarker({ ...cfg, sessionId: 'lease-reuse-crash', nowMs: Date.now() });
     `], { env });
     assert.notEqual(crashed.status, 0, crashed.stderr);
@@ -765,12 +714,7 @@ describe('marker capacity staging', () => {
     const script = `
       import { claimMarker } from ${JSON.stringify(markerUrl)};
       import { makeInterlock } from ${JSON.stringify(interlocksUrl)};
-      const cfg = {
-        markerDir: process.env.CAH_TEST_MARKER_DIR, namespace: 'marker-tests', prefix: 'marker-',
-        ttlMs: 86400000, maxSessions: 1, scanCap: 128, claimTtlMs: 30000,
-        ownerTestEnv: 'CAH_TEST_ONLY_MARKER_CAPACITY_LEASE_MS', markerNameRe: /^marker-[a-f0-9]{64}$/,
-        testInterlock: makeInterlock(),
-      };
+      const cfg = ${markerChildConfig({ interlock: true })};
       const maintenance = {};
       const claim = claimMarker({ ...cfg, sessionId: 'slot-successor', nowMs: Date.now(), maintenance });
       if (process.env.CAH_TEST_RECOVER === '1') {
@@ -830,12 +774,7 @@ describe('marker capacity staging', () => {
       import {
         claimMarker, abortMarkerTransaction, releaseMarkerClaim,
       } from ${JSON.stringify(moduleUrl)};
-      const cfg = {
-        markerDir: process.env.CAH_TEST_MARKER_DIR,
-        namespace: 'marker-tests', prefix: 'marker-', ttlMs: 86400000,
-        maxSessions: 1, scanCap: 128, claimTtlMs: 30000,
-        markerNameRe: /^marker-[a-f0-9]{64}$/,
-      };
+      const cfg = ${markerChildConfig({ ownerTestEnv: false })};
       const claim = claimMarker({ ...cfg, sessionId: 'new', nowMs: Date.now() });
       if (!claim) process.exit(3);
       if (!abortMarkerTransaction(claim)) process.exit(4);
