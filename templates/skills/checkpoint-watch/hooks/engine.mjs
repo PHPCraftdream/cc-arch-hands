@@ -220,7 +220,9 @@ export function createWatchState({ threshold = THRESHOLD, limitMs = CYCLE_LIMIT_
 }
 
 function newCycle(fields) {
-  return { held: [], ownTurn: null, waitTurn: null, denies: 0, stray: new Set(), file: null, ...fields };
+  // `drain`: a cycle picked up after a reload asked for /checkpoint while a turn may still run;
+  // that turn's tool calls stay refused until the host runs the command.
+  return { held: [], ownTurn: null, waitTurn: null, denies: 0, stray: new Set(), file: null, drain: false, ...fields };
 }
 
 // The cycle as $.state keeps it: JSON only, no timers. `savedAt` is when it was
@@ -295,7 +297,15 @@ export async function restoreCycle(w, $) {
     if (c.phase === 'compacting') later(w, $, 0, c, () => compact(w, $, c, 1));
     else later(w, $, 0, c, () => slash($, 'resume', c.name));
   }
-  // 'stopping' and 'checkpointing' wait for the turn that is running; its id is unknown now.
+  if (c.phase === 'stopping') {
+    // The turn it waited for may have ended in the gap, and its end would never be seen. The
+    // host runs a command once the session is idle, so ask for /checkpoint now: it waits for
+    // that turn if it still runs (whose tool calls stay refused), and runs at once if not.
+    c.phase = 'queued';
+    c.drain = true;
+    later(w, $, 0, c, () => slash($, 'checkpoint', c.name));
+  }
+  // 'checkpointing' waits for the turn that is running; its id is unknown now.
   persist(w, $);
 }
 
@@ -321,6 +331,7 @@ export function denyFor(w, $) {
   let reason = null;
   if (c.phase === 'stopping' && (c.waitTurn === null || turn === c.waitTurn)) reason = stopReason(w.threshold);
   else if (turn !== null && c.stray.has(turn)) reason = HOLD_REASON;
+  else if (c.drain && c.phase === 'queued' && turn !== null) reason = stopReason(w.threshold);
   if (!reason) return null;
   c.denies += 1;
   if (c.denies === MAX_DENIES && turn !== null) $.turn.abort({ turnId: turn }).catch(() => {});
@@ -503,11 +514,23 @@ async function compact(w, $, c, attempt) {
     c.file = await findCheckpoint($, c.name);
     if (w.cycle !== c) return;
     if (!c.file) { fail(w, $, `the checkpoint ${c.name}.md was not written`, c); return; }
-    // The size before the compaction: a reload uses it to tell whether the compaction happened.
-    try { c.tokens = (await $.session.usage()).context?.tokens ?? null; } catch { c.tokens = null; }
+    // The size before the compaction: a reload uses it to tell whether the compaction happened
+    // (a cycle picked up after a reload keeps the size saved before it).
+    if (!Number.isFinite(c.tokens)) {
+      try { c.tokens = (await $.session.usage()).context?.tokens ?? null; } catch { c.tokens = null; }
+    }
     if (w.cycle !== c) return;
     persist(w, $);
+  } else if (await compactionDone(w, $, c)) {
+    // A retry after a refusal: the first compaction may have finished meanwhile. (Whether a host
+    // still compacting refuses or queues a second call is not documented: a queued one is not caught.)
+    if (w.cycle !== c) return;
+    c.phase = 'resuming';
+    persist(w, $);
+    later(w, $, 0, c, () => slash($, 'resume', c.name));
+    return;
   }
+  if (w.cycle !== c) return;
   let result;
   try {
     result = await $.session.compact({ instructions: COMPACT_INSTRUCTIONS });

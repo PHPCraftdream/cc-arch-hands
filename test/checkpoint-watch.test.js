@@ -808,18 +808,43 @@ describe('checkpoint-watch engine: a cycle that stops', () => {
     assert.equal(h.w.cycle, null);
   });
 
-  it('a reload while the turn is being stopped keeps refusing its tool calls', async () => {
+  it('a reload while the turn is being stopped asks for /checkpoint at once and keeps refusing the turn', async () => {
     const h = harness();
     await h.emit('turn.start', { turnId: 'T1', text: 'work' });
     await h.emit('tool.call', { tool: 'Bash' });
     const reloaded = harness();
     reloaded.state = h.state;
     await reloaded.emit('session.start', {});
+    assert.equal(reloaded.w.cycle.phase, 'queued');
     const refused = await reloaded.emit('tool.call', { tool: 'Bash' });
-    assert.equal(refused.deny, stopReason(90));
+    assert.equal(refused.deny, stopReason(90), 'a turn that still runs is not let go on');
+    await reloaded.flush(0);
+    assert.deepEqual(reloaded.calls.command, [{ command: 'checkpoint', args: h.w.cycle.name }],
+      'the host runs it once the session is idle, whether or not the awaited turn ended in the gap');
+    assert.deepEqual(reloaded.calls.abort, [], 'and no turn is aborted');
     await reloaded.emit('turn.complete', { turnId: 'T1', reason: 'answer' });
     await reloaded.flush(0);
-    assert.deepEqual(reloaded.calls.command, [{ command: 'checkpoint', args: h.w.cycle.name }]);
+    assert.equal(reloaded.calls.command.length, 1, 'no second request when the old turn ends');
+  });
+
+  it('a compaction retry after a reload resumes instead of compacting again once the context shrank', async () => {
+    const h = harness();
+    const name = await startCycle(h);
+    h.files[`/repo/docs/checkpoints/${name}.md`] = '# Checkpoint\n';
+    h.state.set('cah-checkpoint-watch/cycle', { ...h.state.get('cah-checkpoint-watch/cycle'), phase: 'compacting', tokens: 900_000 });
+    const reloaded = harness();
+    reloaded.state = h.state;
+    reloaded.tokens = 880_000;
+    Object.assign(reloaded.files, h.files);
+    // The host is still busy with the first compaction: it refuses this call, and finishes meanwhile.
+    reloaded.compact = async () => {
+      reloaded.tokens = 40_000;
+      throw new Error('a compaction is already running');
+    };
+    await reloaded.emit('session.start', {});
+    await reloaded.flush(COMPACT_RETRY_MS);
+    assert.equal(reloaded.calls.compact.length, 1, 'no second compaction');
+    assert.deepEqual(reloaded.calls.command.at(-1), { command: 'resume', args: name });
   });
 
   it('held events whose prompt the host refuses go with the next prompt, as its context', async () => {
