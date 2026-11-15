@@ -992,7 +992,7 @@ describe('daily stale temp sweep', () => {
     for (const path of kept) assert.equal(existsSync(path), true, path);
   });
 
-  it('leaves the recovery dirs of the user\'s own leaves in the cache root, and a stuck one never blocks the stamp', () => {
+  it('leaves the recovery dirs of the user\'s own leaves in the cache root, and a stuck one never blocks the stamp', (t) => {
     const { dir } = cacheFixture(t);
     const weekOld = new Date(Date.now() - 8 * 24 * 3600 * 1000);
     const recovery = (name) => {
