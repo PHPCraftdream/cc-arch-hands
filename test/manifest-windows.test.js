@@ -67,7 +67,7 @@ describe('Codex alias windows and efforts', () => {
 
   it('keeps ultra only on the models that accept it', () => {
     const ultra = AllCodexAgents.filter((agent) => agent.effort === 'ultra').map((agent) => agent.name);
-    assert.deepEqual(ultra, ['us', 'us1', 'us2', 'ut', 'ut1', 'ua']);
+    assert.deepEqual(ultra, ['us', 'us1', 'us2', 'us3', 'ut', 'ut1', 'ua', 'ua1']);
     assert.equal(AllCodexAgents.some((agent) => agent.name === 'ul1'), false);
   });
 });

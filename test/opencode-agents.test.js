@@ -26,10 +26,10 @@ describe('OpenCode agent installer', () => {
       assert.match(content, /^mode: subagent$/m);
       assert.ok(content.includes(SentinelOpencodeAgent), `sentinel in ${agent.name}`);
     }
-    for (const name of ['us', 'us1', 'us2', 'ut', 'ut1', 'ua']) {
+    for (const name of ['us', 'us1', 'us2', 'us3', 'ut', 'ut1', 'ua', 'ua1']) {
       assert.match(readFileSync(join(dir, `${name}.md`), 'utf8'), /^  reasoningEffort: ultra$/m);
     }
-    assert.match(readFileSync(join(dir, 'xxa.md'), 'utf8'), /openai\/gpt-6-astra/);
+    assert.match(readFileSync(join(dir, 'xxa.md'), 'utf8'), /openai\/gpt-6\.2-astra/);
   });
 
   it('works without OpenCode installed, without a provider or model', (t) => {
@@ -52,7 +52,7 @@ describe('OpenCode agent installer', () => {
     const hs = join(dir, 'hs.md');
     writeFileSync(hs, `${SentinelOpencodeAgent}\nold generation`);
     ok(home, 'reinstall', '--opencode-agents');
-    assert.match(readFileSync(hs, 'utf8'), /model: openai\/gpt-6\.1-sol/);
+    assert.match(readFileSync(hs, 'utf8'), /model: openai\/gpt-6\.2-sol/);
     assert.equal(readFileSync(foreign, 'utf8'), 'personal agent');
     ok(home, 'uninstall', '--opencode-agents');
     assert.equal(existsSync(hs), false);

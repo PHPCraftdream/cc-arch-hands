@@ -32,7 +32,7 @@ function setup() {
     if (!states.has(id)) states.set(id, {
       todos: [{ content: 'work', status: 'pending', priority: 'medium' }], type: 'idle',
       messages: [{ info: { id: `user-${id}`, sessionID: id, role: 'user', agent: 'hs',
-        model: { providerID: 'openai', modelID: 'gpt-6.1-sol' } }, parts: [] }],
+        model: { providerID: 'openai', modelID: 'gpt-6.2-sol' } }, parts: [] }],
     });
     return states.get(id);
   }
@@ -210,7 +210,7 @@ describe('OpenCode babysit scheduler', () => {
     f.state('s2').messages[0].info.model = { providerID: 'custom-provider', modelID: 'literal-model', variant: 'ultra' };
     await arm(f, 's1'); await arm(f, 's2'); await f.clock.advance(1000);
     assert.equal(f.wakes('s1').length, 1); assert.equal(f.wakes('s2').length, 1);
-    assert.deepEqual(f.wakes('s1')[0].body.model, { providerID: 'openai', modelID: 'gpt-6.1-sol' });
+    assert.deepEqual(f.wakes('s1')[0].body.model, { providerID: 'openai', modelID: 'gpt-6.2-sol' });
     const body = f.wakes('s2')[0].body;
     assert.deepEqual(body.model, { providerID: 'custom-provider', modelID: 'literal-model' });
     assert.equal(body.agent, 'xxa'); assert.equal(body.variant, 'ultra');

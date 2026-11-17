@@ -47,11 +47,13 @@ describe('writeCodexAgents', { concurrency: false }, () => {
       ['xt', 'gpt-6.1-terra', 'Terra 6.1 - Extra High'],
       ['xt1', 'gpt-5.6-terra', 'Terra 5.6 - Extra High'],
       ['xl', 'gpt-6-luna', 'Luna - Extra High'],
-      ['xs', 'gpt-6.1-sol', 'Sol 6.1 - Extra High'],
+      ['xs', 'gpt-6.2-sol', 'Sol 6.2 - Extra High'],
       ['xl1', 'gpt-5.6-luna', 'Luna 5.6 - Extra High'],
-      ['xs1', 'gpt-6-sol', 'Sol 6 - Extra High'],
-      ['xs2', 'gpt-5.6-sol', 'Sol 5.6 - Extra High'],
-      ['xa', 'gpt-6-astra', 'Astra - Extra High'],
+      ['xs1', 'gpt-6.1-sol', 'Sol 6.1 - Extra High'],
+      ['xs2', 'gpt-6-sol', 'Sol 6 - Extra High'],
+      ['xs3', 'gpt-5.6-sol', 'Sol 5.6 - Extra High'],
+      ['xa', 'gpt-6.2-astra', 'Astra 6.2 - Extra High'],
+      ['xa1', 'gpt-6-astra', 'Astra 6 - Extra High'],
     ]) {
       const data = readFileSync(join(agentsDir, `${name}.toml`), 'utf8');
       assert.ok(data.includes(`model = "${model}"`));
@@ -94,7 +96,7 @@ describe('writeCodexAgents', { concurrency: false }, () => {
     assert.equal(readFileSync(orphanForeign, 'utf8'), 'not yours');
   });
 
-  it('installs the supported Sol 6 and Astra ultra agents and prunes a stale owned ul1 alias', () => {
+  it('installs the supported Sol and Astra ultra agents and prunes a stale owned ul1 alias', () => {
     const dir = tmpDir();
     const scope = new Scope({ cwd: dir });
     const agentsDir = join(dir, '.codex', 'agents');
@@ -112,14 +114,18 @@ describe('writeCodexAgents', { concurrency: false }, () => {
       false,
       'Luna 5.6 does not accept ultra: ul1 must stay absent after install',
     );
-    for (const [name, model] of [['us1', 'gpt-6-sol'], ['ua', 'gpt-6-astra']]) {
+    for (const [name, model] of [['us1', 'gpt-6.1-sol'], ['ua', 'gpt-6.2-astra'], ['ua1', 'gpt-6-astra']]) {
       const body = readFileSync(join(agentsDir, `${name}.toml`), 'utf8');
       assert.ok(body.includes(`model = "${model}"`), `${name} model`);
       assert.ok(body.includes('model_reasoning_effort = "ultra"'), `${name} effort`);
     }
     assert.deepEqual(
-      AllCodexAgents.filter((agent) => agent.model === 'gpt-6-astra').map((agent) => agent.name),
+      AllCodexAgents.filter((agent) => agent.model === 'gpt-6.2-astra').map((agent) => agent.name),
       ['la', 'ma', 'ha', 'xa', 'xxa', 'ua'],
+    );
+    assert.deepEqual(
+      AllCodexAgents.filter((agent) => agent.model === 'gpt-6-astra').map((agent) => agent.name),
+      ['la1', 'ma1', 'ha1', 'xa1', 'xxa1', 'ua1'],
     );
   });
 });

@@ -145,7 +145,7 @@ describe('sync-codex-models script', () => {
     specs['gpt-6-sol'].efforts = specs['gpt-6-sol'].efforts.filter((effort) => effort !== 'ultra');
     const result = sync(dir, codexDocument(specs));
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /agent us1 uses effort ultra, which gpt-6-sol does not accept/);
+    assert.match(result.stderr, /agent us2 uses effort ultra, which gpt-6-sol does not accept/);
   });
 
   it('exits 1 and names the model when Codex accepts an effort no agent covers', (t) => {

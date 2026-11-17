@@ -17,7 +17,7 @@ describe('OMP installer', () => {
   it('registers all Ultra agents even when OMP is unavailable', (t) => {
     const home = sandbox(t);
     withEnv({ PATH: '' }, () => ok(home, 'install', '--omp-agents'));
-    for (const name of ['us', 'us1', 'us2', 'ut', 'ut1', 'ua']) {
+    for (const name of ['us', 'us1', 'us2', 'us3', 'ut', 'ut1', 'ua', 'ua1']) {
       assert.match(readFileSync(join(home, '.omp', 'agent', 'agents', `${name}.md`), 'utf8'),
         /^thinking-level: ultra$/m);
     }
@@ -36,14 +36,14 @@ describe('OMP installer', () => {
       assert.match(content, new RegExp(`model: openai-codex/${agent.model}\\n`));
       assert.match(content, new RegExp(`thinking-level: ${agent.effort}\\n`));
     }
-    for (const name of ['us', 'us1', 'us2', 'ut', 'ut1', 'ua']) {
+    for (const name of ['us', 'us1', 'us2', 'us3', 'ut', 'ut1', 'ua', 'ua1']) {
       assert.match(readFileSync(join(root, 'agents', `${name}.md`), 'utf8'), /^thinking-level: ultra$/m);
     }
     assert.equal(existsSync(join(home, '.claude')), false);
     const hs = join(root, 'agents', 'hs.md');
     writeFileSync(hs, `${SentinelOmpAgent}\nold model\n`);
     ok(home, 'install', '--only', 'omp-agents');
-    assert.match(readFileSync(hs, 'utf8'), /model: openai-codex\/gpt-6\.1-sol/);
+    assert.match(readFileSync(hs, 'utf8'), /model: openai-codex\/gpt-6\.2-sol/);
     const foreign = join(root, 'agents', 'custom.md');
     writeFileSync(foreign, 'personal agent');
     const orphan = join(root, 'agents', 'obsolete.md');

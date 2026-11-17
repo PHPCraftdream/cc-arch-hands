@@ -58,7 +58,7 @@ function baseClient() {
       async todo() { calls.push(['todo']); return { data: [{ content: 'a', status: 'pending' }] }; },
       async status() { calls.push(['status']); return { data: {} }; },
       async messages({ path }) { return { data: [{ info: { id: 'user-1', sessionID: path.id,
-        role: 'user', agent: 'hs', model: { providerID: 'openai', modelID: 'gpt-6.1-sol' } }, parts: [] }] }; },
+        role: 'user', agent: 'hs', model: { providerID: 'openai', modelID: 'gpt-6.2-sol' } }, parts: [] }] }; },
       async promptAsync({ path, body }) { calls.push(['promptAsync', path.id, body]); return { data: undefined, response: { status: 204 } }; },
     },
   };

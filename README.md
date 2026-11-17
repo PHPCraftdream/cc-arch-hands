@@ -26,7 +26,7 @@ The artifacts:
 - **companion bins** under `~/.claude/cah-bin/` (since 0.4.0).
 
 Optional artifacts are installed only when requested:
-- **Codex custom agents** (<!--gen:count:codex-agents-->46<!--/gen-->) under `~/.codex/agents/`, via `--codex-agents`.
+- **Codex custom agents** (<!--gen:count:codex-agents-->58<!--/gen-->) under `~/.codex/agents/`, via `--codex-agents`.
 - **Codex skills** (<!--gen:count:codex-skills-->4<!--/gen-->) under `~/.codex/skills/`, via `--codex-skills`.
 - **OMP agents** and the agent-tag rule in global `APPEND_SYSTEM.md`, via `--omp-agents`. OMP uses Markdown definitions, not Codex TOML.
 
@@ -201,7 +201,7 @@ inside Claude Code, so identical names do not collide.
 <!--gen:count:model-commands-->67<!--/gen--> commands, <!--gen:count:model-commands-->67<!--/gen--> agents — one line per row-cell in
 [`lib/manifest.js`](lib/manifest.js).
 
-### 3. Optional Codex custom agents (<!--gen:count:codex-agents-->46<!--/gen-->)
+### 3. Optional Codex custom agents (<!--gen:count:codex-agents-->58<!--/gen-->)
 
 Codex agents are not part of the default install. Install them explicitly with `--codex-agents`, or select them as a class via `--only codex-agents` (also combinable, e.g. `--only skills,codex-agents`):
 
@@ -211,19 +211,21 @@ npx cc-arch-hands reinstall --codex-agents
 npx cc-arch-hands uninstall --codex-agents
 ```
 
-Generated agent names use an effort prefix plus a model suffix. Current Sol 6.1 (`s`, model ID `gpt-6.1-sol`) uses `l/m/h/x/xx/u` for `low/medium/high/xhigh/max/ultra`. Older Sol releases shift back one slot: Sol 6 uses suffix `1` (`ls1`, etc.) with six levels, and Sol 5.6 uses suffix `2` (`ls2`, etc.) with six levels. Luna (`l`, model ID `gpt-6-luna`) has five levels and its 5.6 predecessor keeps suffix `1` with the same five (neither Luna accepts `ultra`). Terra 6.1 (`t`, model ID `gpt-6.1-terra`) uses all six levels and its 5.6 predecessor (`gpt-5.6-terra`) keeps suffix `1` (`lt1`, etc.) with six levels; Astra (`a`) uses six (`l/m/h/x/xx/u`). Its model ID is `gpt-6-astra`. These aliases write TOML custom-agent files for Codex under `~/.codex/agents/`.
+Generated agent names use an effort prefix plus a model suffix. Current Sol 6.2 (`s`, model ID `gpt-6.2-sol`) uses `l/m/h/x/xx/u` for `low/medium/high/xhigh/max/ultra`. Older Sol releases shift back one slot each: Sol 6.1 uses suffix `1` (`ls1`, etc.), Sol 6 suffix `2` and Sol 5.6 suffix `3`, all with six levels. Luna (`l`, model ID `gpt-6-luna`) has five levels and its 5.6 predecessor keeps suffix `1` with the same five (neither Luna accepts `ultra`). Terra 6.1 (`t`, model ID `gpt-6.1-terra`) uses all six levels and its 5.6 predecessor (`gpt-5.6-terra`) keeps suffix `1` (`lt1`, etc.) with six levels; Astra 6.2 (`a`, model ID `gpt-6.2-astra`) uses six (`l/m/h/x/xx/u`) and its predecessor `gpt-6-astra` keeps suffix `1` (`la1`, etc.) with six levels. These aliases write TOML custom-agent files for Codex under `~/.codex/agents/`.
 
 <!--gen:table:codex-agents (run `npm run gen:docs` after editing lib/manifest.js) -->
 | Model | Agents by effort |
 |---|---|
-| Sol 6.1 | `ls` low · `ms` medium · `hs` high · `xs` xhigh · `xxs` max · `us` ultra |
-| Sol 6 | `ls1` low · `ms1` medium · `hs1` high · `xs1` xhigh · `xxs1` max · `us1` ultra |
-| Sol 5.6 | `ls2` low · `ms2` medium · `hs2` high · `xs2` xhigh · `xxs2` max · `us2` ultra |
+| Sol 6.2 | `ls` low · `ms` medium · `hs` high · `xs` xhigh · `xxs` max · `us` ultra |
+| Sol 6.1 | `ls1` low · `ms1` medium · `hs1` high · `xs1` xhigh · `xxs1` max · `us1` ultra |
+| Sol 6 | `ls2` low · `ms2` medium · `hs2` high · `xs2` xhigh · `xxs2` max · `us2` ultra |
+| Sol 5.6 | `ls3` low · `ms3` medium · `hs3` high · `xs3` xhigh · `xxs3` max · `us3` ultra |
 | Luna | `ll` low · `ml` medium · `hl` high · `xl` xhigh · `xxl` max |
 | Terra 6.1 | `lt` low · `mt` medium · `ht` high · `xt` xhigh · `xxt` max · `ut` ultra |
 | Terra 5.6 | `lt1` low · `mt1` medium · `ht1` high · `xt1` xhigh · `xxt1` max · `ut1` ultra |
 | Luna 5.6 | `ll1` low · `ml1` medium · `hl1` high · `xl1` xhigh · `xxl1` max |
-| Astra | `la` low · `ma` medium · `ha` high · `xa` xhigh · `xxa` max · `ua` ultra |
+| Astra 6.2 | `la` low · `ma` medium · `ha` high · `xa` xhigh · `xxa` max · `ua` ultra |
+| Astra 6 | `la1` low · `ma1` medium · `ha1` high · `xa1` xhigh · `xxa1` max · `ua1` ultra |
 <!--/gen:table:codex-agents-->
 
 Every alias also records the model's `contextWindow` and `maxContextWindow` (tokens), and each model's accepted efforts are kept alongside them in `lib/codex-model-specs.js`, so `ultra` exists only where Codex accepts it (Sol, Terra and Astra, not either Luna). Read the same data without executing the manifest through `cah models --json`.
@@ -324,12 +326,12 @@ npx cc-arch-hands install --omp --omp-profile work
 After updating the package, repeat `install --omp` to refresh all owned OMP
 artifacts. Restart OMP after changes. The ordinary profile is the default;
 named profiles must be selected explicitly. Every registered agent is installed,
-including all six Ultra aliases, without querying OMP capabilities.
+including all eight Ultra aliases, without querying OMP capabilities.
 
 ### Optional OMP agents
 
 OMP agents are opt-in and reuse the complete Codex model/alias registry.
-`us`, `us1`, `us2`, `ut`, `ut1` and `ua` all carry the literal `thinking-level: ultra`,
+`us`, `us1`, `us2`, `us3`, `ut`, `ut1`, `ua` and `ua1` all carry the literal `thinking-level: ultra`,
 even when the installed OMP or the provider does not advertise support.
 Install/reinstall/list/doctor do not invoke OMP to filter those definitions.
 
@@ -454,7 +456,7 @@ installs only OpenCode artifacts; combined with `--only` it adds all three
 classes. Nothing is queried at install time: OpenCode, the provider connection
 and model availability are never checked.
 
-- **`--opencode-agents`** — all <!--gen:count:codex-agents-->46<!--/gen--> subagents from the Codex model/alias
+- **`--opencode-agents`** — all <!--gen:count:codex-agents-->58<!--/gen--> subagents from the Codex model/alias
   registry (see the Codex-agents table above). Each `<name>.md` lands in
   `<root>/agents/` with `mode: subagent`, `model: openai/<manifest model>`
   and a literal `options.reasoningEffort` (including `max` and `ultra`; no
@@ -800,11 +802,11 @@ may keep the hooks it loaded at start: if `/hooks` does not list them, restart i
 | Slash-commands | <!--gen:count:model-commands-->67<!--/gen--> | `<scope>/.claude/commands/<name>.md` (default install; `--commands` selects them alone) |
 | Sub-agents | <!--gen:count:model-commands-->67<!--/gen--> | `<scope>/.claude/agents/<name>.md` |
 | Skills | 16 | `<scope>/.claude/skills/<name>/` |
-| Codex custom agents | <!--gen:count:codex-agents-->46<!--/gen--> | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
+| Codex custom agents | <!--gen:count:codex-agents-->58<!--/gen--> | `<scope>/.codex/agents/<name>.toml` (only with `--codex-agents`) |
 | Codex skills | <!--gen:count:codex-skills-->4<!--/gen--> | `<scope>/.codex/skills/<name>/` (only with `--codex-skills`) |
 | OMP agents and tag rule | Full registry + rule | `~/.omp/agent/agents/<name>.md` and `~/.omp/agent/APPEND_SYSTEM.md` (only with `--omp-agents`; `--omp-profile NAME` selects `~/.omp/profiles/NAME/agent/`) |
 | OMP workflow commands | 9 commands + 2 runtime files | `~/.omp/agent/commands/`, `extensions/cah-babysit.js` and `cah/commit-checkpoint.mjs` (only with `--omp-commands`; supports `--omp-profile NAME`) |
-| OpenCode subagents + tag rule | <!--gen:count:codex-agents-->46<!--/gen--> | `<cfg>/agents/<name>.md` and a marked section in `<cfg>/AGENTS.md` (only with `--opencode-agents`; `<cfg>` = `$OPENCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`) |
+| OpenCode subagents + tag rule | <!--gen:count:codex-agents-->58<!--/gen--> | `<cfg>/agents/<name>.md` and a marked section in `<cfg>/AGENTS.md` (only with `--opencode-agents`; `<cfg>` = `$OPENCODE_CONFIG_DIR`, else `$XDG_CONFIG_HOME/opencode`, else `~/.config/opencode`) |
 | OpenCode skills | 9 | `<cfg>/skills/<name>/SKILL.md` (only with `--opencode-skills`) |
 | OpenCode commands + runtime | 9 commands + 3 runtime files | `<cfg>/commands/<name>.md`, `<cfg>/cah-opencode/` (scheduler + helper) and `<cfg>/plugins/cah-babysit.js` (only with `--opencode-commands`) |
 
@@ -1044,7 +1046,7 @@ cc-arch-hands/
 ├── bin/cah-nobg.js              # PreToolUse Bash hook bin: deny a command that detaches a job
 ├── lib/
 │   ├── cli.js                   # dispatch, arg parsing (node:util parseArgs), --only resolver
-│   ├── manifest.js              # AllModelCommands (67 definitions), AllCodexAgents (46), AllSkills (16), SkillDeps, SkillSkillDeps
+│   ├── manifest.js              # AllModelCommands (67 definitions), AllCodexAgents (58), AllSkills (16), SkillDeps, SkillSkillDeps
 │   ├── codex-model-specs.js     # generated by `npm run sync:codex`: Codex context windows + accepted efforts
 │   ├── cli-info.js              # `cah version` and `cah models --json`
 │   ├── sentinel.js              # new + legacy markers, ownership classifier

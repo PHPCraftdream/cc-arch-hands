@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-17
+
 ### Changed
 
+- Codex agents follow GPT-6.2: Sol 6.2 (`gpt-6.2-sol`, 500k window) takes the primary aliases `ls`/`ms`/`hs`/`xs`/`xxs`/`us`, and Astra 6.2 (`gpt-6.2-astra`, 272k window) takes `la`/`ma`/`ha`/`xa`/`xxa`/`ua`. The older releases shift back one slot each: Sol 6.1 → suffix `1`, Sol 6 → `2`, Sol 5.6 → `3` (new `ls3`..`us3`); Astra 6 → suffix `1` (new `la1`..`ua1`). Terra and Luna aliases are unchanged. The registry now holds 58 agents, also for OMP and OpenCode; windows and efforts come from `codex debug models` (Codex 0.169.0). Reinstalling rewrites the owned `ls1`/`ls2`/`la`… files with the new models and adds the new ones; an alias such as `hs1` now means the previous Sol, not the one it meant before.
 - Everything the package writes or prints is English now. The agent-tag rules written into OMP `APPEND_SYSTEM.md` and OpenCode `AGENTS.md`, the prompt line of the OMP and OpenCode agents and the titles of the Codex `cli-run` MCP tools were Russian; a reinstall refreshes them. The reset times of the statusLine and the chat stamp read `→1h 23m` and `→sat 27.06 16:19` instead of Russian letters and weekday names.
 - The language of the reset times is a setting: `CAH_LOCALE` holds a BCP 47 tag (`ru-RU`, `de-DE`, `fr-FR`, …) and the short weekday name follows it (the hour/minute letters are Russian under a Russian tag and `h`/`m` otherwise). English is the default, an unknown tag falls back to English, and the earlier, undocumented `CAH_WEEKDAY_LOCALE` is still read.
 - The five single-file installers (model commands, model agents, Codex, OMP and OpenCode agents) share one implementation, `lib/leaf-installer.js`; behaviour is unchanged. `cah nobg` and `cah rewake` likewise share one command body, `lib/cli-hook-command.js`.
