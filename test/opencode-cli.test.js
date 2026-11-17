@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { AllCodexAgents } from '../lib/manifest.js';
 import { OPENCODE_ENV, cliCaller, tempDir } from '../test-support/cli-sandbox.js';
 
 const { call, ok } = cliCaller(OPENCODE_ENV);
@@ -12,7 +13,8 @@ function rows(home, env = {}, ...args) {
     .split('\n').filter(Boolean).map(JSON.parse);
 }
 
-const OC_ROW_TOTAL = 46 + 1 + 9 + 3 + 9;
+const AGENTS = AllCodexAgents.length;
+const OC_ROW_TOTAL = AGENTS + 1 + 9 + 3 + 9;
 
 describe('OpenCode CLI integration', () => {
   it('--opencode selects all three classes without installing Claude defaults', (t) => {
@@ -91,7 +93,7 @@ describe('OpenCode CLI integration', () => {
 
   it('explicit per-class doctor selections count missing and foreign leaves independently', (t) => {
     for (const [flag, total, rel] of [
-      ['--opencode-agents', 47, 'agents/hs.md'],
+      ['--opencode-agents', AGENTS + 1, 'agents/hs.md'],
       ['--opencode-commands', 12, 'commands/task.md'],
       ['--opencode-skills', 9, 'skills/task/SKILL.md'],
     ]) {
@@ -233,7 +235,7 @@ describe('OpenCode CLI integration', () => {
   it('reports version counts for the OpenCode classes', (t) => {
     const home = sandbox(t);
     const version = ok(home, {}, 'version').stdout;
-    assert.match(version, /opencode-agents=46/);
+    assert.match(version, new RegExp(`opencode-agents=${AGENTS} `));
     assert.match(version, /opencode-skills=9/);
     assert.match(version, /opencode-commands=9/);
   });
