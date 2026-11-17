@@ -39,7 +39,7 @@ describe('cah models --json', () => {
       name: 'h1m', model: 'claude-haiku-4-5', effort: 'medium', display: 'Haiku 4.5 (200k) – medium', contextWindow: 200000,
     });
     assert.deepEqual(byName(doc.codex.aliases, 'ua'), {
-      name: 'ua', model: 'gpt-6.2-astra', effort: 'ultra', display: 'Astra 6.2 - ultra', contextWindow: 272000, maxContextWindow: 872000,
+      name: 'ua', model: 'gpt-6.2-astra', effort: 'ultra', display: 'Astra 6.2 - ultra', contextWindow: 922000, maxContextWindow: 922000,
     });
     assert.equal(byName(doc.codex.aliases, 'ul1'), undefined);
     assert.deepEqual(doc.codex.models['gpt-5.6-luna'].efforts, ['low', 'medium', 'high', 'xhigh', 'max']);

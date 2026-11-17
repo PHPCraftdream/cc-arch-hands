@@ -53,17 +53,30 @@ export function parseCodexModels(text) {
   });
 }
 
+// Windows pinned by hand: the catalog of Codex 0.169 reports less than these
+// models serve. A pinned window wins over the catalog; drop the entry once
+// Codex reports the real one.
+export const ContextWindowOverrides = Object.freeze({
+  'gpt-6.2-sol': 922000,
+  'gpt-6.1-sol': 922000,
+  'gpt-6.1-terra': 922000,
+  'gpt-6.2-astra': 922000,
+  'gpt-6-luna': 922000,
+});
+
 // Spec per manifest model id, in the given order. Throws when Codex does not
-// list a model the manifest depends on.
+// list a model the manifest depends on. The max window never sits below the
+// window, so a pinned window lifts it too.
 export function buildSpecs(codexModels, ids) {
   const bySlug = new Map(codexModels.map((model) => [model.slug, model]));
   const specs = {};
   for (const id of ids) {
     const model = bySlug.get(id);
     if (!model) throw new Error(`model "${id}" is not listed by codex debug models`);
+    const contextWindow = ContextWindowOverrides[id] ?? model.contextWindow;
     specs[id] = {
-      contextWindow: model.contextWindow,
-      maxContextWindow: model.maxContextWindow,
+      contextWindow,
+      maxContextWindow: Math.max(model.maxContextWindow, contextWindow),
       efforts: model.efforts,
     };
   }

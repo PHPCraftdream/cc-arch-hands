@@ -10,7 +10,7 @@ import { CodexModelSpecs } from '../lib/codex-model-specs.js';
 import { DEFAULT_CLI_TIMEOUT_MS } from '../test-support/process-batches.js';
 import {
   codexInstalled, readCodexModels, parseCodexModels, buildSpecs, renderSpecsModule,
-  effortDrift, unlistedModels,
+  effortDrift, unlistedModels, ContextWindowOverrides,
 } from '../scripts/codex-models.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -77,6 +77,18 @@ describe('spec building and rendering', () => {
     assert.deepEqual(Object.keys(buildSpecs(codexModels, ids)), ids);
   });
 
+  it('pins the windows of ContextWindowOverrides over what the catalog reports', () => {
+    const low = parseCodexModels(codexDocument(Object.fromEntries(Object.entries(CodexModelSpecs).map(
+      ([id, spec]) => [id, { ...spec, contextWindow: 272000, maxContextWindow: 872000 }]))));
+    const built = buildSpecs(low, ids);
+    for (const id of ids) {
+      const pinned = ContextWindowOverrides[id];
+      assert.equal(built[id].contextWindow, pinned ?? 272000, id);
+      assert.equal(built[id].maxContextWindow, Math.max(872000, pinned ?? 0), id);
+    }
+    assert.deepEqual(clone(built), clone(CodexModelSpecs));
+  });
+
   it('fails when Codex does not list a manifest model', () => {
     assert.throws(() => buildSpecs(codexModels, ['gpt-gone']), /model "gpt-gone" is not listed by codex debug models/);
   });
@@ -133,10 +145,10 @@ describe('sync-codex-models script', () => {
   it('refreshes windows in place and exits 0 when efforts still match', (t) => {
     const dir = sandbox(t);
     const specs = clone(CodexModelSpecs);
-    specs['gpt-6-luna'].contextWindow = 300000;
+    specs['gpt-6-sol'].contextWindow = 300000;
     const result = sync(dir, codexDocument(specs));
     assert.equal(result.status, 0, result.stderr);
-    assert.match(readFileSync(join(dir, 'specs.js'), 'utf8'), /'gpt-6-luna': spec\(300000, 872000,/);
+    assert.match(readFileSync(join(dir, 'specs.js'), 'utf8'), /'gpt-6-sol': spec\(300000, 872000,/);
   });
 
   it('exits 1 and names the agent when Codex rejects an effort the manifest uses', (t) => {

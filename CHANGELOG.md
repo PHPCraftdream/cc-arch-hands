@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-11-17
+
+### Fixed
+
+- The context window of the latest Codex models is 922k, not what the catalog of Codex 0.169 reports: `gpt-6.2-sol` and `gpt-6.1-sol` (were 500k), `gpt-6.1-terra` (500k), `gpt-6.2-astra` (272k) and `gpt-6-luna` (272k) now carry `contextWindow` 922000 in `lib/codex-model-specs.js`, and their `maxContextWindow` is lifted to 922000 so it never sits below the window. The windows are pinned in `ContextWindowOverrides` (`scripts/codex-models.js`), so `npm run sync:codex` keeps them. The older `gpt-6-*` and `gpt-5.6-*` models are unchanged.
+
 ## [0.19.0] - 2026-11-17
 
 ### Changed
