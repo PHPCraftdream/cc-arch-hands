@@ -13,3 +13,5 @@ Accept an optional slug-style name. Without a name, use a local-time `YYYY-MM-DD
 4. Report the absolute path written. Preserve the caller's other working-tree changes.
 
 {{include:checkpoint-main-worktree}}
+
+{{include:checkpoint-no-machine-paths}}

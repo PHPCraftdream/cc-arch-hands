@@ -18,6 +18,8 @@ Names are slugs (lowercase, hyphens, no spaces); `/resume pre-refactor` finds it
 
 {{include:checkpoint-main-worktree}}
 
+{{include:checkpoint-no-machine-paths}}
+
 ## Behavior
 
 1. **Guard** as above. Target: `<name>.md`, else `YYYY-MM-DD-HHMM.md`, in the checkpoint directory: `<repo-root>/docs/checkpoints/`, or the worktree fallback above.
@@ -54,7 +56,7 @@ Names are slugs (lowercase, hyphens, no spaces); `/resume pre-refactor` finds it
    - …
 
    ## Repo state
-   ### main folder <repo-root> [<branch>]
+   ### main folder [<branch>]
    ```
    <git status>
    ```
@@ -62,7 +64,7 @@ Names are slugs (lowercase, hyphens, no spaces); `/resume pre-refactor` finds it
    <git log -5>
    ```
    ### worktrees
-   - <path> [<branch>] — <what is done there>; <status: clean / N changed>; last <sha subject>  (this session)
+   - <folder name> [<branch>] — <what is done there>; <status: clean / N changed>; last <sha subject>  (this session)
    ````
 
 4. **Report** one line with the absolute path. Do not add the file to git.

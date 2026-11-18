@@ -17,7 +17,7 @@ git rev-parse --path-format=absolute --show-toplevel --git-dir --git-common-dir
 A harness may confine a session to its own worktree and refuse any write or Git command aimed at another folder. Never work around such a refusal (no `cd`, `GIT_DIR`, `GIT_WORK_TREE`, wrapper scripts or another tool).
 
 - A refused status read of another folder → record it as "not readable from this session" and go on.
-- A refused write into `<repo-root>/docs/checkpoints/` → the checkpoint directory becomes `<worktree>/docs/checkpoints/` (line 1 of the check). Write the same file there, with this line right under the title: `> Written in worktree <worktree> [<branch>]: this session could not write to <repo-root>; carry this file into <repo-root>/docs/checkpoints/.` Report both paths.
+- A refused write into `<repo-root>/docs/checkpoints/` → the checkpoint directory becomes `<worktree>/docs/checkpoints/` (line 1 of the check). Write the same file there, with this line right under the title: `> Written in worktree <worktree-folder-name> [<branch>]: this session could not write to the main folder; carry this file into its docs/checkpoints/.` (a folder name, never a path). Report both paths to the user in the chat.
 - Commits go to the folder that holds the checkpoint, so a fallback checkpoint is committed on the worktree's branch.
 
 ### Reading checkpoints

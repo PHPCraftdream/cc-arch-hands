@@ -293,7 +293,7 @@ describe('release and generated-doc contracts', () => {
     assert.match(MAIN_FOLDER_FRAGMENT, /Never work around such a refusal/);
     assert.match(MAIN_FOLDER_FRAGMENT, /"not readable from this session"/);
     assert.match(MAIN_FOLDER_FRAGMENT, /the checkpoint directory becomes `<worktree>\/docs\/checkpoints\/`/);
-    assert.match(MAIN_FOLDER_FRAGMENT, /carry this file into <repo-root>\/docs\/checkpoints\//);
+    assert.match(MAIN_FOLDER_FRAGMENT, /carry this file into its docs\/checkpoints\/\.` \(a folder name, never a path\)/);
     assert.match(MAIN_FOLDER_FRAGMENT, /for every linked worktree that `git worktree list --porcelain` lists, its `docs\/checkpoints\/`/);
     assert.match(MAIN_FOLDER_FRAGMENT, /Never create or enter a worktree for a checkpoint/);
     assert.match(MAIN_FOLDER_FRAGMENT, /any other path shared across projects\/agents/);
@@ -307,6 +307,25 @@ describe('release and generated-doc contracts', () => {
     assert.match(CHECKPOINT_SKILL, /not committed: this session is confined to its\s+worktree/);
     assert.match(RESUME_SKILL, /Exact filename match \(with or without `\.md`\): take it/);
     assert.match(RESUME_SKILL, /sort every `\.md` in those directories by filesystem mtime descending/);
+  });
+
+  it('every checkpoint writer forbids machine paths in the file and its sample holds none', () => {
+    const rule = read('templates/shared/checkpoint-no-machine-paths.md').trimEnd();
+    assert.match(rule, /holds no absolute path of this one/);
+    assert.match(rule, /Never write a drive letter/);
+    assert.match(rule, /scan the whole text for absolute paths/);
+    assert.doesNotMatch(rule, /~\/\.claude|TaskList|todo/, 'the shared rule stays harness-neutral');
+    const writers = [
+      ['skills', 'checkpoint', 'SKILL.md'], ['codex-skills', 'checkpoint', 'SKILL.md'],
+      ['opencode-skills', 'checkpoint', 'SKILL.md'], ['opencode-commands', 'checkpoint', 'command.md'],
+      ['omp-commands', 'checkpoint', 'command.md'],
+    ];
+    for (const [kind, name, leaf] of writers) {
+      assert.ok(installed(kind, name, leaf).includes(rule), `${kind}/${name}`);
+    }
+    const sample = installed('skills', 'checkpoint', 'SKILL.md').match(/````markdown\n([\s\S]*?)````/)[1];
+    assert.match(sample, /### main folder \[<branch>\]/);
+    assert.doesNotMatch(sample, /<repo-root>|<path>/, 'the sample names no path placeholder');
   });
 
   it('the main-folder check finds the main folder on any branch and from a linked worktree', () => {

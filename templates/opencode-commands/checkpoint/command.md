@@ -12,3 +12,5 @@ Arguments: $ARGUMENTS
 5. Report the absolute path. Do not stage, commit, change the todo plan or launch subagents.
 
 {{include:checkpoint-main-worktree}}
+
+{{include:checkpoint-no-machine-paths}}
