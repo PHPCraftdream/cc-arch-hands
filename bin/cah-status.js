@@ -92,9 +92,9 @@ function buildLine(data, contextState = null, proxyDisplayName = null) {
   if (usedTokens === null && limit !== null
       && typeof data?.transcript_path === 'string' && typeof data.model?.id === 'string'
       && data.model.id.length > 0) {
-    const scan = contextState ? {} : null;
+    const scan = {};
     const previous = readLastMeasuredContext(data.transcript_path, data.model.id, scan);
-    reason = scan?.reason || 'no_measurement';
+    reason = scan.reason || 'no_measurement';
     if (previous?.modelId === data.model.id && previous.usedTokens > 0) {
       usedTokens = previous.usedTokens;
       source = 'transcript';
@@ -109,6 +109,9 @@ function buildLine(data, contextState = null, proxyDisplayName = null) {
     source = 'cache';
     reason = 'cached_measurement';
   }
+  // A compaction that no measured turn follows has emptied the context: show 0
+  // until the first answer, not a bar that vanishes.
+  if (usedTokens === null && limit !== null && reason === 'compaction') usedTokens = 0;
   if (contextState) Object.assign(contextState, { usedTokens, limit, source, reason, measuredCache });
 
   const isClaudeModel = typeof data?.model?.id === 'string' && data.model.id.startsWith('claude-');

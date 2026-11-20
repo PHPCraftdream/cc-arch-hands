@@ -330,7 +330,8 @@ describe('cah-status bin', () => {
     const compacted = run(payload, env);
     assert.equal(compacted.status, 0);
     assert.doesNotMatch(compacted.stdout, /25%|50k/);
-    assert.doesNotMatch(run(payload, env).stdout, /25%|50k/);
+    assert.match(compacted.stdout, /\[░{10}\] 0% \(0k\/200k\)/, 'an emptied context reads 0');
+    assert.match(run(payload, env).stdout, /\[░{10}\] 0% \(0k\/200k\)/);
   });
 
   it('keeps context visible after API errors with transcript or retained envelope measurements', (t) => {
@@ -363,7 +364,9 @@ describe('cah-status bin', () => {
       assert.match(run(payload, env).stdout, /40% \(80k\/200k\)/);
       appendFileSync(path, JSON.stringify({ type: 'system', subtype: 'compact_boundary' }) + '\n');
       payload.context_window.total_input_tokens = 0;
-      assert.doesNotMatch(run(payload, env).stdout, /25%|40%|50k|80k/);
+      const emptied = run(payload, env).stdout;
+      assert.doesNotMatch(emptied, /25%|40%|50k|80k/);
+      assert.match(emptied, /0% \(0k\/200k\)/);
     }
   });
 
@@ -624,7 +627,7 @@ describe('cah-status bin', () => {
     assert.match(stdout, /10% \(20k\/200k\)/);
   });
 
-  it('omits unavailable context at startup or compaction instead of a false zero', () => {
+  it('omits unavailable context at startup (no transcript to show a compaction) instead of a false zero', () => {
     const { stdout } = run(makePayload({ context_window: {
       total_input_tokens: 0, context_window_size: 200000, current_usage: null,
     } }));
@@ -648,7 +651,11 @@ describe('cah-status bin', () => {
       /25% \(50k\/200k\)$/);
     writeFileSync(path, JSON.stringify(measured) + '\n'
       + JSON.stringify({ type: 'system', subtype: 'compact_boundary' }) + '\n');
-    assert.equal(run(payload).stdout, 'Opus 4.8');
+    assert.match(run(payload).stdout, /^Opus 4\.8 · \[░{10}\] 0% \(0k\/200k\)$/);
+    writeFileSync(path, JSON.stringify(measured) + '\n'
+      + JSON.stringify({ type: 'system', subtype: 'compact_boundary' }) + '\n'
+      + JSON.stringify(measured) + '\n');
+    assert.match(run(payload).stdout, /25% \(50k\/200k\)$/, 'the first answer after the compaction measures again');
   });
 
   for (const [label, usage] of [
@@ -690,7 +697,7 @@ describe('cah-status bin', () => {
         usage: { input_tokens: 0 } } });
       assert.equal(run(payload, env).stdout, 'Codex');
       writeRecords(measured, compact);
-      assert.equal(run(payload, env).stdout, 'Codex');
+      assert.match(run(payload, env).stdout, /^Codex · \[░{10}\] 0% \(0k\/200k\)$/);
       writeRecords(measured, compact, measured);
       assert.match(run(payload, env).stdout, /25% \(50k\/200k\)$/);
       writeRecords({ ...measured, message: { ...measured.message, usage: { input_tokens: 0 } } });

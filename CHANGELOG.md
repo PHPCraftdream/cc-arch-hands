@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- After `/compact` the statusLine kept no context gauge until the first answer: the envelope carries no usage then and the transcript scan stops at the compaction boundary. It now reads `[░░░░░░░░░░] 0% (0k/1M)` while a compaction is the last thing in the transcript, and measures again with the first answer. A session with no transcript yet still shows no gauge.
+
 ### Changed
 
 - `/checkpoint` (Claude, Codex, OpenCode and OMP) keeps absolute paths of the machine out of the file it writes: paths are relative to the main folder, the main folder is named by its branch alone, a linked worktree by its folder name and branch, and the worktree-fallback line names no path. The rule is one shared fragment, `templates/shared/checkpoint-no-machine-paths.md`, pinned by a test. Paths reported to the user in the chat stay absolute.
